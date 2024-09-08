@@ -1,0 +1,28 @@
+@use "../settings" as *;
+
+@mixin theme {
+  // main colors
+  #{$css-var-prefix}highlight: #ffffff;
+  #{$css-var-prefix}primary: #c0c0c0;
+  #{$css-var-prefix}shadow: #808080;
+  #{$css-var-prefix}background: #c0c0c0;
+  #{$css-var-prefix}exploded: #ff0000;
+  #{$css-var-prefix}incorrect: #ffa0a0;
+  #{$css-var-prefix}counter-background: #000000;
+  #{$css-var-prefix}counter-text: #ff0000;
+
+  // number colors
+  #{$css-var-prefix}num0: transparent;
+  #{$css-var-prefix}num1: #0000ff;
+  #{$css-var-prefix}num2: #008000;
+  #{$css-var-prefix}num3: #ee0000;
+  #{$css-var-prefix}num4: #000080;
+  #{$css-var-prefix}num5: #800000;
+  #{$css-var-prefix}num6: #008080;
+  #{$css-var-prefix}num7: #000000;
+  #{$css-var-prefix}num8: #808080;
+  #{$css-var-prefix}num9: #800080;
+
+  // extras
+  #{$css-var-prefix}drop-shadow: 2px 2px 15px rgba(0, 0, 0, .15);
+}

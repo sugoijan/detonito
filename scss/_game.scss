@@ -1,0 +1,198 @@
+@forward "settings";
+@use "settings" as *;
+
+$states: ("not-started": "😶", "in-progress": "🙂", "won": "😎", "lost": "😵", "click":  "😮");
+// alternative flags: ⛳️ ⚑ ⚐
+$marks: ("flag": "🚩", "mine": "💣", "question": "?");
+
+$size-cell: 16px;
+$font-size-cell: 15px;
+$padding-vert: 5px;
+$padding-hor: 6px;
+$border-fat: 3px;
+$border-mid: 2px;
+
+$counter-width: 41px;
+$counter-height: 25px;
+
+$top-spacing: 5px;
+//$top-height: $counter-height + 2 * $border-fat + $top-spacing;
+$top-height: 38px;
+
+$state-size: 24px;
+
+@mixin drop-shadow {
+  box-shadow: var(#{$css-var-prefix}drop-shadow);
+}
+
+@mixin outset-border($width: 1px) {
+  $light: var(#{$css-var-prefix}highlight);
+  $dark: var(#{$css-var-prefix}shadow);
+  box-sizing: border-box;
+  border-style: solid;
+  border-width: $width;
+  border-color: $light $dark $dark $light;
+}
+
+@mixin inset-border($width: 1px) {
+  $light: var(#{$css-var-prefix}highlight);
+  $dark: var(#{$css-var-prefix}shadow);
+  box-sizing: border-box;
+  border-style: solid;
+  border-width: $width;
+  border-color: $dark $light $light $dark;
+}
+
+@mixin pressed-border($width: 1px) {
+  $width2: $width - 1px;
+  border-width: $width $width2 $width2 $width;
+  border-color: var(#{$css-var-prefix}shadow);
+}
+
+#game {
+  text-align: center;
+}
+
+.detonito {
+  position: relative; // use this as base for position:absolute elements
+  user-select: none; // selecting can get in the way, disable it
+  display: inline-block;  // prevent it from enlargening horizontally
+  @include drop-shadow;  // very slight, makes the white borders visible
+  zoom: 2;  // default zoom
+  font-family: reset !important;
+
+  // style:
+  @include outset-border($border-fat);
+  background-color: var(#{$css-var-prefix}primary);
+  padding: $padding-vert $padding-hor;
+
+  .dotdotdot {
+    position: absolute;
+    top: -5px;
+    width: 16px;
+    left: calc(50% - 8px);
+    color: var(#{$css-var-prefix}highlight);
+    font-size: 11px;
+    height: 10px;
+    cursor: pointer;
+    font-family: "tahoma";
+  }
+
+  .top, .grid {
+    @include inset-border($border-fat);
+  }
+
+  .top {
+    height: $top-height;
+    padding: 3px;
+    margin-bottom: $top-spacing;
+    &:not(.small) {
+      display: grid;
+      grid-template-columns: $counter-width 1fr $counter-width;
+    }
+
+    .left, .right {
+      @include inset-border;
+      min-width: $counter-width;
+      min-height: $counter-height;
+      max-width: $counter-width;
+      max-height: $counter-height;
+      background-color: var(#{$css-var-prefix}counter-background);
+      color: var(#{$css-var-prefix}counter-text);
+      // text styling:
+      font-size: 21px;
+      line-height: 23px;
+      text-align: center;
+      font-family: monospace;
+    }
+
+    .center {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+    .state {
+      @include outset-border($border-mid);
+      min-height: $state-size;
+      min-width: $state-size;
+      max-height: $state-size;
+      max-width: $state-size;
+      outline: solid 1px var(#{$css-var-prefix}shadow);
+      background-color: var(#{$css-var-prefix}primary);
+      font-size: 20px;
+      line-height: 24px;
+      cursor: pointer;
+
+      &:hover:active, &.pressed {
+        @include pressed-border($border-mid);
+        padding: 1px 0 0 1px;
+        background-color: var(#{$css-var-prefix}background);
+      }
+
+      @each $state, $icon in $states {
+        &.#{$state}:after {
+          content: "#{$icon}";
+        }
+      }
+    }
+  }
+
+  .grid {
+    border-spacing: 0;
+    margin: 0;
+
+    td {
+      border: 0;
+      padding: 0;
+      min-width: $size-cell;
+    }
+
+    .cell {
+      padding: 0;
+      height: $size-cell;
+      box-sizing: border-box;
+      text-align: center;
+      vertical-align: middle;
+      font-family: "tahoma";
+      font-weight: bolder;
+      font-size: $font-size-cell;
+      line-height: 12px;
+      width: $size-cell;
+      max-width: $size-cell;
+
+      background-color: var(#{$css-var-prefix}primary);
+      @include outset-border($border-mid);
+
+      &.open, &.closed:active:hover {
+        background-color: var(#{$css-var-prefix}background);
+        @include pressed-border;
+      }
+
+      &.incorrect {
+        background-color: var(#{$css-var-prefix}incorrect);
+      }
+
+      &.exploded {
+        background-color: var(#{$css-var-prefix}exploded);
+      }
+
+      @each $mark, $icon in $marks {
+        &.#{$mark}:after {
+          content: "#{$icon}";
+          font-size: 12px;
+          vertical-align: top;
+        }
+      }
+
+      @for $i from 0 through 9 {
+        &.num-#{$i} {
+          color: var(#{$css-var-prefix}num#{$i});
+          &:after {
+            content: "#{$i}";
+          }
+        }
+      }
+    }
+  }
+}

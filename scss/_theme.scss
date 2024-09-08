@@ -1,0 +1,35 @@
+@use "sass:map";
+@use "../vendor/pico/scss/settings" as *;
+@use "pico_theme/styles";
+@use "pico_theme/light" as pico_light;
+@use "pico_theme/dark" as pico_dark;
+@use "theme/light";
+@use "theme/dark";
+
+// Light color scheme (Default)
+// Can be forced with data-theme="light"
+[data-theme="light"],
+:root:not([data-theme="dark"]) {
+  @include pico_light.theme;
+  @include light.theme;
+}
+
+// Dark color scheme (Auto)
+// Automatically enabled if user has Dark mode enabled
+@media only screen and (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    @include pico_dark.theme;
+    @include dark.theme;
+  }
+}
+
+// Dark color scheme (Forced)
+// Enabled if forced with data-theme="dark"
+[data-theme="dark"] {
+  @include pico_dark.theme;
+  @include dark.theme;
+}
+
+html {
+  background-color: var(#{$css-var-prefix}body-background-color);
+}
