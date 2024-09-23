@@ -1,5 +1,5 @@
 <div align="center">
-  <h1><code>detonito</code></h1>
+  <h1><a href="https://sugoijan.github.io/detonito/"<code>detonito</code></a></h1>
   <strong>Just a silly minesweeper clone.</strong>
 </div>
 
