@@ -28,7 +28,6 @@ $state-size: 24px;
 @mixin outset-border($width: 1px) {
   $light: var(#{$css-var-prefix}highlight);
   $dark: var(#{$css-var-prefix}shadow);
-  box-sizing: border-box;
   border-style: solid;
   border-width: $width;
   border-color: $light $dark $dark $light;
@@ -37,7 +36,6 @@ $state-size: 24px;
 @mixin inset-border($width: 1px) {
   $light: var(#{$css-var-prefix}highlight);
   $dark: var(#{$css-var-prefix}shadow);
-  box-sizing: border-box;
   border-style: solid;
   border-width: $width;
   border-color: $dark $light $light $dark;
@@ -60,15 +58,22 @@ $state-size: 24px;
   @include drop-shadow;  // very slight, makes the white borders visible
   zoom: 2;  // default zoom
   font-family: reset !important;
+  min-width: 145px;
+  min-height: 105px;
+
+  * {
+    // we want this for every element, so better do it now;
+    box-sizing: border-box;
+  }
 
   // style:
   @include outset-border($border-fat);
   background-color: var(#{$css-var-prefix}primary);
   padding: $padding-vert $padding-hor;
 
-  .dotdotdot {
+  small {
     position: absolute;
-    top: -5px;
+    top: -3px;
     width: 16px;
     left: calc(50% - 8px);
     color: var(#{$css-var-prefix}highlight);
@@ -78,11 +83,11 @@ $state-size: 24px;
     font-family: "tahoma";
   }
 
-  .top, .grid {
+  nav, table {
     @include inset-border($border-fat);
   }
 
-  .top {
+  nav {
     height: $top-height;
     padding: 3px;
     margin-bottom: $top-spacing;
@@ -91,7 +96,7 @@ $state-size: 24px;
       grid-template-columns: $counter-width 1fr $counter-width;
     }
 
-    .left, .right {
+    > aside {
       @include inset-border;
       min-width: $counter-width;
       min-height: $counter-height;
@@ -106,74 +111,70 @@ $state-size: 24px;
       font-family: monospace;
     }
 
-    .center {
+    > span {
       display: flex;
       justify-content: center;
       align-items: center;
-    }
 
-    .state {
-      @include outset-border($border-mid);
-      min-height: $state-size;
-      min-width: $state-size;
-      max-height: $state-size;
-      max-width: $state-size;
-      outline: solid 1px var(#{$css-var-prefix}shadow);
-      background-color: var(#{$css-var-prefix}primary);
-      font-size: 20px;
-      line-height: 24px;
-      cursor: pointer;
+      > button {
+        @include outset-border($border-mid);
+        min-height: $state-size;
+        min-width: $state-size;
+        max-height: $state-size;
+        max-width: $state-size;
+        outline: solid 1px var(#{$css-var-prefix}shadow);
+        background-color: var(#{$css-var-prefix}primary);
+        font-size: 20px;
+        line-height: 20px;
+        cursor: pointer;
+        padding: 0;
 
-      &:hover:active, &.pressed {
-        @include pressed-border($border-mid);
-        padding: 1px 0 0 1px;
-        background-color: var(#{$css-var-prefix}background);
-      }
+        &.pressed {
+          @include pressed-border($border-mid);
+          padding: 1px 0 0 1px;
+          background-color: var(#{$css-var-prefix}background);
+        }
 
-      @each $state, $icon in $states {
-        &.#{$state}:after {
-          content: "#{$icon}";
+        @each $state, $icon in $states {
+          &.#{$state}:after {
+            content: "#{$icon}";
+          }
         }
       }
     }
   }
 
-  .grid {
+  table {
     border-spacing: 0;
-    margin: 0;
+    margin: auto;
 
     td {
       border: 0;
       padding: 0;
-      min-width: $size-cell;
-    }
-
-    .cell {
-      padding: 0;
       height: $size-cell;
-      box-sizing: border-box;
+      width: $size-cell;
+      min-width: $size-cell;
+      max-width: $size-cell;
       text-align: center;
       vertical-align: middle;
       font-family: "tahoma";
       font-weight: bolder;
       font-size: $font-size-cell;
       line-height: 12px;
-      width: $size-cell;
-      max-width: $size-cell;
 
       background-color: var(#{$css-var-prefix}primary);
       @include outset-border($border-mid);
 
-      &.open, &.closed:active:hover {
+      &.open {
         background-color: var(#{$css-var-prefix}background);
         @include pressed-border;
       }
 
-      &.incorrect {
+      &.wrong {
         background-color: var(#{$css-var-prefix}incorrect);
       }
 
-      &.exploded {
+      &.oops {
         background-color: var(#{$css-var-prefix}exploded);
       }
 
@@ -193,6 +194,25 @@ $state-size: 24px;
           }
         }
       }
+    }
+  }
+
+  dialog {
+    $top-space: 5px;
+    position: absolute;
+    top: 0;
+    left: 0;
+    margin: 0;
+    display: block;
+    width: 100%;
+    height: calc(100% - $top-space);
+    border: 0;
+    margin-top: $top-space;
+    background-color: var(#{$css-var-prefix}primary);
+    color: var(#{$css-var-prefix}highlight);
+
+    &:not([open]) {
+      display: none;
     }
   }
 }

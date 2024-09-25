@@ -1,8 +1,8 @@
+use chrono::prelude::*;
 use ndarray::Array2;
+use serde::{Deserialize, Serialize};
 use std::ops::{BitOr, Index, IndexMut};
 use thiserror::Error;
-use chrono::prelude::*;
-use serde::{Serialize, Deserialize};
 
 #[derive(Error, Debug)]
 pub enum GameError {
@@ -31,20 +31,29 @@ impl Difficulty {
         Ok(Self { size, mines })
     }
 
-    pub fn total_cells(&self) -> usize {
+    pub fn total_tiles(&self) -> usize {
         self.size.0 * self.size.1
     }
 
     pub const fn beginner() -> Self {
-        Self { size: (9, 9), mines: 10 }
+        Self {
+            size: (9, 9),
+            mines: 10,
+        }
     }
 
     pub const fn intermediate() -> Self {
-        Self { size: (16, 16), mines: 40 }
+        Self {
+            size: (16, 16),
+            mines: 40,
+        }
     }
 
     pub const fn expert() -> Self {
-        Self { size: (30, 16), mines: 99 }
+        Self {
+            size: (30, 16),
+            mines: 99,
+        }
     }
 }
 
@@ -53,100 +62,112 @@ pub trait MinefieldGenerator {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub enum StartCell {
+pub enum StartTile {
     Random,
     SimpleSafe,
     AlwaysZero,
 }
 
-/// Generation strategy that can optionally try to make the starting cell zero or at least safe, but other than that is
+/// Generation strategy that can optionally try to make the starting tile zero or at least safe, but other than that is
 /// purely random.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RandomMinefieldGenerator {
     seed: u64,
     start: (usize, usize),
-    start_cell: StartCell,
+    start_tile: StartTile,
 }
 
 impl RandomMinefieldGenerator {
-    pub fn new(seed: u64, start: (usize, usize), start_cell: StartCell) -> Self {
-        Self { seed, start, start_cell }
+    pub fn new(seed: u64, start: (usize, usize), start_tile: StartTile) -> Self {
+        Self {
+            seed,
+            start,
+            start_tile,
+        }
     }
 }
 
 impl MinefieldGenerator for RandomMinefieldGenerator {
     fn generate(self, diff: &Difficulty) -> Minefield {
         use rand::prelude::*;
+        use StartTile::*;
 
-        let total_cells = diff.total_cells();
+        let total_tiles = diff.total_tiles();
 
         // optimize for full boards
-        if diff.mines >= total_cells {
-            if diff.mines > total_cells {
-                log::warn!("Minefield already full, generated anyway, requested {} but only fits {}", diff.mines, total_cells);
+        if diff.mines >= total_tiles {
+            if diff.mines > total_tiles {
+                log::warn!(
+                    "Minefield already full, generated anyway, requested {} but only fits {}",
+                    diff.mines,
+                    total_tiles
+                );
             }
-            return Minefield { mines: Array2::from_elem(diff.size, true), count: diff.mines };
+            return Minefield {
+                mines: Array2::from_elem(diff.size, true),
+                count: diff.mines,
+            };
         }
 
-        let actual_start_cell = match self.start_cell {
-            StartCell::Random => StartCell::Random,
-            StartCell::SimpleSafe | StartCell::AlwaysZero if diff.mines + 1 > total_cells => {
-                log::warn!("Cannot make start cell safe, fallback to random");
-                StartCell::Random
+        let actual_start_tile = match self.start_tile {
+            Random => Random,
+            SimpleSafe | AlwaysZero if diff.mines + 1 > total_tiles => {
+                log::warn!("Cannot make start tile safe, fallback to random");
+                Random
             }
-            StartCell::SimpleSafe => StartCell::SimpleSafe,
-            StartCell::AlwaysZero if diff.mines + 9 > total_cells => {
-                log::warn!("Cannot make start cell zero, fallback to simple safe");
-                StartCell::SimpleSafe
+            SimpleSafe => SimpleSafe,
+            AlwaysZero if diff.mines + 9 > total_tiles => {
+                log::warn!("Cannot make start tile zero, fallback to simple safe");
+                SimpleSafe
             }
-            StartCell::AlwaysZero => StartCell::AlwaysZero,
+            AlwaysZero => AlwaysZero,
         };
         let mut mines: Array2<bool> = Array2::default(diff.size);
-        let mut free_cells = match actual_start_cell {
-            StartCell::Random => total_cells,
-            StartCell::SimpleSafe => {
+        let mut free_tiles = match actual_start_tile {
+            Random => total_tiles,
+            SimpleSafe => {
                 mines[self.start] = true;
-                total_cells - 1
+                total_tiles - 1
             }
-            StartCell::AlwaysZero => {
+            AlwaysZero => {
                 mines[self.start] = true;
                 for coord in IterNeighbors::new(self.start, diff.size) {
                     mines[coord] = true;
                 }
-                total_cells - 9
+                total_tiles - 9
             }
         };
         let mut mines_placed = 0;
 
         let mut rng = SmallRng::seed_from_u64(self.seed);
         {
-            let cells = mines.as_slice_mut().expect("layout should be standard");
+            let tiles = mines.as_slice_mut().expect("layout should be standard");
             while mines_placed < diff.mines {
-                if free_cells == 0 {
-                    break
+                if free_tiles == 0 {
+                    break;
                 }
-                let mut place = rng.gen_range(0..free_cells);
-                for (i, cell) in cells.iter_mut().enumerate() {
-                    if *cell {
+                let mut place = rng.gen_range(0..free_tiles);
+                for (i, tile) in tiles.iter_mut().enumerate() {
+                    if *tile {
                         place += 1;
                     }
                     if i == place {
-                        *cell = true;
+                        *tile = true;
                         mines_placed += 1;
-                        free_cells -= 1;
-                        break
+                        free_tiles -= 1;
+                        break;
                     }
                 }
             }
         }
 
-        // undo to make safe cells
-        match actual_start_cell {
-            StartCell::Random => {},
-            StartCell::SimpleSafe => {
+        // undo to make safe tiles
+        match actual_start_tile {
+            Random => {}
+            SimpleSafe => {
                 mines[self.start] = false;
             }
-            StartCell::AlwaysZero => {
+            AlwaysZero => {
                 mines[self.start] = false;
                 for coord in IterNeighbors::new(self.start, diff.size) {
                     mines[coord] = false;
@@ -155,9 +176,13 @@ impl MinefieldGenerator for RandomMinefieldGenerator {
         }
 
         // double check mine count
-        let count = mines.iter().filter(|&&cell| cell).count();
+        let count = mines.iter().filter(|&&tile| tile).count();
         if count != diff.mines {
-            log::warn!("Generated minefield count mismatch, actual: {}, requested: {}", count, diff.mines);
+            log::warn!(
+                "Generated minefield count mismatch, actual: {}, requested: {}",
+                count,
+                diff.mines
+            );
         }
         Minefield { mines, count }
     }
@@ -176,14 +201,22 @@ const DISPLACEMENTS: [(isize, isize); 8] = [
 ];
 
 /// Will make coords + delta and return the result if it is withing bounds
-fn apply_delta(coords: (usize, usize), delta: (isize, isize), bounds: (usize, usize)) -> Option<(usize, usize)> {
+fn apply_delta(
+    coords: (usize, usize),
+    delta: (isize, isize),
+    bounds: (usize, usize),
+) -> Option<(usize, usize)> {
     let (x, y) = coords;
     let (dx, dy) = delta;
     let (bx, by) = bounds;
     let nx = x.checked_add_signed(dx)?;
-    if nx >= bx { return None; }
+    if nx >= bx {
+        return None;
+    }
     let ny = y.checked_add_signed(dy)?;
-    if ny >= by { return None; }
+    if ny >= by {
+        return None;
+    }
     Some((nx, ny))
 }
 
@@ -228,7 +261,10 @@ pub struct Minefield {
 
 impl Minefield {
     pub fn difficulty(&self) -> Difficulty {
-        Difficulty { size: self.size(), mines: self.count }
+        Difficulty {
+            size: self.size(),
+            mines: self.count,
+        }
     }
 
     pub fn validate_coords(&self, coords: (usize, usize)) -> Result<(usize, usize)> {
@@ -245,10 +281,10 @@ impl Minefield {
     }
 
     pub fn safe_count(&self) -> usize {
-        self.total_cells() - self.count
+        self.total_tiles() - self.count
     }
 
-    pub fn total_cells(&self) -> usize {
+    pub fn total_tiles(&self) -> usize {
         self.mines.len()
     }
 
@@ -275,9 +311,9 @@ impl IndexMut<(usize, usize)> for Minefield {
     }
 }
 
-// Define your enum for cell state and make it JS-compatible
+// Define your enum for tile state and make it JS-compatible
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum Cell {
+pub enum Tile {
     Closed,
     Open(usize),
     Flag,
@@ -289,10 +325,10 @@ pub enum Cell {
     IncorrectFlag,
 }
 
-impl Cell {
-    // whether the cell is visually closed
+impl Tile {
+    // whether the tile is visually closed
     pub fn is_closed(self) -> bool {
-        use Cell::*;
+        use Tile::*;
         match self {
             Closed => true,
             Open(_) => false,
@@ -306,13 +342,13 @@ impl Cell {
     }
 }
 
-impl Default for Cell {
+impl Default for Tile {
     fn default() -> Self {
         Self::Closed
     }
 }
 
-/// Outcome of opening a cell
+/// Outcome of opening a tile
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum FlagOutcome {
     NoChange,
@@ -329,7 +365,7 @@ impl FlagOutcome {
     }
 }
 
-/// Outcome of opening a cell
+/// Outcome of opening a tile
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum OpenOutcome {
     NoChange,
@@ -341,11 +377,12 @@ pub enum OpenOutcome {
 impl OpenOutcome {
     /// Whether this outcome could have caused an update to the game
     pub const fn has_update(self) -> bool {
+        use OpenOutcome::*;
         match self {
-            Self::NoChange => false,
-            Self::Safe => true,
-            Self::Explode => true,
-            Self::Win => true,
+            NoChange => false,
+            Safe => true,
+            Explode => true,
+            Win => true,
         }
     }
 }
@@ -423,7 +460,7 @@ impl Default for GameState {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Game {
     minefield: Minefield,
-    grid: Array2<Cell>,
+    grid: Array2<Tile>,
     open_count: usize,
     flag_count: usize,
     state: GameState,
@@ -462,7 +499,7 @@ impl Game {
         self.minefield.count
     }
 
-    pub fn cell_at(&self, coords: (usize, usize)) -> Cell {
+    pub fn tile_at(&self, coords: (usize, usize)) -> Tile {
         self.grid[coords]
     }
 
@@ -477,7 +514,9 @@ impl Game {
     /// How many seconds have passed since game started, 0 if it hasn't started
     pub fn elapsed_secs(&self) -> u32 {
         if let Some(started_at) = self.started_at {
-            (self.ended_at.unwrap_or_else(Utc::now) - started_at).num_seconds().max(0) as u32
+            (self.ended_at.unwrap_or_else(Utc::now) - started_at)
+                .num_seconds()
+                .max(0) as u32
         } else {
             0
         }
@@ -488,18 +527,23 @@ impl Game {
         (self.minefield.count as isize) - (self.flag_count as isize)
     }
 
-    /// Flag a cell, do not consider question marker (unmark question if cell has one)
+    /// Flag a tile, do not consider question marker (unmark question if tile has one)
     pub fn flag(&mut self, coords: (usize, usize)) -> Result<FlagOutcome> {
         self.do_flag_question(coords, false)
     }
 
-    /// Flag or question a cell
+    /// Flag or question a tile
     pub fn flag_question(&mut self, coords: (usize, usize)) -> Result<FlagOutcome> {
         self.do_flag_question(coords, true)
     }
 
-    pub fn do_flag_question(&mut self, coords: (usize, usize), use_question: bool) -> Result<FlagOutcome> {
+    pub fn do_flag_question(
+        &mut self,
+        coords: (usize, usize),
+        use_question: bool,
+    ) -> Result<FlagOutcome> {
         use FlagOutcome::*;
+        use Tile::*;
 
         let coords = self.minefield.validate_coords(coords)?;
 
@@ -507,45 +551,60 @@ impl Game {
         self.mark_start();
 
         Ok(match self.grid[coords] {
-            Cell::Closed => {
-                self.grid[coords] = Cell::Flag;
+            Closed => {
+                self.grid[coords] = Flag;
                 self.flag_count += 1;
                 MarkChanged
             }
-            Cell::Flag => {
-                self.grid[coords] = if use_question { Cell::Question } else { Cell::Closed };
+            Flag => {
+                self.grid[coords] = if use_question { Question } else { Closed };
                 self.flag_count -= 1;
                 MarkChanged
             }
-            Cell::Question => {
-                self.grid[coords] = Cell::Closed;
+            Question => {
+                self.grid[coords] = Closed;
                 MarkChanged
             }
-            _ => {
-                NoChange
-            }
+            _ => NoChange,
         })
     }
 
     fn count_flagged(&self, coords: (usize, usize)) -> usize {
-        self.minefield.iter_neighbors(coords).filter(|&pos| self.grid[pos] == Cell::Flag).count()
+        self.minefield
+            .iter_neighbors(coords)
+            .filter(|&pos| self.grid[pos] == Tile::Flag)
+            .count()
     }
 
     fn has_question_neighbor(&self, coords: (usize, usize)) -> bool {
-        self.minefield.iter_neighbors(coords).map(|pos| self.grid[pos]).any(|cell| cell == Cell::Question)
+        self.minefield
+            .iter_neighbors(coords)
+            .map(|pos| self.grid[pos])
+            .any(|tile| tile == Tile::Question)
     }
 
-    /// Open a closed cell, do not open neighbor cells
+    /// Open a closed tile, do not open neighbor tiles
     pub fn open(&mut self, coords: (usize, usize)) -> Result<OpenOutcome> {
-        if self.grid[coords] == Cell::Closed {
-            self.open_clear(coords)
+        if matches!(self.grid[coords], Tile::Closed) {
+            self.open_with_chords(coords)
         } else {
             Ok(OpenOutcome::NoChange)
         }
     }
 
-    /// Open a cell, or try to open neighbor cells
-    pub fn open_clear(&mut self, coords: (usize, usize)) -> Result<OpenOutcome> {
+    pub fn is_chordable(&self, coords: (usize, usize)) -> bool {
+        match self.grid[coords] {
+            Tile::Open(count)
+                if count == self.count_flagged(coords) && !self.has_question_neighbor(coords) =>
+            {
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Open a tile, or try to open neighbor tiles
+    pub fn open_with_chords(&mut self, coords: (usize, usize)) -> Result<OpenOutcome> {
         use OpenOutcome::*;
 
         let coords = self.minefield.validate_coords(coords)?;
@@ -554,62 +613,78 @@ impl Game {
         self.mark_start();
 
         Ok(match self.grid[coords] {
-            Cell::Open(count) if count == self.count_flagged(coords) && !self.has_question_neighbor(coords) => {
+            Tile::Open(count)
+                if count == self.count_flagged(coords) && !self.has_question_neighbor(coords) =>
+            {
                 // Perform opening of all closed neighbors when flagged count matches
-                self.minefield.iter_neighbors(coords)
-                    .map(|neighbor_coords| self.open_cell(neighbor_coords))
+                self.minefield
+                    .iter_neighbors(coords)
+                    .map(|neighbor_coords| self.open_tile(neighbor_coords))
                     .reduce(BitOr::bitor)
                     .unwrap_or(NoChange)
             }
-            _ => self.open_cell(coords),
+            _ => self.open_tile(coords),
         })
     }
 
-    /// Helper function to open a single cell and perform flood-fill if necessary
-    fn open_cell(&mut self, coords: (usize, usize)) -> OpenOutcome {
+    /// Helper function to open a single tile and perform flood-fill if necessary
+    fn open_tile(&mut self, coords: (usize, usize)) -> OpenOutcome {
         use std::collections::{HashSet, VecDeque};
         use OpenOutcome::*;
+        use Tile::*;
 
-        let cell = self.grid[coords];
+        let tile = self.grid[coords];
         let mine = self.minefield[coords];
 
-        match (cell, mine) {
-            (Cell::Closed, true) => {
-                self.grid[coords] = Cell::Exploded;
+        match (tile, mine) {
+            (Closed, true) => {
+                self.grid[coords] = Exploded;
                 self.mark_ended(false);
                 Explode
             }
-            (Cell::Closed, false) => {
+            (Closed, false) => {
                 let count = self.minefield.get_count(coords);
-                self.grid[coords] = Cell::Open(count);
+                self.grid[coords] = Open(count);
                 self.open_count += 1;
-                log::debug!("Open cell at {:?}, mine count: {}", coords, count);
+                log::debug!("Open tile at {:?}, mine count: {}", coords, count);
 
                 if count == 0 {
                     let mut visited = HashSet::from([coords]);
                     let mut to_visit: VecDeque<_> = self.minefield.iter_neighbors(coords).collect();
-                    log::trace!("Starting flood-fill from {:?}, initial neighbors: {:?}", coords, to_visit);
+                    log::trace!(
+                        "Starting flood-fill from {:?}, initial neighbors: {:?}",
+                        coords,
+                        to_visit
+                    );
 
                     while let Some(visit_coords) = to_visit.pop_front() {
                         if !visited.insert(visit_coords) {
                             continue;
                         }
 
-                        // skip flagged or already opened cells
-                        if matches!(self.grid[visit_coords], Cell::Open(_) | Cell::Flag) {
-                            log::trace!("Skipping cell at {:?}", visit_coords);
+                        // skip flagged or already opened tiles
+                        if matches!(self.grid[visit_coords], Open(_) | Flag) {
+                            log::trace!("Skipping tile at {:?}", visit_coords);
                             continue;
                         }
 
-                        // open visited cells
+                        // open visited tiles
                         let visit_count = self.minefield.get_count(visit_coords);
-                        self.grid[visit_coords] = Cell::Open(visit_count);
+                        self.grid[visit_coords] = Open(visit_count);
                         self.open_count += 1;
-                        log::trace!("Flood opened cell at {:?}, mine count: {}", visit_coords, visit_count);
+                        log::trace!(
+                            "Flood opened tile at {:?}, mine count: {}",
+                            visit_coords,
+                            visit_count
+                        );
 
                         // if this is also zero we visit the neighbors
                         if visit_count == 0 {
-                            to_visit.extend(self.minefield.iter_neighbors(visit_coords).filter(|pos| !visited.contains(pos)));
+                            to_visit.extend(
+                                self.minefield
+                                    .iter_neighbors(visit_coords)
+                                    .filter(|pos| !visited.contains(pos)),
+                            );
                         }
                     }
                 }
@@ -655,24 +730,25 @@ impl Game {
     }
 
     fn reveal_mines(&mut self, won: bool) {
+        use Tile::*;
         let (x_end, y_end) = self.minefield.size();
         for x in 0..x_end {
             for y in 0..y_end {
                 let coords = (x, y);
-                let cell = self.grid[coords];
+                let tile = self.grid[coords];
                 let mine = self.minefield[coords];
                 if mine {
-                    if cell == Cell::Closed || cell == Cell::Question {
+                    if tile == Closed || tile == Question {
                         if won {
-                            self.grid[coords] = Cell::AutoFlag;
+                            self.grid[coords] = AutoFlag;
                             self.flag_count += 1;
                         } else {
-                            self.grid[coords] = Cell::Mine;
+                            self.grid[coords] = Mine;
                         }
                     }
                 } else {
-                    if cell == Cell::Flag {
-                        self.grid[coords] = Cell::IncorrectFlag;
+                    if tile == Flag {
+                        self.grid[coords] = IncorrectFlag;
                     }
                 }
             }

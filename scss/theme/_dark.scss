@@ -2,6 +2,7 @@
 
 @mixin theme {
   // main colors
+  #{$css-var-prefix}body-background-color: #123d4a;
   #{$css-var-prefix}highlight: #606060;
   #{$css-var-prefix}primary: #404040;
   #{$css-var-prefix}shadow: #202020;
