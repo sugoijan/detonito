@@ -1,14 +1,29 @@
 @forward "settings";
 @use "settings" as *;
 
-$states: ("not-started": "😶", "in-progress": "🙂", "won": "😎", "lost": "😵", "click":  "😮");
-// alternative flags: ⛳️ ⚑ ⚐
-$marks: ("flag": "🚩", "mine": "💣", "question": "?");
+$openmoji-base: "color/svg";
+$openmoji-ext: "svg";
+$states-openmoji: (
+  "not-started": "1F636",
+  "mid-open": "1F62E",
+  "in-progress": "1F642",
+  "win": "1F60E",
+  "lose": "1F635",
+  "instant-win": "E283",
+  "instant-loss": "1F480",
+);
+// alternative flags: 🚩⛳️ ⚑ ⚐
+$marks-openmoji: (
+  "flag": "1F6A9",
+  "mine": "1F4A3",
+  "question": "2754",
+);
 
 $size-cell: 16px;
 $font-size-cell: 15px;
 $padding-vert: 5px;
 $padding-hor: 6px;
+$border-thin: 1px;
 $border-fat: 3px;
 $border-mid: 2px;
 
@@ -16,7 +31,6 @@ $counter-width: 41px;
 $counter-height: 25px;
 
 $top-spacing: 5px;
-//$top-height: $counter-height + 2 * $border-fat + $top-spacing;
 $top-height: 38px;
 
 $state-size: 24px;
@@ -57,7 +71,6 @@ $state-size: 24px;
   display: inline-block;  // prevent it from enlargening horizontally
   @include drop-shadow;  // very slight, makes the white borders visible
   zoom: 2;  // default zoom
-  font-family: reset !important;
   min-width: 145px;
   min-height: 105px;
 
@@ -129,15 +142,20 @@ $state-size: 24px;
         cursor: pointer;
         padding: 0;
 
-        &.pressed {
+        &:hover:active {
           @include pressed-border($border-mid);
           padding: 1px 0 0 1px;
           background-color: var(#{$css-var-prefix}background);
         }
 
-        @each $state, $icon in $states {
-          &.#{$state}:after {
-            content: "#{$icon}";
+
+        @each $state, $name in $states-openmoji {
+          &.#{$state} {
+            $size: $state-size + 2 * $border-mid;
+            background-image: url("#{$openmoji-base}/#{$name}.#{$openmoji-ext}");
+            background-size: $size;
+            background-position: center;
+            background-repeat: no-repeat;
           }
         }
       }
@@ -152,6 +170,8 @@ $state-size: 24px;
       border: 0;
       padding: 0;
       height: $size-cell;
+      min-height: $size-cell;
+      max-height: $size-cell;
       width: $size-cell;
       min-width: $size-cell;
       max-width: $size-cell;
@@ -178,11 +198,12 @@ $state-size: 24px;
         background-color: var(#{$css-var-prefix}exploded);
       }
 
-      @each $mark, $icon in $marks {
-        &.#{$mark}:after {
-          content: "#{$icon}";
-          font-size: 12px;
-          vertical-align: top;
+      @each $mark, $name in $marks-openmoji {
+        &.#{$mark} {
+          $size: $size-cell - 2 * $border-thin;
+          background-image: url("#{$openmoji-base}/#{$name}.#{$openmoji-ext}");
+          background-position: center;
+          background-repeat: no-repeat;
         }
       }
 

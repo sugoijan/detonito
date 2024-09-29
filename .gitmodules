@@ -1,0 +1,3 @@
+[submodule "openmoji"]
+	path = vendor/openmoji
+	url = https://github.com/hfg-gmuend/openmoji.git

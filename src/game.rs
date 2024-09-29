@@ -411,11 +411,11 @@ impl BitOr for OpenOutcome {
 }
 
 /// Valid transitions:
+/// - NotStarted -> InstantWin
+/// - NotStarted -> InstantLoss
 /// - NotStarted -> InProgress
-/// - NotStarted -> Won
-/// - NotStarted -> Lost
-/// - InProgress -> Won
-/// - InProgress -> Lost
+/// - InProgress -> Win
+/// - InProgress -> Loss
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum GameState {
     /// Initial state
@@ -423,29 +423,39 @@ pub enum GameState {
     /// Game started
     InProgress,
     /// Game ended and player won
-    Won,
+    Win,
     /// Game ended and player lost
-    Lost,
+    Lose,
+    /// Game ended and player won on the first move
+    InstantWin,
+    /// Game ended and player lost on the first move
+    InstantLoss,
 }
 
 impl GameState {
     /// Indicates the game has not started yet
     pub const fn is_initial(self) -> bool {
+        use GameState::*;
         match self {
-            Self::NotStarted => true,
-            Self::InProgress => false,
-            Self::Won => false,
-            Self::Lost => false,
+            NotStarted => true,
+            InProgress => false,
+            Win => false,
+            Lose => false,
+            InstantWin => false,
+            InstantLoss => false,
         }
     }
 
     /// Indicates the game has ended and no moves can be made anymore
     pub const fn is_final(self) -> bool {
+        use GameState::*;
         match self {
-            Self::NotStarted => false,
-            Self::InProgress => false,
-            Self::Won => true,
-            Self::Lost => true,
+            NotStarted => false,
+            InProgress => false,
+            Win => true,
+            Lose => true,
+            InstantWin => true,
+            InstantLoss => true,
         }
     }
 }
@@ -503,6 +513,14 @@ impl Game {
         self.grid[coords]
     }
 
+    fn check_in_progress(&self) -> Result<()> {
+        if matches!(self.state, GameState::InProgress) {
+            Ok(())
+        } else {
+            Err(GameError::AlreadyEnded)
+        }
+    }
+
     fn check_final(&self) -> Result<()> {
         if self.state.is_final() {
             Err(GameError::AlreadyEnded)
@@ -547,8 +565,7 @@ impl Game {
 
         let coords = self.minefield.validate_coords(coords)?;
 
-        self.check_final()?;
-        self.mark_start();
+        self.check_in_progress()?;
 
         Ok(match self.grid[coords] {
             Closed => {
@@ -610,12 +627,12 @@ impl Game {
         let coords = self.minefield.validate_coords(coords)?;
 
         self.check_final()?;
-        self.mark_start();
 
         Ok(match self.grid[coords] {
             Tile::Open(count)
                 if count == self.count_flagged(coords) && !self.has_question_neighbor(coords) =>
             {
+                self.check_in_progress()?;
                 // Perform opening of all closed neighbors when flagged count matches
                 self.minefield
                     .iter_neighbors(coords)
@@ -650,7 +667,11 @@ impl Game {
 
                 if count == 0 {
                     let mut visited = HashSet::from([coords]);
-                    let mut to_visit: VecDeque<_> = self.minefield.iter_neighbors(coords).collect();
+                    let mut to_visit: VecDeque<_> = self
+                        .minefield
+                        .iter_neighbors(coords)
+                        .filter(|&pos| matches!(self.grid[pos], Closed))
+                        .collect();
                     log::trace!(
                         "Starting flood-fill from {:?}, initial neighbors: {:?}",
                         coords,
@@ -683,6 +704,7 @@ impl Game {
                             to_visit.extend(
                                 self.minefield
                                     .iter_neighbors(visit_coords)
+                                    .filter(|&pos| matches!(self.grid[pos], Closed))
                                     .filter(|pos| !visited.contains(pos)),
                             );
                         }
@@ -693,6 +715,7 @@ impl Game {
                     self.mark_ended(true);
                     Win
                 } else {
+                    self.mark_started();
                     Safe
                 }
             }
@@ -701,31 +724,53 @@ impl Game {
     }
 
     /// Checks if the state is initial and changes to in-progress recording the start time
-    fn mark_start(&mut self) {
-        if self.state.is_initial() {
+    fn mark_started(&mut self) {
+        if matches!(self.state, GameState::NotStarted) {
+            let now = Utc::now();
+            log::debug!("started at {}", now);
+            self.started_at.replace(now);
             self.state = GameState::InProgress;
-            self.started_at = Some(Utc::now());
         }
     }
 
     /// Checks for wrong flags and unflagged mines after game ends
     fn mark_ended(&mut self, won: bool) {
+        use GameState::*;
         match (self.state, won) {
-            (GameState::Won, false) => {
-                self.state = GameState::Lost;
+            (Win, false) => {
+                self.state = Lose;
                 self.reveal_mines(false);
                 return;
             }
-            (GameState::Won, _) => return,
-            (GameState::Lost, _) => return,
-            (_, false) => {
-                self.state = GameState::Lost;
+            (InstantWin, false) => {
+                self.state = InstantLoss;
+                self.reveal_mines(false);
+                return;
             }
-            (_, true) => {
-                self.state = GameState::Won;
+            (Win, _) => return,
+            (Lose, _) => return,
+            (InstantWin, _) => return,
+            (InstantLoss, _) => return,
+            (NotStarted, false) => {
+                self.state = InstantLoss;
+            }
+            (InProgress, false) => {
+                self.state = Lose;
+            }
+            (NotStarted, true) => {
+                self.state = InstantWin;
+            }
+            (InProgress, true) => {
+                self.state = Win;
             }
         }
-        self.ended_at = Some(Utc::now());
+        let now = Utc::now();
+        self.ended_at.replace(now);
+        log::debug!("ended at {}", now);
+        if matches!(self.state, InstantWin | InstantLoss) {
+            log::debug!("started at {}", now);
+            self.started_at.replace(now);
+        }
         self.reveal_mines(won);
     }
 

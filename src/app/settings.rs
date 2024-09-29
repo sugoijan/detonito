@@ -7,9 +7,14 @@ pub(in crate::app) struct SettingsProps {
 }
 
 #[function_component]
-pub(in crate::app) fn Settings(props: &SettingsProps) -> Html {
+pub(in crate::app) fn SettingsView(props: &SettingsProps) -> Html {
     html! {
         <dialog id="settings" open={props.open}>
+            <table>
+                <tr><td/><td/><td/></tr>
+                <tr><td/><td/><td/></tr>
+                <tr><td/><td/><td/></tr>
+            </table>
             <article>
                 <h2>{"Settings"}</h2>
                 <ul>
