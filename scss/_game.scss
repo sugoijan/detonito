@@ -17,6 +17,8 @@ $marks-openmoji: (
   "flag": "1F6A9",
   "mine": "1F4A3",
   "question": "2754",
+  //"plus": "2795",
+  //"minus": "2796",
 );
 
 $size-cell: 16px;
@@ -136,11 +138,15 @@ $state-size: 24px;
         max-height: $state-size;
         max-width: $state-size;
         outline: solid 1px var(#{$css-var-prefix}shadow);
-        background-color: var(#{$css-var-prefix}primary);
         font-size: 20px;
         line-height: 20px;
         cursor: pointer;
         padding: 0;
+        $size: $state-size + 2 * $border-mid;
+        background-color: var(#{$css-var-prefix}primary);
+        background-size: $size;
+        background-position: center;
+        background-repeat: no-repeat;
 
         &:hover:active {
           @include pressed-border($border-mid);
@@ -151,11 +157,7 @@ $state-size: 24px;
 
         @each $state, $name in $states-openmoji {
           &.#{$state} {
-            $size: $state-size + 2 * $border-mid;
             background-image: url("#{$openmoji-base}/#{$name}.#{$openmoji-ext}");
-            background-size: $size;
-            background-position: center;
-            background-repeat: no-repeat;
           }
         }
       }
@@ -165,54 +167,55 @@ $state-size: 24px;
   table {
     border-spacing: 0;
     margin: auto;
+  }
 
-    td {
-      border: 0;
-      padding: 0;
-      height: $size-cell;
-      min-height: $size-cell;
-      max-height: $size-cell;
-      width: $size-cell;
-      min-width: $size-cell;
-      max-width: $size-cell;
-      text-align: center;
-      vertical-align: middle;
-      font-family: "tahoma";
-      font-weight: bolder;
-      font-size: $font-size-cell;
-      line-height: 12px;
+  td, dialog button {
+    border: 0;
+    padding: 0;
+    height: $size-cell;
+    min-height: $size-cell;
+    max-height: $size-cell;
+    width: $size-cell;
+    min-width: $size-cell;
+    max-width: $size-cell;
+    text-align: center;
+    vertical-align: middle;
+    font-family: "tahoma";
+    font-weight: bolder;
+    font-size: $font-size-cell;
+    line-height: 12px;
+    background-position: center;
+    background-repeat: no-repeat;
+    background-size: 12px;
 
-      background-color: var(#{$css-var-prefix}primary);
-      @include outset-border($border-mid);
+    background-color: var(#{$css-var-prefix}primary);
+    @include outset-border($border-mid);
 
-      &.open {
-        background-color: var(#{$css-var-prefix}background);
-        @include pressed-border;
+    &.open {
+      background-color: var(#{$css-var-prefix}background);
+      @include pressed-border;
+    }
+
+    &.wrong {
+      background-color: var(#{$css-var-prefix}incorrect);
+    }
+
+    &.oops {
+      background-color: var(#{$css-var-prefix}exploded);
+    }
+
+    @each $mark, $name in $marks-openmoji {
+      &.#{$mark} {
+        $size: $size-cell - 2 * $border-thin;
+        background-image: url("#{$openmoji-base}/#{$name}.#{$openmoji-ext}");
       }
+    }
 
-      &.wrong {
-        background-color: var(#{$css-var-prefix}incorrect);
-      }
-
-      &.oops {
-        background-color: var(#{$css-var-prefix}exploded);
-      }
-
-      @each $mark, $name in $marks-openmoji {
-        &.#{$mark} {
-          $size: $size-cell - 2 * $border-thin;
-          background-image: url("#{$openmoji-base}/#{$name}.#{$openmoji-ext}");
-          background-position: center;
-          background-repeat: no-repeat;
-        }
-      }
-
-      @for $i from 0 through 9 {
-        &.num-#{$i} {
-          color: var(#{$css-var-prefix}num#{$i});
-          &:after {
-            content: "#{$i}";
-          }
+    @for $i from 0 through 9 {
+      &.num-#{$i} {
+        color: var(#{$css-var-prefix}num#{$i});
+        &:after {
+          content: "#{$i}";
         }
       }
     }
@@ -234,6 +237,16 @@ $state-size: 24px;
 
     &:not([open]) {
       display: none;
+    }
+
+    button:active:hover {
+      background-color: var(#{$css-var-prefix}background);
+      @include pressed-border($border-thin);
+    }
+
+    button.pressed {
+      background-color: var(#{$css-var-prefix}background);
+      @include pressed-border($border-mid);
     }
   }
 }

@@ -16,7 +16,7 @@ pub enum GameError {
 
 pub type Result<T> = std::result::Result<T, GameError>;
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Difficulty {
     pub size: (usize, usize),
     pub mines: usize,
@@ -58,7 +58,7 @@ impl Difficulty {
 }
 
 pub trait MinefieldGenerator {
-    fn generate(self, difficulty: &Difficulty) -> Minefield;
+    fn generate(self, difficulty: Difficulty) -> Minefield;
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -88,7 +88,7 @@ impl RandomMinefieldGenerator {
 }
 
 impl MinefieldGenerator for RandomMinefieldGenerator {
-    fn generate(self, diff: &Difficulty) -> Minefield {
+    fn generate(self, diff: Difficulty) -> Minefield {
         use rand::prelude::*;
         use StartTile::*;
 

@@ -1,10 +1,14 @@
-use super::{settings, utils};
+use crate::app::settings;
+use crate::app::utils::*;
 use crate::game;
 use bitflags::bitflags;
-use gloo::storage::{LocalStorage, Storage};
 use gloo::timers::callback::Interval;
 use serde::{Deserialize, Serialize};
 use yew::prelude::*;
+
+impl StorageKey for game::Game {
+    const KEY: &'static str = settings::GAME_KEY;
+}
 
 bitflags! {
     #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -44,23 +48,24 @@ impl Default for Theme {
 */
 
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub(super) struct TileState {
+pub(in crate::app) struct TileState {
     pos: (usize, usize),
     buttons: MouseButtons,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub(super) enum TileMsg {
+pub(in crate::app) enum TileMsg {
     Update(TileState),
     Leave,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub(super) enum Msg {
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(in crate::app) enum Msg {
     TileEvent(TileMsg),
     UpdateTime,
     NewGame,
     ToggleSettings,
+    UpdateSettings(settings::Settings),
 }
 
 #[derive(Properties, Clone, PartialEq)]
@@ -154,27 +159,8 @@ fn tile_component(props: &TileProps) -> Html {
     }
 }
 
-fn create_game(seed: u64, difficulty: &game::Difficulty, start: (usize, usize)) -> game::Game {
-    use game::MinefieldGenerator;
-    let minefield = game::RandomMinefieldGenerator::new(seed, start, game::StartTile::AlwaysZero)
-        .generate(difficulty);
-    game::Game::new(minefield)
-}
-
-fn format_for_counter(num: i32) -> String {
-    match num {
-        ..-99 => "-99".to_string(),
-        // Some places do 0-1 for -1, I've also seen -01, which I'm leaning more to
-        //-99..-9 => format!("-{:02}", -num),
-        //-9..0 => format!("0-{:01}", -num),
-        -99..0 => format!("-{:02}", -num),
-        0..1000 => format!("{:03}", num),
-        1000.. => "999".to_string(),
-    }
-}
-
-pub(super) struct GameView {
-    difficulty: game::Difficulty,
+pub(in crate::app) struct GameView {
+    settings: settings::Settings,
     game: Option<game::Game>,
     seed: u64,
     prev_time: u32,
@@ -184,52 +170,34 @@ pub(super) struct GameView {
 }
 
 impl GameView {
-    const GAME_KEY: &'static str = "detonito:game";
-    //const THEME_KEY: &'static str = "detonito:theme";
-
-    const DEFAULT_DIFFICULTIES: &'static [(&'static str, game::Difficulty)] = &[
-        ("Beginner", game::Difficulty::beginner()),
-        ("Intermediate", game::Difficulty::intermediate()),
-        ("Expert", game::Difficulty::expert()),
-        (
-            "Min",
-            game::Difficulty {
-                size: (3, 3),
-                mines: 9,
-            },
-        ),
-        (
-            "Max",
-            game::Difficulty {
-                size: (3, 3),
-                mines: 8,
-            },
-        ),
-    ];
-
-    fn default_difficulty() -> game::Difficulty {
-        GameView::DEFAULT_DIFFICULTIES[0].1.clone()
-    }
-
     fn get_or_create_game(&mut self, coords: (usize, usize)) -> &mut game::Game {
-        let seed = self.seed;
-        let difficulty = self.difficulty.clone();
-        self.game
-            .get_or_insert_with(|| create_game(seed, &difficulty, coords))
+        let Self {
+            game,
+            settings,
+            seed,
+            ..
+        } = self;
+        game.get_or_insert_with(|| {
+            use game::MinefieldGenerator;
+            let generator =
+                game::RandomMinefieldGenerator::new(*seed, coords, game::StartTile::AlwaysZero);
+            let minefield = generator.generate(settings.difficulty);
+            game::Game::new(minefield)
+        })
     }
 
     fn get_size(&self) -> (usize, usize) {
         self.game
             .as_ref()
             .map(|game| game.size())
-            .unwrap_or_else(|| self.difficulty.size)
+            .unwrap_or_else(|| self.settings.difficulty.size)
     }
 
     fn get_total_mines(&self) -> usize {
         self.game
             .as_ref()
             .map(|game| game.total_mines())
-            .unwrap_or_else(|| self.difficulty.mines)
+            .unwrap_or_else(|| self.settings.difficulty.mines)
     }
 
     fn get_time(&self) -> u32 {
@@ -329,11 +297,10 @@ impl Component for GameView {
     type Properties = ();
 
     fn create(ctx: &Context<Self>) -> Self {
-        let game = LocalStorage::get(GameView::GAME_KEY).ok();
         Self {
-            difficulty: GameView::default_difficulty(),
-            game,
-            seed: utils::js_random_seed(),
+            settings: LocalOrDefault::local_or_default(),
+            game: LocalOrDefault::local_or_default(),
+            seed: js_random_seed(),
             prev_time: 0,
             settings_open: false,
             cur_tile_state: None,
@@ -407,19 +374,23 @@ impl Component for GameView {
                 }
             }
             NewGame => {
-                self.seed = utils::js_random_seed();
+                self.seed = js_random_seed();
                 self.game.take().map_or(false, |_| true)
             }
             ToggleSettings => {
                 self.settings_open = !self.settings_open;
                 true
             }
-        };
-        if updated {
-            if let Err(err) = LocalStorage::set(GameView::GAME_KEY, self.game.clone()) {
-                log::error!("Could not save game to local storage: {:?}", err);
+            UpdateSettings(settings) => {
+                if self.settings != settings {
+                    self.settings = settings;
+                    true
+                } else {
+                    false
+                }
             }
-        }
+        };
+        self.game.local_save();
         updated
     }
 

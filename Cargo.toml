@@ -42,7 +42,5 @@ panic = 'abort'
 codegen-units = 1
 # optimization for size ( more aggressive )
 opt-level = 'z'
-# optimization for size
-# opt-level = 's'
 # link time optimization using using whole-program analysis
 lto = true
