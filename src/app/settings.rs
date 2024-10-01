@@ -4,17 +4,33 @@ use serde::{Deserialize, Serialize};
 use std::rc::Rc;
 use yew::prelude::*;
 
+pub const BEGINNER: game::Difficulty = game::Difficulty::new_unchecked((9, 9), 10);
+pub const INTERMEDIATE: game::Difficulty = game::Difficulty::new_unchecked((16, 16), 40);
+pub const EXPERT: game::Difficulty = game::Difficulty::new_unchecked((30, 16), 99);
+pub const EVIL: game::Difficulty = game::Difficulty::new_unchecked((30, 20), 130);
+
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(in crate::app) enum Generator {
+    /// Purely random, even the first tile can have a bomb, that's unlucky
+    Random,
+    /// First tile is always zero (when possible), in the future this will guaranteed a solvable game
+    NoRandom,
+    // TODO: NoGuess where guesses are guaranteed losses
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(in crate::app) struct Settings {
     pub mark_question: bool,
     pub difficulty: game::Difficulty,
+    pub generator: Generator,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
             mark_question: false,
-            difficulty: game::Difficulty::BEGINNER,
+            difficulty: BEGINNER,
+            generator: Generator::NoRandom,
         }
     }
 }
@@ -39,6 +55,7 @@ impl Reducible for Settings {
     type Action = SettingsAction;
 
     fn reduce(self: Rc<Self>, action: Self::Action) -> Rc<Self> {
+        use game::Difficulty;
         use SettingsAction::*;
         let mut settings = Rc::unwrap_or_clone(self);
         match action {
@@ -49,22 +66,22 @@ impl Reducible for Settings {
                 settings.difficulty = difficulty;
             }
             IncreaseSizeX => {
-                settings.difficulty.size.0 += 1;
+                settings.difficulty.size.0 = (settings.difficulty.size.0 + 1).clamp(1, Difficulty::MAX_SIZE);
             }
             DecreaseSizeX => {
-                settings.difficulty.size.0 -= 1;
+                settings.difficulty.size.0 = (settings.difficulty.size.0 - 1).clamp(1, Difficulty::MAX_SIZE);
             }
             IncreaseSizeY => {
-                settings.difficulty.size.1 += 1;
+                settings.difficulty.size.1 = (settings.difficulty.size.1 + 1).clamp(1, Difficulty::MAX_SIZE);
             }
             DecreaseSizeY => {
-                settings.difficulty.size.1 -= 1;
+                settings.difficulty.size.1 = (settings.difficulty.size.1 - 1).clamp(1, Difficulty::MAX_SIZE);
             }
             IncreaseMines => {
-                settings.difficulty.mines += 1;
+                settings.difficulty.mines = (settings.difficulty.mines + 1).clamp(1, settings.difficulty.total_tiles());
             }
             DecreaseMines => {
-                settings.difficulty.mines -= 1;
+                settings.difficulty.mines = (settings.difficulty.mines - 1).clamp(1, settings.difficulty.total_tiles());
             }
         }
         settings.local_save();
@@ -80,7 +97,6 @@ pub(in crate::app) struct SettingsProps {
 
 #[function_component]
 pub(in crate::app) fn SettingsView(props: &SettingsProps) -> Html {
-    use game::Difficulty;
     use crate::app::theme::Theme;
 
     let settings: UseReducerHandle<Settings> = use_reducer_eq(LocalOrDefault::local_or_default);
@@ -150,22 +166,22 @@ pub(in crate::app) fn SettingsView(props: &SettingsProps) -> Html {
 
     let set_diff_beginner = {
         let settings = settings.clone();
-        move |_| settings.dispatch(SettingsAction::SetDifficulty(Difficulty::BEGINNER))
+        move |_| settings.dispatch(SettingsAction::SetDifficulty(BEGINNER))
     };
 
     let set_diff_intermediate = {
         let settings = settings.clone();
-        move |_| settings.dispatch(SettingsAction::SetDifficulty(Difficulty::INTERMEDIATE))
+        move |_| settings.dispatch(SettingsAction::SetDifficulty(INTERMEDIATE))
     };
 
     let set_diff_expert = {
         let settings = settings.clone();
-        move |_| settings.dispatch(SettingsAction::SetDifficulty(Difficulty::EXPERT))
+        move |_| settings.dispatch(SettingsAction::SetDifficulty(EXPERT))
     };
 
     let set_diff_evil = {
         let settings = settings.clone();
-        move |_| settings.dispatch(SettingsAction::SetDifficulty(Difficulty::EVIL))
+        move |_| settings.dispatch(SettingsAction::SetDifficulty(EVIL))
     };
 
     html! {
@@ -181,13 +197,13 @@ pub(in crate::app) fn SettingsView(props: &SettingsProps) -> Html {
                 <tr><td/><td/><td/></tr>
                 <tr><td/><td/><td/></tr>
             </table>
-            <button class={classes!("diff-beginner", (settings.difficulty == Difficulty::BEGINNER).then_some("pressed"))} onclick={set_diff_beginner}/>
+            <button class={classes!("diff-beginner", (settings.difficulty == BEGINNER).then_some("pressed"))} onclick={set_diff_beginner}/>
             {" "}
-            <button class={classes!("diff-intermediate", (settings.difficulty == Difficulty::INTERMEDIATE).then_some("pressed"))} onclick={set_diff_intermediate}/>
+            <button class={classes!("diff-intermediate", (settings.difficulty == INTERMEDIATE).then_some("pressed"))} onclick={set_diff_intermediate}/>
             {" "}
-            <button class={classes!("diff-expert", (settings.difficulty == Difficulty::EXPERT).then_some("pressed"))} onclick={set_diff_expert}/>
+            <button class={classes!("diff-expert", (settings.difficulty == EXPERT).then_some("pressed"))} onclick={set_diff_expert}/>
             {" "}
-            <button class={classes!("diff-evil", (settings.difficulty == Difficulty::EVIL).then_some("pressed"))} onclick={set_diff_evil}/>
+            <button class={classes!("diff-evil", (settings.difficulty == EVIL).then_some("pressed"))} onclick={set_diff_evil}/>
             <br/>
             <small>
                 <button class={classes!("minus")} onclick={dec_size_x}/>

@@ -2,8 +2,8 @@ use wasm_bindgen::prelude::*;
 
 mod game;
 mod settings;
-mod utils;
 mod theme;
+mod utils;
 
 #[wasm_bindgen(start)]
 pub fn run_app() {

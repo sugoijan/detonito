@@ -23,37 +23,22 @@ pub struct Difficulty {
 }
 
 impl Difficulty {
-    pub fn new(size: (usize, usize), mines: usize) -> Result<Self> {
-        let (x, y) = size;
-        if mines > x * y {
-            return Err(GameError::TooManyMines);
-        }
-        Ok(Self { size, mines })
+    pub const MAX_SIZE: usize = 100;
+
+    pub(crate) const fn new_unchecked(size: (usize, usize), mines: usize) -> Self {
+        Self { size, mines }
     }
 
-    pub fn total_tiles(&self) -> usize {
+    pub fn new((size_x, size_y): (usize, usize), mines: usize) -> Self {
+        let size_x = size_x.clamp(1, Self::MAX_SIZE);
+        let size_y = size_y.clamp(1, Self::MAX_SIZE);
+        let mines = mines.clamp(1, size_x * size_y);
+        Self::new_unchecked((size_x, size_y), mines)
+    }
+
+    pub const fn total_tiles(&self) -> usize {
         self.size.0 * self.size.1
     }
-
-    pub const BEGINNER: Self = Self {
-        size: (9, 9),
-        mines: 10,
-    };
-
-    pub const INTERMEDIATE: Self = Self {
-        size: (16, 16),
-        mines: 40,
-    };
-
-    pub const EXPERT: Self = Self {
-        size: (30, 16),
-        mines: 99,
-    };
-
-    pub const EVIL: Self = Self {
-        size: (30, 20),
-        mines: 130,
-    };
 }
 
 pub trait MinefieldGenerator {

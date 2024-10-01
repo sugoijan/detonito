@@ -131,10 +131,10 @@ $state-size: 24px;
       background-color: var(#{$css-var-prefix}counter-background);
       color: var(#{$css-var-prefix}counter-text);
       // text styling:
-      font-size: 21px;
+      font-size: 25px;
       line-height: 23px;
       text-align: center;
-      font-family: monospace;
+      font-family: "Iosevka Web";
     }
 
     > span {
@@ -210,6 +210,8 @@ $state-size: 24px;
 
     &.wrong {
       background-color: var(#{$css-var-prefix}incorrect);
+      #{$css-var-prefix}highlight: var(#{$css-var-prefix}incorrect-highlight);
+      #{$css-var-prefix}shadow: var(#{$css-var-prefix}incorrect-shadow);
     }
 
     &.oops {

@@ -70,8 +70,8 @@ fn tile_component(props: &TileProps) -> Html {
             Open(count) => classes!("open", format!("num-{}", count)),
             Flag => classes!("flag"),
             Question => classes!("question"),
-            Exploded => classes!("mine", "oops"),
-            Mine => classes!("mine"),
+            Exploded => classes!("open", "mine", "oops"),
+            Mine => classes!("open", "mine"),
             AutoFlag => classes!("flag"),
             IncorrectFlag => classes!("flag", "wrong"),
         }
