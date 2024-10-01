@@ -3,6 +3,7 @@ use wasm_bindgen::prelude::*;
 mod game;
 mod settings;
 mod utils;
+mod theme;
 
 #[wasm_bindgen(start)]
 pub fn run_app() {
@@ -21,6 +22,8 @@ pub fn run_app() {
     let log_level_str = location_hash.trim_start_matches("#");
     let log_level = Level::from_str(&log_level_str).unwrap_or(DEFAULT_LOG_LEVEL);
     console_log::init_with_level(log_level).expect("Error initializing logger");
+
+    theme::Theme::init();
 
     let root = document()
         .get_element_by_id("game")

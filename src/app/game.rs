@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use yew::prelude::*;
 
 impl StorageKey for game::Game {
-    const KEY: &'static str = settings::GAME_KEY;
+    const KEY: &'static str = "detonito:game";
 }
 
 bitflags! {
@@ -20,32 +20,6 @@ bitflags! {
         const FORWARD = 1 << 4;
     }
 }
-
-/*
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
-enum Theme {
-    Auto,
-    Light,
-    Dark,
-}
-
-impl Theme {
-    const fn scheme(self) -> Option<&'static str> {
-        use Theme::*;
-        match self {
-            Auto => None,
-            Light => Some("light"),
-            Dark => Some("dark"),
-        }
-    }
-}
-
-impl Default for Theme {
-    fn default() -> Self {
-        Self::Auto
-    }
-}
-*/
 
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(in crate::app) struct TileState {
@@ -249,9 +223,14 @@ impl GameView {
     }
 
     fn flag_question(&mut self, coords: (usize, usize)) -> bool {
-        self.get_or_create_game(coords)
-            .flag_question(coords)
-            .map_or(false, |r| r.has_update())
+        let mark_question = self.settings.mark_question;
+        let game = self.get_or_create_game(coords);
+        (if mark_question {
+            game.flag_question(coords)
+        } else {
+            game.flag(coords)
+        })
+        .map_or(false, |r| r.has_update())
     }
 
     fn create_timer(ctx: &Context<Self>) -> Interval {
@@ -318,7 +297,7 @@ impl Component for GameView {
                 self.cur_tile_state.take().is_some()
             }
             TileEvent(Update(tile_state)) => {
-                //log::debug!("tile update: {:?}", tile_state);
+                log::trace!("tile update: {:?}", tile_state);
                 if tile_state.buttons.is_empty() {
                     // all mouse buttons were released while in tile_state.pos
                     // we have to figure out which mouse buttons were released
@@ -379,6 +358,9 @@ impl Component for GameView {
             }
             ToggleSettings => {
                 self.settings_open = !self.settings_open;
+                if !self.settings_open {
+                    self.settings = LocalOrDefault::local_or_default();
+                }
                 true
             }
             UpdateSettings(settings) => {

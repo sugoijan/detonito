@@ -35,26 +35,25 @@ impl Difficulty {
         self.size.0 * self.size.1
     }
 
-    pub const fn beginner() -> Self {
-        Self {
-            size: (9, 9),
-            mines: 10,
-        }
-    }
+    pub const BEGINNER: Self = Self {
+        size: (9, 9),
+        mines: 10,
+    };
 
-    pub const fn intermediate() -> Self {
-        Self {
-            size: (16, 16),
-            mines: 40,
-        }
-    }
+    pub const INTERMEDIATE: Self = Self {
+        size: (16, 16),
+        mines: 40,
+    };
 
-    pub const fn expert() -> Self {
-        Self {
-            size: (30, 16),
-            mines: 99,
-        }
-    }
+    pub const EXPERT: Self = Self {
+        size: (30, 16),
+        mines: 99,
+    };
+
+    pub const EVIL: Self = Self {
+        size: (30, 20),
+        mines: 130,
+    };
 }
 
 pub trait MinefieldGenerator {

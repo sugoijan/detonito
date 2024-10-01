@@ -17,8 +17,19 @@ $marks-openmoji: (
   "flag": "1F6A9",
   "mine": "1F4A3",
   "question": "2754",
-  //"plus": "2795",
-  //"minus": "2796",
+  "theme-light": "1F31E",
+  "theme-dark": "1F31A",
+  "theme-auto": "1F317",
+  "diff-beginner": "1F476",
+  "diff-intermediate": "1F607",
+  "diff-expert": "1F913",
+  "diff-evil": "1F608",
+  "plus": "2795",
+  "minus": "2796",
+  "width-inc": "27A1",
+  "width-dec": "2B05",
+  "height-inc": "2B07",
+  "height-dec": "2B06",
 );
 
 $size-cell: 16px;
@@ -86,7 +97,7 @@ $state-size: 24px;
   background-color: var(#{$css-var-prefix}primary);
   padding: $padding-vert $padding-hor;
 
-  small {
+  > small {
     position: absolute;
     top: -3px;
     width: 16px;
@@ -142,7 +153,8 @@ $state-size: 24px;
         line-height: 20px;
         cursor: pointer;
         padding: 0;
-        $size: $state-size + 2 * $border-mid;
+        // $size: $state-size + 2 * $border-mid;
+        $size: $state-size;
         background-color: var(#{$css-var-prefix}primary);
         background-size: $size;
         background-position: center;
@@ -222,24 +234,43 @@ $state-size: 24px;
   }
 
   dialog {
-    $top-space: 5px;
+    $vert-space: 5px;
+    $hor-space: 5px;
     position: absolute;
     top: 0;
     left: 0;
-    margin: 0;
+    margin: $vert-space $hor-space;
+    padding: 0;
     display: block;
-    width: 100%;
-    height: calc(100% - $top-space);
+    width: calc(100% - (2 * $hor-space));
+    height: calc(100% - (2 * $vert-space));
     border: 0;
-    margin-top: $top-space;
     background-color: var(#{$css-var-prefix}primary);
-    color: var(#{$css-var-prefix}highlight);
+    color: var(#{$css-var-prefix}text);
+    text-align: left;
+    font-family: "tahoma";
+    font-size: 14px;
+
+    small {
+      display: inline-block;
+
+      button {
+        $size: $size-cell * 0.75;
+        height: $size;
+        min-height: $size;
+        max-height: $size;
+        width: $size;
+        min-width: $size;
+        max-width: $size;
+        background-size: cover;
+      }
+    }
 
     &:not([open]) {
       display: none;
     }
 
-    button:active:hover {
+    button:active:hover:not(.locked) {
       background-color: var(#{$css-var-prefix}background);
       @include pressed-border($border-thin);
     }
@@ -247,6 +278,16 @@ $state-size: 24px;
     button.pressed {
       background-color: var(#{$css-var-prefix}background);
       @include pressed-border($border-mid);
+    }
+
+    table {
+      margin: 0 $hor-space 0 0;
+      float: left;
+    }
+
+    hr {
+      @include outset-border;
+      margin: $vert-space (-$hor-space);
     }
   }
 }
