@@ -30,21 +30,44 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: true
+
       - name: Setup Rust
         # Install Rust with support for targeting WASM
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           target: wasm32-unknown-unknown
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: lts/*
+
       - name: Install ttfautohint
         shell: bash
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ttfautohint
+
+      - name: Get Iosevka Submodule Commit Hash
+        id: iosevka-commit-hash
+        run: |
+          echo "IOSEVKA_COMMIT=$(git -C vendor/Iosevka rev-parse HEAD)" >> $GITHUB_ENV
+
+      - name: Calculate Hash of private-build-plans.toml
+        id: build-plan-hash
+        run: |
+          BUILD_PLAN_HASH=$(sha256sum vendor/Iosevka-custom/private-build-plans.toml | cut -d' ' -f1)
+          echo "BUILD_PLAN_HASH=$BUILD_PLAN_HASH" >> $GITHUB_ENV
+
+      - name: Cache Fonts
+        id: cache-fonts
+        uses: actions/cache@v4
+        with:
+          path: vendor/Iosevka/dist
+          key: iosevka-${{ env.IOSEVKA_COMMIT }}-${{ env.BUILD_PLAN_HASH }}
+
       - name: Generate Custom Iosevka Font
+        if: steps.cache-fonts.outputs.cache-hit != 'true'
         shell: bash
         run: |
           cd vendor
@@ -52,15 +75,19 @@ jobs:
           cd Iosevka
           npm install
           npm run build -- woff2-unhinted::IosevkaCustom
+
       - name: Setup Pages
         id: pages
         uses: actions/configure-pages@v5
+
       - name: Install Trunk
         # Install trunk to build the project
         run: cargo install trunk
+
       - name: Build with Trunk
         # Build for release into ./_site (default is ./dist) and consider the public url
         run: trunk build --release --minify --dist ./_site --public-url "${{ steps.pages.outputs.base_path }}"
+
       - name: Upload artifact
         # Automatically uploads an artifact from the './_site' directory by default
         uses: actions/upload-pages-artifact@v3
