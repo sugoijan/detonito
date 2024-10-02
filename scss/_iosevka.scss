@@ -1,0 +1,164 @@
+$iosevka-font-family: "Iosevka Custom Web";
+$iosevka-url-base: "IosevkaCustom";
+
+@font-face {
+  font-family: $iosevka-font-family;
+  font-display: swap;
+  font-weight: 100;
+  font-stretch: condensed;
+  font-style: normal;
+  src: url('#{$iosevka-url-base}/WOFF2-Unhinted/IosevkaCustom-CondensedThin.woff2') format('woff2'), url('#{$iosevka-url-base}/TTF-Unhinted/IosevkaCustom-CondensedThin.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: $iosevka-font-family;
+  font-display: swap;
+  font-weight: 100;
+  font-stretch: expanded;
+  font-style: normal;
+  src: url('#{$iosevka-url-base}/WOFF2-Unhinted/IosevkaCustom-ExtendedThin.woff2') format('woff2'), url('#{$iosevka-url-base}/TTF-Unhinted/IosevkaCustom-ExtendedThin.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: $iosevka-font-family;
+  font-display: swap;
+  font-weight: 200;
+  font-stretch: condensed;
+  font-style: normal;
+  src: url('#{$iosevka-url-base}/WOFF2-Unhinted/IosevkaCustom-CondensedExtraLight.woff2') format('woff2'), url('#{$iosevka-url-base}/TTF-Unhinted/IosevkaCustom-CondensedExtraLight.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: $iosevka-font-family;
+  font-display: swap;
+  font-weight: 200;
+  font-stretch: expanded;
+  font-style: normal;
+  src: url('#{$iosevka-url-base}/WOFF2-Unhinted/IosevkaCustom-ExtendedExtraLight.woff2') format('woff2'), url('#{$iosevka-url-base}/TTF-Unhinted/IosevkaCustom-ExtendedExtraLight.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: $iosevka-font-family;
+  font-display: swap;
+  font-weight: 300;
+  font-stretch: condensed;
+  font-style: normal;
+  src: url('#{$iosevka-url-base}/WOFF2-Unhinted/IosevkaCustom-CondensedLight.woff2') format('woff2'), url('#{$iosevka-url-base}/TTF-Unhinted/IosevkaCustom-CondensedLight.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: $iosevka-font-family;
+  font-display: swap;
+  font-weight: 300;
+  font-stretch: expanded;
+  font-style: normal;
+  src: url('#{$iosevka-url-base}/WOFF2-Unhinted/IosevkaCustom-ExtendedLight.woff2') format('woff2'), url('#{$iosevka-url-base}/TTF-Unhinted/IosevkaCustom-ExtendedLight.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: $iosevka-font-family;
+  font-display: swap;
+  font-weight: 400;
+  font-stretch: condensed;
+  font-style: normal;
+  src: url('#{$iosevka-url-base}/WOFF2-Unhinted/IosevkaCustom-Condensed.woff2') format('woff2'), url('#{$iosevka-url-base}/TTF-Unhinted/IosevkaCustom-Condensed.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: $iosevka-font-family;
+  font-display: swap;
+  font-weight: 400;
+  font-stretch: expanded;
+  font-style: normal;
+  src: url('#{$iosevka-url-base}/WOFF2-Unhinted/IosevkaCustom-Extended.woff2') format('woff2'), url('#{$iosevka-url-base}/TTF-Unhinted/IosevkaCustom-Extended.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: $iosevka-font-family;
+  font-display: swap;
+  font-weight: 500;
+  font-stretch: condensed;
+  font-style: normal;
+  src: url('#{$iosevka-url-base}/WOFF2-Unhinted/IosevkaCustom-CondensedMedium.woff2') format('woff2'), url('#{$iosevka-url-base}/TTF-Unhinted/IosevkaCustom-CondensedMedium.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: $iosevka-font-family;
+  font-display: swap;
+  font-weight: 500;
+  font-stretch: expanded;
+  font-style: normal;
+  src: url('#{$iosevka-url-base}/WOFF2-Unhinted/IosevkaCustom-ExtendedMedium.woff2') format('woff2'), url('#{$iosevka-url-base}/TTF-Unhinted/IosevkaCustom-ExtendedMedium.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: $iosevka-font-family;
+  font-display: swap;
+  font-weight: 600;
+  font-stretch: condensed;
+  font-style: normal;
+  src: url('#{$iosevka-url-base}/WOFF2-Unhinted/IosevkaCustom-CondensedSemiBold.woff2') format('woff2'), url('#{$iosevka-url-base}/TTF-Unhinted/IosevkaCustom-CondensedSemiBold.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: $iosevka-font-family;
+  font-display: swap;
+  font-weight: 600;
+  font-stretch: expanded;
+  font-style: normal;
+  src: url('#{$iosevka-url-base}/WOFF2-Unhinted/IosevkaCustom-ExtendedSemiBold.woff2') format('woff2'), url('#{$iosevka-url-base}/TTF-Unhinted/IosevkaCustom-ExtendedSemiBold.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: $iosevka-font-family;
+  font-display: swap;
+  font-weight: 700;
+  font-stretch: condensed;
+  font-style: normal;
+  src: url('#{$iosevka-url-base}/WOFF2-Unhinted/IosevkaCustom-CondensedBold.woff2') format('woff2'), url('#{$iosevka-url-base}/TTF-Unhinted/IosevkaCustom-CondensedBold.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: $iosevka-font-family;
+  font-display: swap;
+  font-weight: 700;
+  font-stretch: expanded;
+  font-style: normal;
+  src: url('#{$iosevka-url-base}/WOFF2-Unhinted/IosevkaCustom-ExtendedBold.woff2') format('woff2'), url('#{$iosevka-url-base}/TTF-Unhinted/IosevkaCustom-ExtendedBold.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: $iosevka-font-family;
+  font-display: swap;
+  font-weight: 800;
+  font-stretch: condensed;
+  font-style: normal;
+  src: url('#{$iosevka-url-base}/WOFF2-Unhinted/IosevkaCustom-CondensedExtraBold.woff2') format('woff2'), url('#{$iosevka-url-base}/TTF-Unhinted/IosevkaCustom-CondensedExtraBold.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: $iosevka-font-family;
+  font-display: swap;
+  font-weight: 800;
+  font-stretch: expanded;
+  font-style: normal;
+  src: url('#{$iosevka-url-base}/WOFF2-Unhinted/IosevkaCustom-ExtendedExtraBold.woff2') format('woff2'), url('#{$iosevka-url-base}/TTF-Unhinted/IosevkaCustom-ExtendedExtraBold.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: $iosevka-font-family;
+  font-display: swap;
+  font-weight: 900;
+  font-stretch: condensed;
+  font-style: normal;
+  src: url('#{$iosevka-url-base}/WOFF2-Unhinted/IosevkaCustom-CondensedHeavy.woff2') format('woff2'), url('#{$iosevka-url-base}/TTF-Unhinted/IosevkaCustom-CondensedHeavy.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: $iosevka-font-family;
+  font-display: swap;
+  font-weight: 900;
+  font-stretch: expanded;
+  font-style: normal;
+  src: url('#{$iosevka-url-base}/WOFF2-Unhinted/IosevkaCustom-ExtendedHeavy.woff2') format('woff2'), url('#{$iosevka-url-base}/TTF-Unhinted/IosevkaCustom-ExtendedHeavy.ttf') format('truetype');
+}

@@ -2,173 +2,37 @@ use chrono::prelude::*;
 use ndarray::Array2;
 use serde::{Deserialize, Serialize};
 use std::ops::{BitOr, Index, IndexMut};
-use thiserror::Error;
 
-#[derive(Error, Debug)]
-pub enum GameError {
-    #[error("Invalid coordinates")]
-    InvalidCoords,
-    #[error("Too many mines")]
-    TooManyMines,
-    #[error("Game already ended, no new moves are accepted")]
-    AlreadyEnded,
-}
+pub use error::*;
+pub use generator::*;
+pub use tile::*;
+pub use types::*;
 
-pub type Result<T> = std::result::Result<T, GameError>;
+mod error;
+mod generator;
+mod tile;
+mod types;
 
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Difficulty {
-    pub size: (usize, usize),
-    pub mines: usize,
+    pub size: Ix2,
+    pub mines: Ax,
 }
 
 impl Difficulty {
-    pub const MAX_SIZE: usize = 100;
-
-    pub(crate) const fn new_unchecked(size: (usize, usize), mines: usize) -> Self {
+    pub(crate) const fn new_unchecked(size: Ix2, mines: Ax) -> Self {
         Self { size, mines }
     }
 
-    pub fn new((size_x, size_y): (usize, usize), mines: usize) -> Self {
-        let size_x = size_x.clamp(1, Self::MAX_SIZE);
-        let size_y = size_y.clamp(1, Self::MAX_SIZE);
-        let mines = mines.clamp(1, size_x * size_y);
+    pub fn new((size_x, size_y): Ix2, mines: Ax) -> Self {
+        let size_x = size_x.clamp(1, Ix::MAX);
+        let size_y = size_y.clamp(1, Ix::MAX);
+        let mines = mines.clamp(1, mult(size_x, size_y));
         Self::new_unchecked((size_x, size_y), mines)
     }
 
-    pub const fn total_tiles(&self) -> usize {
-        self.size.0 * self.size.1
-    }
-}
-
-pub trait MinefieldGenerator {
-    fn generate(self, difficulty: Difficulty) -> Minefield;
-}
-
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub enum StartTile {
-    Random,
-    SimpleSafe,
-    AlwaysZero,
-}
-
-/// Generation strategy that can optionally try to make the starting tile zero or at least safe, but other than that is
-/// purely random.
-#[derive(Clone, Debug, PartialEq)]
-pub struct RandomMinefieldGenerator {
-    seed: u64,
-    start: (usize, usize),
-    start_tile: StartTile,
-}
-
-impl RandomMinefieldGenerator {
-    pub fn new(seed: u64, start: (usize, usize), start_tile: StartTile) -> Self {
-        Self {
-            seed,
-            start,
-            start_tile,
-        }
-    }
-}
-
-impl MinefieldGenerator for RandomMinefieldGenerator {
-    fn generate(self, diff: Difficulty) -> Minefield {
-        use rand::prelude::*;
-        use StartTile::*;
-
-        let total_tiles = diff.total_tiles();
-
-        // optimize for full boards
-        if diff.mines >= total_tiles {
-            if diff.mines > total_tiles {
-                log::warn!(
-                    "Minefield already full, generated anyway, requested {} but only fits {}",
-                    diff.mines,
-                    total_tiles
-                );
-            }
-            return Minefield {
-                mines: Array2::from_elem(diff.size, true),
-                count: diff.mines,
-            };
-        }
-
-        let actual_start_tile = match self.start_tile {
-            Random => Random,
-            SimpleSafe | AlwaysZero if diff.mines + 1 > total_tiles => {
-                log::warn!("Cannot make start tile safe, fallback to random");
-                Random
-            }
-            SimpleSafe => SimpleSafe,
-            AlwaysZero if diff.mines + 9 > total_tiles => {
-                log::warn!("Cannot make start tile zero, fallback to simple safe");
-                SimpleSafe
-            }
-            AlwaysZero => AlwaysZero,
-        };
-        let mut mines: Array2<bool> = Array2::default(diff.size);
-        let mut free_tiles = match actual_start_tile {
-            Random => total_tiles,
-            SimpleSafe => {
-                mines[self.start] = true;
-                total_tiles - 1
-            }
-            AlwaysZero => {
-                mines[self.start] = true;
-                for coord in IterNeighbors::new(self.start, diff.size) {
-                    mines[coord] = true;
-                }
-                total_tiles - 9
-            }
-        };
-        let mut mines_placed = 0;
-
-        let mut rng = SmallRng::seed_from_u64(self.seed);
-        {
-            let tiles = mines.as_slice_mut().expect("layout should be standard");
-            while mines_placed < diff.mines {
-                if free_tiles == 0 {
-                    break;
-                }
-                let mut place = rng.gen_range(0..free_tiles);
-                for (i, tile) in tiles.iter_mut().enumerate() {
-                    if *tile {
-                        place += 1;
-                    }
-                    if i == place {
-                        *tile = true;
-                        mines_placed += 1;
-                        free_tiles -= 1;
-                        break;
-                    }
-                }
-            }
-        }
-
-        // undo to make safe tiles
-        match actual_start_tile {
-            Random => {}
-            SimpleSafe => {
-                mines[self.start] = false;
-            }
-            AlwaysZero => {
-                mines[self.start] = false;
-                for coord in IterNeighbors::new(self.start, diff.size) {
-                    mines[coord] = false;
-                }
-            }
-        }
-
-        // double check mine count
-        let count = mines.iter().filter(|&&tile| tile).count();
-        if count != diff.mines {
-            log::warn!(
-                "Generated minefield count mismatch, actual: {}, requested: {}",
-                count,
-                diff.mines
-            );
-        }
-        Minefield { mines, count }
+    pub const fn total_tiles(&self) -> Ax {
+        mult(self.size.0, self.size.1)
     }
 }
 
@@ -185,19 +49,15 @@ const DISPLACEMENTS: [(isize, isize); 8] = [
 ];
 
 /// Will make coords + delta and return the result if it is withing bounds
-fn apply_delta(
-    coords: (usize, usize),
-    delta: (isize, isize),
-    bounds: (usize, usize),
-) -> Option<(usize, usize)> {
+fn apply_delta(coords: Ix2, delta: (isize, isize), bounds: Ix2) -> Option<Ix2> {
     let (x, y) = coords;
     let (dx, dy) = delta;
     let (bx, by) = bounds;
-    let nx = x.checked_add_signed(dx)?;
+    let nx = x.checked_add_signed(dx.try_into().ok()?)?;
     if nx >= bx {
         return None;
     }
-    let ny = y.checked_add_signed(dy)?;
+    let ny = y.checked_add_signed(dy.try_into().ok()?)?;
     if ny >= by {
         return None;
     }
@@ -206,13 +66,13 @@ fn apply_delta(
 
 #[derive(Debug)]
 struct IterNeighbors {
-    center: (usize, usize),
-    bounds: (usize, usize),
-    index: usize,
+    center: Ix2,
+    bounds: Ix2,
+    index: u8,
 }
 
 impl IterNeighbors {
-    fn new(center: (usize, usize), bounds: (usize, usize)) -> Self {
+    fn new(center: Ix2, bounds: Ix2) -> Self {
         IterNeighbors {
             center,
             bounds,
@@ -222,13 +82,14 @@ impl IterNeighbors {
 }
 
 impl Iterator for IterNeighbors {
-    type Item = (usize, usize);
+    type Item = Ix2;
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            if self.index >= DISPLACEMENTS.len() {
+            if usize::from(self.index) >= DISPLACEMENTS.len() {
                 return None;
             }
-            let next_item = apply_delta(self.center, DISPLACEMENTS[self.index], self.bounds);
+            let next_item =
+                apply_delta(self.center, DISPLACEMENTS[self.index as usize], self.bounds);
             self.index += 1;
             if next_item.is_some() {
                 return next_item;
@@ -240,7 +101,7 @@ impl Iterator for IterNeighbors {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Minefield {
     mines: Array2<bool>,
-    count: usize,
+    count: Ax,
 }
 
 impl Minefield {
@@ -251,7 +112,7 @@ impl Minefield {
         }
     }
 
-    pub fn validate_coords(&self, coords: (usize, usize)) -> Result<(usize, usize)> {
+    pub fn validate_coords(&self, coords: Ix2) -> Result<Ix2> {
         let size = self.size();
         if coords.0 < size.0 && coords.1 < size.1 {
             Ok(coords)
@@ -260,75 +121,43 @@ impl Minefield {
         }
     }
 
-    pub fn size(&self) -> (usize, usize) {
-        self.mines.dim()
+    pub fn size(&self) -> Ix2 {
+        let dim = self.mines.dim();
+        (dim.0.try_into().unwrap(), dim.1.try_into().unwrap())
     }
 
-    pub fn safe_count(&self) -> usize {
+    pub fn safe_count(&self) -> Ax {
         self.total_tiles() - self.count
     }
 
-    pub fn total_tiles(&self) -> usize {
-        self.mines.len()
+    pub fn total_tiles(&self) -> Ax {
+        self.mines.len().try_into().unwrap()
     }
 
-    pub fn iter_neighbors(&self, coords: (usize, usize)) -> impl Iterator<Item = (usize, usize)> {
+    pub fn iter_neighbors(&self, coords: Ix2) -> impl Iterator<Item = Ix2> {
         IterNeighbors::new(coords, self.size())
     }
 
-    pub fn get_count(&self, coords: (usize, usize)) -> usize {
-        self.iter_neighbors(coords).filter(|&pos| self[pos]).count()
+    pub fn get_count(&self, coords: Ix2) -> u8 {
+        self.iter_neighbors(coords)
+            .filter(|&pos| self[pos])
+            .count()
+            .try_into()
+            .unwrap()
     }
 }
 
-impl Index<(usize, usize)> for Minefield {
+impl Index<Ix2> for Minefield {
     type Output = bool;
 
-    fn index(&self, index: (usize, usize)) -> &Self::Output {
-        &self.mines[index]
+    fn index(&self, (ix, iy): Ix2) -> &Self::Output {
+        &self.mines[(ix as usize, iy as usize)]
     }
 }
 
-impl IndexMut<(usize, usize)> for Minefield {
-    fn index_mut(&mut self, index: (usize, usize)) -> &mut Self::Output {
-        &mut self.mines[index]
-    }
-}
-
-// Define your enum for tile state and make it JS-compatible
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum Tile {
-    Closed,
-    Open(usize),
-    Flag,
-    Question,
-    Exploded,
-    // these are only used to show result after the game finishes:
-    Mine,
-    AutoFlag,
-    IncorrectFlag,
-}
-
-impl Tile {
-    // whether the tile is visually closed
-    pub fn is_closed(self) -> bool {
-        use Tile::*;
-        match self {
-            Closed => true,
-            Open(_) => false,
-            Flag => true,
-            Question => true,
-            Exploded => false,
-            Mine => false,
-            AutoFlag => true,
-            IncorrectFlag => true,
-        }
-    }
-}
-
-impl Default for Tile {
-    fn default() -> Self {
-        Self::Closed
+impl IndexMut<Ix2> for Minefield {
+    fn index_mut(&mut self, (ix, iy): Ix2) -> &mut Self::Output {
+        &mut self.mines[(ix as usize, iy as usize)]
     }
 }
 
@@ -454,9 +283,9 @@ impl Default for GameState {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Game {
     minefield: Minefield,
-    grid: Array2<Tile>,
-    open_count: usize,
-    flag_count: usize,
+    grid: Array2<AnyTile>,
+    open_count: Ax,
+    flag_count: Ax,
     state: GameState,
     started_at: Option<DateTime<Utc>>,
     ended_at: Option<DateTime<Utc>>,
@@ -468,7 +297,7 @@ impl Game {
         let size = minefield.size();
         Self {
             minefield,
-            grid: Array2::default(size),
+            grid: Array2::default(size.convert()),
             open_count: 0,
             flag_count: 0,
             state: Default::default(),
@@ -485,16 +314,16 @@ impl Game {
         self.state.is_final()
     }
 
-    pub fn size(&self) -> (usize, usize) {
+    pub fn size(&self) -> Ix2 {
         self.minefield.size()
     }
 
-    pub fn total_mines(&self) -> usize {
+    pub fn total_mines(&self) -> Ax {
         self.minefield.count
     }
 
-    pub fn tile_at(&self, coords: (usize, usize)) -> Tile {
-        self.grid[coords]
+    pub fn tile_at(&self, coords: Ix2) -> AnyTile {
+        self.grid[coords.convert()]
     }
 
     fn check_in_progress(&self) -> Result<()> {
@@ -530,90 +359,85 @@ impl Game {
     }
 
     /// Flag a tile, do not consider question marker (unmark question if tile has one)
-    pub fn flag(&mut self, coords: (usize, usize)) -> Result<FlagOutcome> {
+    pub fn flag(&mut self, coords: Ix2) -> Result<FlagOutcome> {
         self.do_flag_question(coords, false)
     }
 
     /// Flag or question a tile
-    pub fn flag_question(&mut self, coords: (usize, usize)) -> Result<FlagOutcome> {
+    pub fn flag_question(&mut self, coords: Ix2) -> Result<FlagOutcome> {
         self.do_flag_question(coords, true)
     }
 
-    pub fn do_flag_question(
-        &mut self,
-        coords: (usize, usize),
-        use_question: bool,
-    ) -> Result<FlagOutcome> {
+    pub fn do_flag_question(&mut self, coords: Ix2, use_question: bool) -> Result<FlagOutcome> {
+        use AnyTile::*;
         use FlagOutcome::*;
-        use Tile::*;
 
         let coords = self.minefield.validate_coords(coords)?;
 
         self.check_in_progress()?;
 
-        Ok(match self.grid[coords] {
+        Ok(match self.grid[coords.convert()] {
             Closed => {
-                self.grid[coords] = Flag;
+                self.grid[coords.convert()] = Flag;
                 self.flag_count += 1;
                 MarkChanged
             }
             Flag => {
-                self.grid[coords] = if use_question { Question } else { Closed };
+                self.grid[coords.convert()] = if use_question { Question } else { Closed };
                 self.flag_count -= 1;
                 MarkChanged
             }
             Question => {
-                self.grid[coords] = Closed;
+                self.grid[coords.convert()] = Closed;
                 MarkChanged
             }
             _ => NoChange,
         })
     }
 
-    fn count_flagged(&self, coords: (usize, usize)) -> usize {
+    fn count_flagged(&self, coords: Ix2) -> u8 {
         self.minefield
             .iter_neighbors(coords)
-            .filter(|&pos| self.grid[pos] == Tile::Flag)
+            .filter(|&pos| self.grid[pos.convert()] == AnyTile::Flag)
             .count()
+            .try_into()
+            .unwrap()
     }
 
-    fn has_question_neighbor(&self, coords: (usize, usize)) -> bool {
+    fn has_question_neighbor(&self, coords: Ix2) -> bool {
         self.minefield
             .iter_neighbors(coords)
-            .map(|pos| self.grid[pos])
-            .any(|tile| tile == Tile::Question)
+            .map(|pos| self.grid[pos.convert()])
+            .any(|tile| tile == AnyTile::Question)
     }
 
     /// Open a closed tile, do not open neighbor tiles
-    pub fn open(&mut self, coords: (usize, usize)) -> Result<OpenOutcome> {
-        if matches!(self.grid[coords], Tile::Closed) {
+    pub fn open(&mut self, coords: Ix2) -> Result<OpenOutcome> {
+        if matches!(self.grid[coords.convert()], AnyTile::Closed) {
             self.open_with_chords(coords)
         } else {
             Ok(OpenOutcome::NoChange)
         }
     }
 
-    pub fn is_chordable(&self, coords: (usize, usize)) -> bool {
-        match self.grid[coords] {
-            Tile::Open(count)
-                if count == self.count_flagged(coords) && !self.has_question_neighbor(coords) =>
-            {
-                true
-            }
-            _ => false,
+    pub fn is_chordable(&self, coords: Ix2) -> bool {
+        if let AnyTile::Open(count) = self.grid[coords.convert()] {
+            count == self.count_flagged(coords) && !self.has_question_neighbor(coords)
+        } else {
+            false
         }
     }
 
     /// Open a tile, or try to open neighbor tiles
-    pub fn open_with_chords(&mut self, coords: (usize, usize)) -> Result<OpenOutcome> {
+    pub fn open_with_chords(&mut self, coords: Ix2) -> Result<OpenOutcome> {
         use OpenOutcome::*;
 
         let coords = self.minefield.validate_coords(coords)?;
 
         self.check_final()?;
 
-        Ok(match self.grid[coords] {
-            Tile::Open(count)
+        Ok(match self.grid[coords.convert()] {
+            AnyTile::Open(count)
                 if count == self.count_flagged(coords) && !self.has_question_neighbor(coords) =>
             {
                 self.check_in_progress()?;
@@ -629,23 +453,23 @@ impl Game {
     }
 
     /// Helper function to open a single tile and perform flood-fill if necessary
-    fn open_tile(&mut self, coords: (usize, usize)) -> OpenOutcome {
+    fn open_tile(&mut self, coords: Ix2) -> OpenOutcome {
         use std::collections::{HashSet, VecDeque};
+        use AnyTile::*;
         use OpenOutcome::*;
-        use Tile::*;
 
-        let tile = self.grid[coords];
+        let tile = self.grid[coords.convert()];
         let mine = self.minefield[coords];
 
         match (tile, mine) {
             (Closed, true) => {
-                self.grid[coords] = Exploded;
+                self.grid[coords.convert()] = Exploded;
                 self.mark_ended(false);
                 Explode
             }
             (Closed, false) => {
                 let count = self.minefield.get_count(coords);
-                self.grid[coords] = Open(count);
+                self.grid[coords.convert()] = Open(count);
                 self.open_count += 1;
                 log::debug!("Open tile at {:?}, mine count: {}", coords, count);
 
@@ -654,7 +478,7 @@ impl Game {
                     let mut to_visit: VecDeque<_> = self
                         .minefield
                         .iter_neighbors(coords)
-                        .filter(|&pos| matches!(self.grid[pos], Closed))
+                        .filter(|&pos| matches!(self.grid[pos.convert()], Closed))
                         .collect();
                     log::trace!(
                         "Starting flood-fill from {:?}, initial neighbors: {:?}",
@@ -668,14 +492,14 @@ impl Game {
                         }
 
                         // skip flagged or already opened tiles
-                        if matches!(self.grid[visit_coords], Open(_) | Flag) {
+                        if matches!(self.grid[visit_coords.convert()], Open(_) | Flag) {
                             log::trace!("Skipping tile at {:?}", visit_coords);
                             continue;
                         }
 
                         // open visited tiles
                         let visit_count = self.minefield.get_count(visit_coords);
-                        self.grid[visit_coords] = Open(visit_count);
+                        self.grid[visit_coords.convert()] = Open(visit_count);
                         self.open_count += 1;
                         log::trace!(
                             "Flood opened tile at {:?}, mine count: {}",
@@ -688,7 +512,7 @@ impl Game {
                             to_visit.extend(
                                 self.minefield
                                     .iter_neighbors(visit_coords)
-                                    .filter(|&pos| matches!(self.grid[pos], Closed))
+                                    .filter(|&pos| matches!(self.grid[pos.convert()], Closed))
                                     .filter(|pos| !visited.contains(pos)),
                             );
                         }
@@ -759,25 +583,25 @@ impl Game {
     }
 
     fn reveal_mines(&mut self, won: bool) {
-        use Tile::*;
+        use AnyTile::*;
         let (x_end, y_end) = self.minefield.size();
         for x in 0..x_end {
             for y in 0..y_end {
                 let coords = (x, y);
-                let tile = self.grid[coords];
+                let tile = self.grid[coords.convert()];
                 let mine = self.minefield[coords];
                 if mine {
                     if tile == Closed || tile == Question {
                         if won {
-                            self.grid[coords] = AutoFlag;
+                            self.grid[coords.convert()] = Flag;
                             self.flag_count += 1;
                         } else {
-                            self.grid[coords] = Mine;
+                            self.grid[coords.convert()] = Mine;
                         }
                     }
                 } else {
                     if tile == Flag {
-                        self.grid[coords] = IncorrectFlag;
+                        self.grid[coords.convert()] = IncorrectFlag;
                     }
                 }
             }

@@ -26,14 +26,12 @@ $marks-openmoji: (
   "diff-evil": "1F608",
   "plus": "2795",
   "minus": "2796",
-  "width-inc": "27A1",
-  "width-dec": "2B05",
-  "height-inc": "2B07",
-  "height-dec": "2B06",
+  "random": "1F3B2",
+  "puzzle": "1F9E9",
 );
 
 $size-cell: 16px;
-$font-size-cell: 15px;
+$font-size-cell: 14px;
 $padding-vert: 5px;
 $padding-hor: 6px;
 $border-thin: 1px;
@@ -128,13 +126,21 @@ $state-size: 24px;
       min-height: $counter-height;
       max-width: $counter-width;
       max-height: $counter-height;
-      background-color: var(#{$css-var-prefix}counter-background);
       color: var(#{$css-var-prefix}counter-text);
       // text styling:
       font-size: 25px;
-      line-height: 23px;
+      line-height: 24.5px;
       text-align: center;
-      font-family: "Iosevka Web";
+      font-family: "Iosevka Custom Web";
+      font-stretch: condensed;
+      font-weight: 300;
+      // background styling:
+      background: repeating-linear-gradient(
+        var(#{$css-var-prefix}counter-bg1),
+        var(#{$css-var-prefix}counter-bg1) 2px,
+        var(#{$css-var-prefix}counter-bg2) 2px,
+        var(#{$css-var-prefix}counter-bg2) 3px
+      );
     }
 
     > span {
@@ -192,14 +198,14 @@ $state-size: 24px;
     max-width: $size-cell;
     text-align: center;
     vertical-align: middle;
-    font-family: "tahoma";
-    font-weight: bolder;
+    font-family: "Iosevka Custom Web";
+    font-stretch: expanded;
+    font-weight: 900;
     font-size: $font-size-cell;
     line-height: 12px;
     background-position: center;
     background-repeat: no-repeat;
     background-size: 12px;
-
     background-color: var(#{$css-var-prefix}primary);
     @include outset-border($border-mid);
 
@@ -250,8 +256,11 @@ $state-size: 24px;
     background-color: var(#{$css-var-prefix}primary);
     color: var(#{$css-var-prefix}text);
     text-align: left;
-    font-family: "tahoma";
-    font-size: 14px;
+    font-family: "Iosevka Custom Web";
+    font-stretch: condensed;
+    font-weight: 400;
+    font-size: 12px;
+    line-height: 17px;
 
     small {
       display: inline-block;

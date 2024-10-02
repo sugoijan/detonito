@@ -1,3 +1,6 @@
 [submodule "openmoji"]
 	path = vendor/openmoji
 	url = https://github.com/hfg-gmuend/openmoji.git
+[submodule "vendor/Iosevka"]
+	path = vendor/Iosevka
+	url = https://github.com/be5invis/Iosevka.git

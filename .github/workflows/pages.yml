@@ -35,6 +35,23 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           target: wasm32-unknown-unknown
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+      - name: Install ttfautohint
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ttfautohint
+      - name: Generate Custom Iosevka Font
+        shell: bash
+        run: |
+          cd vendor
+          cp Iosevka-custom/private-build-plans.toml Iosevka/
+          cd Iosevka
+          npm install
+          npm run build -- woff2-unhinted::IosevkaCustom
       - name: Setup Pages
         id: pages
         uses: actions/configure-pages@v5

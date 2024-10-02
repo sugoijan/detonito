@@ -1,0 +1,37 @@
+[buildPlans.IosevkaCustom]
+family = "Iosevka Custom"
+spacing = "fixed"
+serifs = "sans"
+noCvSs = true
+exportGlyphNames = false
+
+[buildPlans.IosevkaCustom.variants]
+inherits = "ss05"
+
+[buildPlans.IosevkaCustom.variants.design]
+one = "base"
+two = "straight-neck-serifless"
+three = "two-arcs"
+four = "closed-serifless"
+five = "upright-flat-serifless"
+six = "open-contour"
+seven = "straight-serifless"
+eight = "crossing"
+nine = "open-contour"
+zero = "tall-slashed"
+
+[buildPlans.IosevkaCustom.widths.Condensed]
+shape = 500
+menu = 3
+css = "condensed"
+
+[buildPlans.IosevkaCustom.widths.Extended]
+shape = 720
+menu = 7
+css = "expanded"
+
+[buildPlans.IosevkaCustom.slopes.Upright]
+angle = 0
+shape = "upright"
+menu = "upright"
+css = "normal"

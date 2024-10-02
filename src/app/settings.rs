@@ -25,6 +25,10 @@ pub(in crate::app) struct Settings {
     pub generator: Generator,
 }
 
+impl Settings {
+    const MAX_SIZE: game::Ix = 99;
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -43,6 +47,7 @@ impl StorageKey for Settings {
 pub(in crate::app) enum SettingsAction {
     ToggleMarkQuestion,
     SetDifficulty(game::Difficulty),
+    SetGenerator(Generator),
     IncreaseSizeX,
     DecreaseSizeX,
     IncreaseSizeY,
@@ -55,7 +60,6 @@ impl Reducible for Settings {
     type Action = SettingsAction;
 
     fn reduce(self: Rc<Self>, action: Self::Action) -> Rc<Self> {
-        use game::Difficulty;
         use SettingsAction::*;
         let mut settings = Rc::unwrap_or_clone(self);
         match action {
@@ -65,23 +69,36 @@ impl Reducible for Settings {
             SetDifficulty(difficulty) => {
                 settings.difficulty = difficulty;
             }
+            SetGenerator(generator) => {
+                settings.generator = generator;
+            }
             IncreaseSizeX => {
-                settings.difficulty.size.0 = (settings.difficulty.size.0 + 1).clamp(1, Difficulty::MAX_SIZE);
+                settings.difficulty.size.0 =
+                    (settings.difficulty.size.0 + 1).clamp(1, Settings::MAX_SIZE);
             }
             DecreaseSizeX => {
-                settings.difficulty.size.0 = (settings.difficulty.size.0 - 1).clamp(1, Difficulty::MAX_SIZE);
+                settings.difficulty.size.0 =
+                    (settings.difficulty.size.0 - 1).clamp(1, Settings::MAX_SIZE);
+                settings.difficulty.mines =
+                    settings.difficulty.mines.clamp(1, settings.difficulty.total_tiles());
             }
             IncreaseSizeY => {
-                settings.difficulty.size.1 = (settings.difficulty.size.1 + 1).clamp(1, Difficulty::MAX_SIZE);
+                settings.difficulty.size.1 =
+                    (settings.difficulty.size.1 + 1).clamp(1, Settings::MAX_SIZE);
             }
             DecreaseSizeY => {
-                settings.difficulty.size.1 = (settings.difficulty.size.1 - 1).clamp(1, Difficulty::MAX_SIZE);
+                settings.difficulty.size.1 =
+                    (settings.difficulty.size.1 - 1).clamp(1, Settings::MAX_SIZE);
+                settings.difficulty.mines =
+                    settings.difficulty.mines.clamp(1, settings.difficulty.total_tiles());
             }
             IncreaseMines => {
-                settings.difficulty.mines = (settings.difficulty.mines + 1).clamp(1, settings.difficulty.total_tiles());
+                settings.difficulty.mines =
+                    (settings.difficulty.mines + 1).clamp(1, settings.difficulty.total_tiles());
             }
             DecreaseMines => {
-                settings.difficulty.mines = (settings.difficulty.mines - 1).clamp(1, settings.difficulty.total_tiles());
+                settings.difficulty.mines =
+                    (settings.difficulty.mines - 1).clamp(1, settings.difficulty.total_tiles());
             }
         }
         settings.local_save();
@@ -127,6 +144,16 @@ pub(in crate::app) fn SettingsView(props: &SettingsProps) -> Html {
             theme.set(new_theme);
             Theme::apply(new_theme)
         }
+    };
+
+    let set_generator_random = {
+        let settings = settings.clone();
+        move |_| settings.dispatch(SettingsAction::SetGenerator(Generator::Random))
+    };
+
+    let set_generator_puzzle = {
+        let settings = settings.clone();
+        move |_| settings.dispatch(SettingsAction::SetGenerator(Generator::NoRandom))
     };
 
     let toggle_question = {
@@ -215,13 +242,12 @@ pub(in crate::app) fn SettingsView(props: &SettingsProps) -> Html {
                 <button class={classes!("plus")} onclick={inc_size_y}/>
             </small>
             <br/>
-            <button class={classes!("mine", "pressed", "locked")}/>
-            {format!(" × {} ", settings.difficulty.mines)}
             <small>
                 <button class={classes!("minus")} onclick={dec_mines}/>
                 <button class={classes!("plus")} onclick={inc_mines}/>
             </small>
-            <br/>
+            {format!(" {} × ", settings.difficulty.mines)}
+            <button class={classes!("mine", "pressed", "locked")}/>
             <hr/>
             <button class="locked"/>
             {" "}
@@ -229,6 +255,9 @@ pub(in crate::app) fn SettingsView(props: &SettingsProps) -> Html {
             {" "}
             <button class={classes!("question", (!settings.mark_question).then_some("pressed"))} onclick={toggle_question}/>
             <hr/>
+            <button class={classes!("random", (settings.generator == Generator::Random).then_some("pressed"))} onclick={set_generator_random}/>
+            {" "}
+            <button class={classes!("puzzle", (settings.generator == Generator::NoRandom).then_some("pressed"))} onclick={set_generator_puzzle}/>
         </dialog>
     }
 }

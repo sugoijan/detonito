@@ -23,7 +23,7 @@ bitflags! {
 
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(in crate::app) struct TileState {
-    pos: (usize, usize),
+    pos: (game::Ix, game::Ix),
     buttons: MouseButtons,
 }
 
@@ -44,9 +44,9 @@ pub(in crate::app) enum Msg {
 
 #[derive(Properties, Clone, PartialEq)]
 struct TileProps {
-    x: usize,
-    y: usize,
-    tile: game::Tile,
+    x: game::Ix,
+    y: game::Ix,
+    tile: game::AnyTile,
     #[prop_or_default]
     pressed: bool,
     callback: Callback<TileMsg>,
@@ -54,7 +54,7 @@ struct TileProps {
 
 #[function_component(Tile)]
 fn tile_component(props: &TileProps) -> Html {
-    use game::Tile::*;
+    use game::AnyTile::*;
 
     let TileProps {
         x,
@@ -72,7 +72,6 @@ fn tile_component(props: &TileProps) -> Html {
             Question => classes!("question"),
             Exploded => classes!("open", "mine", "oops"),
             Mine => classes!("open", "mine"),
-            AutoFlag => classes!("flag"),
             IncorrectFlag => classes!("flag", "wrong"),
         }
     );
@@ -144,7 +143,7 @@ pub(in crate::app) struct GameView {
 }
 
 impl GameView {
-    fn get_or_create_game(&mut self, coords: (usize, usize)) -> &mut game::Game {
+    fn get_or_create_game(&mut self, coords: game::Ix2) -> &mut game::Game {
         let Self {
             game,
             settings,
@@ -152,22 +151,26 @@ impl GameView {
             ..
         } = self;
         game.get_or_insert_with(|| {
-            use game::MinefieldGenerator;
-            let generator =
-                game::RandomMinefieldGenerator::new(*seed, coords, game::StartTile::AlwaysZero);
-            let minefield = generator.generate(settings.difficulty);
+            use game::{MinefieldGenerator, RandomMinefieldGenerator, StartTile};
+            use settings::Generator::*;
+            let minefield = match settings.generator {
+                Random => RandomMinefieldGenerator::new(*seed, coords, StartTile::Random)
+                    .generate(settings.difficulty),
+                NoRandom => RandomMinefieldGenerator::new(*seed, coords, StartTile::AlwaysZero)
+                    .generate(settings.difficulty),
+            };
             game::Game::new(minefield)
         })
     }
 
-    fn get_size(&self) -> (usize, usize) {
+    fn get_size(&self) -> game::Ix2 {
         self.game
             .as_ref()
             .map(|game| game.size())
             .unwrap_or_else(|| self.settings.difficulty.size)
     }
 
-    fn get_total_mines(&self) -> usize {
+    fn get_total_mines(&self) -> game::Ax {
         self.game
             .as_ref()
             .map(|game| game.total_mines())
@@ -216,13 +219,13 @@ impl GameView {
         })
     }
 
-    fn open_tile(&mut self, coords: (usize, usize)) -> bool {
+    fn open_tile(&mut self, coords: game::Ix2) -> bool {
         self.get_or_create_game(coords)
             .open_with_chords(coords)
             .map_or(false, |r| r.has_update())
     }
 
-    fn flag_question(&mut self, coords: (usize, usize)) -> bool {
+    fn flag_question(&mut self, coords: game::Ix2) -> bool {
         let mark_question = self.settings.mark_question;
         let game = self.get_or_create_game(coords);
         (if mark_question {
@@ -238,17 +241,17 @@ impl GameView {
         Interval::new(500, move || link.send_message(Msg::UpdateTime))
     }
 
-    fn is_pressed(&self, coords: (usize, usize), tile: game::Tile) -> bool {
-        use game::Tile::*;
+    fn is_pressed(&self, coords: game::Ix2, tile: game::AnyTile) -> bool {
+        use game::AnyTile::*;
         if self.get_game_state().is_final() {
             return false;
         }
-        const fn is_neighbor(a: (usize, usize), b: (usize, usize)) -> bool {
+        const fn is_neighbor(a: game::Ix2, b: game::Ix2) -> bool {
             (a.0.abs_diff(b.0) <= 1) && (a.1.abs_diff(b.1) <= 1)
         }
         match (self.cur_tile_state, tile) {
             (None, _) => false,
-            (_, Flag | Question | Exploded | Mine | AutoFlag | IncorrectFlag) => false,
+            (_, Flag | Question | Exploded | Mine | IncorrectFlag) => false,
             (
                 Some(TileState {
                     pos,
@@ -404,7 +407,7 @@ impl Component for GameView {
                             <tr>
                                 {
                                     for (0..cols).map(|x| {
-                                        let tile = self.game.as_ref().map_or(game::Tile::Closed, |game| game.tile_at((x, y)));
+                                        let tile = self.game.as_ref().map_or(game::AnyTile::Closed, |game| game.tile_at((x, y)));
                                         let pressed = self.is_pressed((x, y), tile);
                                         let callback = ctx.link().callback(Msg::TileEvent);
                                         html! {

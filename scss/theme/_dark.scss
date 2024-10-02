@@ -7,10 +7,13 @@
   #{$css-var-prefix}primary: #404040;
   #{$css-var-prefix}shadow: #202020;
   #{$css-var-prefix}background: #404040;
-  #{$css-var-prefix}exploded: #cc6666;
-  #{$css-var-prefix}counter-background: #000000;
   #{$css-var-prefix}text: #d0cfce;
   #{$css-var-prefix}counter-text: #aa0000;
+  #{$css-var-prefix}counter-bg1: #000000;
+  #{$css-var-prefix}counter-bg2: #400000;
+
+  // tile modifiers
+  #{$css-var-prefix}exploded: #cc6666;
   $slight-red: #883333;
   #{$css-var-prefix}incorrect: $slight-red;
   #{$css-var-prefix}incorrect-highlight: desaturate(lighten($slight-red, 13.5%), 12%);
