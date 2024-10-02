@@ -79,8 +79,10 @@ impl Reducible for Settings {
             DecreaseSizeX => {
                 settings.difficulty.size.0 =
                     (settings.difficulty.size.0 - 1).clamp(1, Settings::MAX_SIZE);
-                settings.difficulty.mines =
-                    settings.difficulty.mines.clamp(1, settings.difficulty.total_tiles());
+                settings.difficulty.mines = settings
+                    .difficulty
+                    .mines
+                    .clamp(1, settings.difficulty.total_tiles());
             }
             IncreaseSizeY => {
                 settings.difficulty.size.1 =
@@ -89,8 +91,10 @@ impl Reducible for Settings {
             DecreaseSizeY => {
                 settings.difficulty.size.1 =
                     (settings.difficulty.size.1 - 1).clamp(1, Settings::MAX_SIZE);
-                settings.difficulty.mines =
-                    settings.difficulty.mines.clamp(1, settings.difficulty.total_tiles());
+                settings.difficulty.mines = settings
+                    .difficulty
+                    .mines
+                    .clamp(1, settings.difficulty.total_tiles());
             }
             IncreaseMines => {
                 settings.difficulty.mines =

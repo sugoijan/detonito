@@ -1,3 +1,4 @@
+use clap::Parser;
 use wasm_bindgen::prelude::*;
 
 mod game;
@@ -5,13 +6,21 @@ mod settings;
 mod theme;
 mod utils;
 
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    /// What log level to use
+    #[command(flatten)]
+    verbose: clap_verbosity_flag::Verbosity,
+
+    /// Force a seed instead of random
+    #[arg(short, long)]
+    seed: Option<String>,
+}
+
 #[wasm_bindgen(start)]
 pub fn run_app() {
     use gloo::utils::{document, window};
-    use log::Level;
-    use std::str::FromStr;
-
-    const DEFAULT_LOG_LEVEL: Level = Level::Info;
 
     console_error_panic_hook::set_once();
 
@@ -19,9 +28,12 @@ pub fn run_app() {
         .location()
         .hash()
         .unwrap_or_else(|_| "".to_string());
-    let log_level_str = location_hash.trim_start_matches("#");
-    let log_level = Level::from_str(&log_level_str).unwrap_or(DEFAULT_LOG_LEVEL);
-    console_log::init_with_level(log_level).expect("Error initializing logger");
+
+    let args = Args::try_parse_from(location_hash.split(['#', '&'])).expect("Could not parse args");
+    if let Some(log_level) = args.verbose.log_level() {
+        console_log::init_with_level(log_level).expect("Error initializing logger");
+    }
+    log::debug!("seed: {:?}", args.seed);
 
     theme::Theme::init();
 
