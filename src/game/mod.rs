@@ -14,12 +14,12 @@ mod tile;
 mod types;
 
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Difficulty {
+pub struct GameConfig {
     pub size: Ix2,
     pub mines: Ax,
 }
 
-impl Difficulty {
+impl GameConfig {
     pub(crate) const fn new_unchecked(size: Ix2, mines: Ax) -> Self {
         Self { size, mines }
     }
@@ -36,68 +36,6 @@ impl Difficulty {
     }
 }
 
-// Define a displacement mapping for each direction
-const DISPLACEMENTS: [(isize, isize); 8] = [
-    (-1, -1), // Top-Left
-    (0, -1),  // Top
-    (1, -1),  // Top-Right
-    (-1, 0),  // Left
-    (1, 0),   // Right
-    (-1, 1),  // Bottom-Left
-    (0, 1),   // Bottom
-    (1, 1),   // Bottom-Right
-];
-
-/// Will make coords + delta and return the result if it is withing bounds
-fn apply_delta(coords: Ix2, delta: (isize, isize), bounds: Ix2) -> Option<Ix2> {
-    let (x, y) = coords;
-    let (dx, dy) = delta;
-    let (bx, by) = bounds;
-    let nx = x.checked_add_signed(dx.try_into().ok()?)?;
-    if nx >= bx {
-        return None;
-    }
-    let ny = y.checked_add_signed(dy.try_into().ok()?)?;
-    if ny >= by {
-        return None;
-    }
-    Some((nx, ny))
-}
-
-#[derive(Debug)]
-struct IterNeighbors {
-    center: Ix2,
-    bounds: Ix2,
-    index: u8,
-}
-
-impl IterNeighbors {
-    fn new(center: Ix2, bounds: Ix2) -> Self {
-        IterNeighbors {
-            center,
-            bounds,
-            index: 0,
-        }
-    }
-}
-
-impl Iterator for IterNeighbors {
-    type Item = Ix2;
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            if usize::from(self.index) >= DISPLACEMENTS.len() {
-                return None;
-            }
-            let next_item =
-                apply_delta(self.center, DISPLACEMENTS[self.index as usize], self.bounds);
-            self.index += 1;
-            if next_item.is_some() {
-                return next_item;
-            }
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Minefield {
     mines: Array2<bool>,
@@ -105,8 +43,8 @@ pub struct Minefield {
 }
 
 impl Minefield {
-    pub fn difficulty(&self) -> Difficulty {
-        Difficulty {
+    pub fn game_config(&self) -> GameConfig {
+        GameConfig {
             size: self.size(),
             mines: self.count,
         }
@@ -134,16 +72,8 @@ impl Minefield {
         self.mines.len().try_into().unwrap()
     }
 
-    pub fn iter_neighbors(&self, coords: Ix2) -> impl Iterator<Item = Ix2> {
-        IterNeighbors::new(coords, self.size())
-    }
-
     pub fn get_count(&self, coords: Ix2) -> u8 {
-        self.iter_neighbors(coords)
-            .filter(|&pos| self[pos])
-            .count()
-            .try_into()
-            .unwrap()
+        self.mines.iter_adjacent(coords).filter(|&pos| self[pos]).count().try_into().unwrap()
     }
 }
 
@@ -396,8 +326,7 @@ impl Game {
     }
 
     fn count_flagged(&self, coords: Ix2) -> u8 {
-        self.minefield
-            .iter_neighbors(coords)
+        self.minefield.mines.iter_adjacent(coords)
             .filter(|&pos| self.grid[pos.convert()] == AnyTile::Flag)
             .count()
             .try_into()
@@ -405,8 +334,7 @@ impl Game {
     }
 
     fn has_question_neighbor(&self, coords: Ix2) -> bool {
-        self.minefield
-            .iter_neighbors(coords)
+        self.minefield.mines.iter_adjacent(coords)
             .map(|pos| self.grid[pos.convert()])
             .any(|tile| tile == AnyTile::Question)
     }
@@ -442,8 +370,7 @@ impl Game {
             {
                 self.check_in_progress()?;
                 // Perform opening of all closed neighbors when flagged count matches
-                self.minefield
-                    .iter_neighbors(coords)
+                self.minefield.mines.iter_adjacent(coords)
                     .map(|neighbor_coords| self.open_tile(neighbor_coords))
                     .reduce(BitOr::bitor)
                     .unwrap_or(NoChange)
@@ -476,8 +403,7 @@ impl Game {
                 if count == 0 {
                     let mut visited = HashSet::from([coords]);
                     let mut to_visit: VecDeque<_> = self
-                        .minefield
-                        .iter_neighbors(coords)
+                        .minefield.mines.iter_adjacent(coords)
                         .filter(|&pos| matches!(self.grid[pos.convert()], Closed))
                         .collect();
                     log::trace!(
@@ -511,7 +437,7 @@ impl Game {
                         if visit_count == 0 {
                             to_visit.extend(
                                 self.minefield
-                                    .iter_neighbors(visit_coords)
+                                    .mines.iter_adjacent(visit_coords)
                                     .filter(|&pos| matches!(self.grid[pos.convert()], Closed))
                                     .filter(|pos| !visited.contains(pos)),
                             );

@@ -219,6 +219,18 @@ impl GameView {
         })
     }
 
+    fn is_playable(&self) -> bool {
+        use game::GameState::*;
+        match self.get_game_state() {
+            NotStarted => true,
+            InProgress => true,
+            Win => false,
+            Lose => false,
+            InstantWin => false,
+            InstantLoss => false,
+        }
+    }
+
     fn open_tile(&mut self, coords: game::Ix2) -> bool {
         self.get_or_create_game(coords)
             .open_with_chords(coords)
@@ -385,6 +397,7 @@ impl Component for GameView {
 
         let (cols, rows) = self.get_size();
         let game_state_class = classes!(self.get_game_state_class());
+        let is_playable = self.is_playable();
         let mines_left = format_for_counter(self.get_mines_left());
         let elapsed_time = format_for_counter(self.get_time() as i32);
         let cb_new_game = ctx.link().callback(|e: MouseEvent| {
@@ -401,7 +414,7 @@ impl Component for GameView {
                     <span><button class={game_state_class} onclick={cb_new_game}/></span>
                     <aside>{elapsed_time}</aside>
                 </nav>
-                <table>
+                <table class={is_playable.then_some("playable")}>
                     {
                         for (0..rows).map(|y| html! {
                             <tr>

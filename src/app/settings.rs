@@ -4,10 +4,10 @@ use serde::{Deserialize, Serialize};
 use std::rc::Rc;
 use yew::prelude::*;
 
-pub const BEGINNER: game::Difficulty = game::Difficulty::new_unchecked((9, 9), 10);
-pub const INTERMEDIATE: game::Difficulty = game::Difficulty::new_unchecked((16, 16), 40);
-pub const EXPERT: game::Difficulty = game::Difficulty::new_unchecked((30, 16), 99);
-pub const EVIL: game::Difficulty = game::Difficulty::new_unchecked((30, 20), 130);
+pub const BEGINNER: game::GameConfig = game::GameConfig::new_unchecked((9, 9), 10);
+pub const INTERMEDIATE: game::GameConfig = game::GameConfig::new_unchecked((16, 16), 40);
+pub const EXPERT: game::GameConfig = game::GameConfig::new_unchecked((30, 16), 99);
+pub const EVIL: game::GameConfig = game::GameConfig::new_unchecked((30, 20), 130);
 
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(in crate::app) enum Generator {
@@ -21,7 +21,7 @@ pub(in crate::app) enum Generator {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(in crate::app) struct Settings {
     pub mark_question: bool,
-    pub difficulty: game::Difficulty,
+    pub difficulty: game::GameConfig,
     pub generator: Generator,
 }
 
@@ -46,7 +46,7 @@ impl StorageKey for Settings {
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(in crate::app) enum SettingsAction {
     ToggleMarkQuestion,
-    SetDifficulty(game::Difficulty),
+    SetGameConfig(game::GameConfig),
     SetGenerator(Generator),
     IncreaseSizeX,
     DecreaseSizeX,
@@ -66,7 +66,7 @@ impl Reducible for Settings {
             ToggleMarkQuestion => {
                 settings.mark_question = !settings.mark_question;
             }
-            SetDifficulty(difficulty) => {
+            SetGameConfig(difficulty) => {
                 settings.difficulty = difficulty;
             }
             SetGenerator(generator) => {
@@ -197,22 +197,22 @@ pub(in crate::app) fn SettingsView(props: &SettingsProps) -> Html {
 
     let set_diff_beginner = {
         let settings = settings.clone();
-        move |_| settings.dispatch(SettingsAction::SetDifficulty(BEGINNER))
+        move |_| settings.dispatch(SettingsAction::SetGameConfig(BEGINNER))
     };
 
     let set_diff_intermediate = {
         let settings = settings.clone();
-        move |_| settings.dispatch(SettingsAction::SetDifficulty(INTERMEDIATE))
+        move |_| settings.dispatch(SettingsAction::SetGameConfig(INTERMEDIATE))
     };
 
     let set_diff_expert = {
         let settings = settings.clone();
-        move |_| settings.dispatch(SettingsAction::SetDifficulty(EXPERT))
+        move |_| settings.dispatch(SettingsAction::SetGameConfig(EXPERT))
     };
 
     let set_diff_evil = {
         let settings = settings.clone();
-        move |_| settings.dispatch(SettingsAction::SetDifficulty(EVIL))
+        move |_| settings.dispatch(SettingsAction::SetGameConfig(EVIL))
     };
 
     html! {

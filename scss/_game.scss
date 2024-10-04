@@ -105,6 +105,9 @@ $state-size: 24px;
     height: 10px;
     cursor: pointer;
     font-family: "tahoma";
+    &:hover {
+      color: var(#{$css-var-prefix}highlight-hover);
+    }
   }
 
   nav, table {
@@ -187,6 +190,30 @@ $state-size: 24px;
     margin: auto;
   }
 
+  table.playable td:not(.open):hover {
+    background-color: var(#{$css-var-prefix}primary-hover);
+  }
+
+
+  button {
+    &:active:hover:not(.locked) {
+      background-color: var(#{$css-var-prefix}background-hover);
+      @include pressed-border($border-thin);
+    }
+
+    &:hover:not(.locked) {
+      background-color: var(#{$css-var-prefix}primary-hover);
+    }
+
+    &.pressed {
+      background-color: var(#{$css-var-prefix}background);
+      @include pressed-border($border-mid);
+      &:hover:not(.locked) {
+        background-color: var(#{$css-var-prefix}background-hover);
+      }
+    }
+  }
+
   td, dialog button {
     border: 0;
     padding: 0;
@@ -262,6 +289,10 @@ $state-size: 24px;
     font-size: 12px;
     line-height: 17px;
 
+    &:not([open]) {
+      display: none;
+    }
+
     small {
       display: inline-block;
 
@@ -275,20 +306,6 @@ $state-size: 24px;
         max-width: $size;
         background-size: cover;
       }
-    }
-
-    &:not([open]) {
-      display: none;
-    }
-
-    button:active:hover:not(.locked) {
-      background-color: var(#{$css-var-prefix}background);
-      @include pressed-border($border-thin);
-    }
-
-    button.pressed {
-      background-color: var(#{$css-var-prefix}background);
-      @include pressed-border($border-mid);
     }
 
     table {

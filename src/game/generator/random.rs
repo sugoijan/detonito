@@ -1,15 +1,4 @@
-use crate::game::*;
-
-pub trait MinefieldGenerator {
-    fn generate(self, difficulty: Difficulty) -> Minefield;
-}
-
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub enum StartTile {
-    Random,
-    SimpleSafe,
-    AlwaysZero,
-}
+use super::*;
 
 /// Generation strategy that can optionally try to make the starting tile zero or at least safe, but other than that is
 /// purely random.
@@ -31,41 +20,41 @@ impl RandomMinefieldGenerator {
 }
 
 impl MinefieldGenerator for RandomMinefieldGenerator {
-    fn generate(self, diff: Difficulty) -> Minefield {
+    fn generate(self, config: GameConfig) -> Minefield {
         use rand::prelude::*;
         use StartTile::*;
 
-        let total_tiles = diff.total_tiles();
+        let total_tiles = config.total_tiles();
 
         // optimize for full boards
-        if diff.mines >= total_tiles {
-            if diff.mines > total_tiles {
+        if config.mines >= total_tiles {
+            if config.mines > total_tiles {
                 log::warn!(
                     "Minefield already full, generated anyway, requested {} but only fits {}",
-                    diff.mines,
+                    config.mines,
                     total_tiles
                 );
             }
             return Minefield {
-                mines: Array2::from_elem(diff.size.convert(), true),
-                count: diff.mines,
+                mines: Array2::from_elem(config.size.convert(), true),
+                count: config.mines,
             };
         }
 
         let actual_start_tile = match self.start_tile {
             Random => Random,
-            SimpleSafe | AlwaysZero if diff.mines + 1 > total_tiles => {
+            SimpleSafe | AlwaysZero if config.mines + 1 > total_tiles => {
                 log::warn!("Cannot make start tile safe, fallback to random");
                 Random
             }
             SimpleSafe => SimpleSafe,
-            AlwaysZero if diff.mines + 9 > total_tiles => {
+            AlwaysZero if config.mines + 9 > total_tiles => {
                 log::warn!("Cannot make start tile zero, fallback to simple safe");
                 SimpleSafe
             }
             AlwaysZero => AlwaysZero,
         };
-        let mut mines: Array2<bool> = Array2::default(diff.size.convert());
+        let mut mines: Array2<bool> = Array2::default(config.size.convert());
         let mut free_tiles = match actual_start_tile {
             Random => total_tiles,
             SimpleSafe => {
@@ -74,7 +63,7 @@ impl MinefieldGenerator for RandomMinefieldGenerator {
             }
             AlwaysZero => {
                 mines[self.start.convert()] = true;
-                for coord in IterNeighbors::new(self.start, diff.size) {
+                for coord in mines.iter_adjacent(self.start) {
                     mines[coord.convert()] = true;
                 }
                 total_tiles - 9
@@ -85,7 +74,7 @@ impl MinefieldGenerator for RandomMinefieldGenerator {
         let mut rng = SmallRng::seed_from_u64(self.seed);
         {
             let tiles = mines.as_slice_mut().expect("layout should be standard");
-            while mines_placed < diff.mines {
+            while mines_placed < config.mines {
                 if free_tiles == 0 {
                     break;
                 }
@@ -113,7 +102,7 @@ impl MinefieldGenerator for RandomMinefieldGenerator {
             }
             AlwaysZero => {
                 mines[self.start.convert()] = false;
-                for coord in IterNeighbors::new(self.start, diff.size) {
+                for coord in mines.iter_adjacent(self.start) {
                     mines[coord.convert()] = false;
                 }
             }
@@ -121,11 +110,11 @@ impl MinefieldGenerator for RandomMinefieldGenerator {
 
         // double check mine count
         let count = mines.iter().filter(|&&tile| tile).count() as Ax;
-        if count != diff.mines {
+        if count != config.mines {
             log::warn!(
                 "Generated minefield count mismatch, actual: {}, requested: {}",
                 count,
-                diff.mines
+                config.mines
             );
         }
         Minefield { mines, count }
