@@ -1,12 +1,13 @@
 <div align="center">
-  <h1><a href="https://sugoijan.github.io/detonito/"<code>detonito</code></a></h1>
+  <h1><a href="https://www.sugoijan.dev/detonito/"<code>detonito</code></a></h1>
   <strong>Just a silly minesweeper clone.</strong>
 </div>
 
 ## Build it yourself
 
-Use `trunk serve` for local testing.
+You'll need Rust, trunk, Sass, Node.js and ttfautohint.
 
+Use `trunk serve` for local testing. For actual builds see [the CI script](.github/workflows/pages.yml).
 
 ## License
 

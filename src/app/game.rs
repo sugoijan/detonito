@@ -232,20 +232,25 @@ impl GameView {
     }
 
     fn open_tile(&mut self, coords: game::Ix2) -> bool {
-        self.get_or_create_game(coords)
-            .open_with_chords(coords)
-            .map_or(false, |r| r.has_update())
+        use game::AnyTile::*;
+        let game = self.get_or_create_game(coords);
+        match game.tile_at(coords) {
+            Closed => game.open(coords).map_or(false, |r| r.has_update()),
+            Open(_) => game.chord_open(coords).map_or(false, |r| r.has_update()),
+            _ => false,
+        }
     }
 
     fn flag_question(&mut self, coords: game::Ix2) -> bool {
+        use game::AnyTile::*;
         let mark_question = self.settings.mark_question;
         let game = self.get_or_create_game(coords);
-        (if mark_question {
-            game.flag_question(coords)
-        } else {
-            game.flag(coords)
-        })
-        .map_or(false, |r| r.has_update())
+        match game.tile_at(coords) {
+            Flag if mark_question => game.flag_question(coords).map_or(false, |r| r.has_update()),
+            Closed | Flag | Question => game.flag(coords).map_or(false, |r| r.has_update()),
+            Open(_) => game.chord_flag(coords).map_or(false, |r| r.has_update()),
+            _ => false,
+        }
     }
 
     fn create_timer(ctx: &Context<Self>) -> Interval {

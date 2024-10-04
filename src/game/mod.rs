@@ -298,6 +298,21 @@ impl Game {
         self.do_flag_question(coords, true)
     }
 
+    pub fn chord_flag(&mut self, coords: Ix2) -> Result<FlagOutcome> {
+        use AnyTile::*;
+        use FlagOutcome::*;
+        let Open(count) = self.grid[coords.convert()] else { return Ok(NoChange) };
+        if count != self.count_closed(coords) {
+            return Ok(NoChange);
+        }
+        for pos in self.minefield.mines.iter_adjacent(coords) {
+            if matches!(self.grid[pos.convert()], Closed | Question) {
+                self.grid[pos.convert()] = Flag;
+            }
+        }
+        Ok(MarkChanged)
+    }
+
     pub fn do_flag_question(&mut self, coords: Ix2, use_question: bool) -> Result<FlagOutcome> {
         use AnyTile::*;
         use FlagOutcome::*;
@@ -333,7 +348,15 @@ impl Game {
             .unwrap()
     }
 
-    fn has_question_neighbor(&self, coords: Ix2) -> bool {
+    fn count_closed(&self, coords: Ix2) -> u8 {
+        self.minefield.mines.iter_adjacent(coords)
+            .filter(|&pos| !matches!(self.grid[pos.convert()], AnyTile::Open(_)))
+            .count()
+            .try_into()
+            .unwrap()
+    }
+
+    fn has_adjacent_question(&self, coords: Ix2) -> bool {
         self.minefield.mines.iter_adjacent(coords)
             .map(|pos| self.grid[pos.convert()])
             .any(|tile| tile == AnyTile::Question)
@@ -350,13 +373,36 @@ impl Game {
 
     pub fn is_chordable(&self, coords: Ix2) -> bool {
         if let AnyTile::Open(count) = self.grid[coords.convert()] {
-            count == self.count_flagged(coords) && !self.has_question_neighbor(coords)
+            count == self.count_flagged(coords) && !self.has_adjacent_question(coords)
         } else {
             false
         }
     }
 
     /// Open a tile, or try to open neighbor tiles
+    pub fn chord_open(&mut self, coords: Ix2) -> Result<OpenOutcome> {
+        use OpenOutcome::*;
+
+        let coords = self.minefield.validate_coords(coords)?;
+
+        self.check_final()?;
+
+        Ok(match self.grid[coords.convert()] {
+            AnyTile::Open(count)
+                if count == self.count_flagged(coords) && !self.has_adjacent_question(coords) =>
+            {
+                self.check_in_progress()?;
+                // Perform opening of all closed neighbors when flagged count matches
+                self.minefield.mines.iter_adjacent(coords)
+                    .map(|neighbor_coords| self.open_tile(neighbor_coords))
+                    .reduce(BitOr::bitor)
+                    .unwrap_or(NoChange)
+            }
+            // TODO: make this an error:
+            _ => self.open_tile(coords),
+        })
+    }
+
     pub fn open_with_chords(&mut self, coords: Ix2) -> Result<OpenOutcome> {
         use OpenOutcome::*;
 
@@ -366,7 +412,7 @@ impl Game {
 
         Ok(match self.grid[coords.convert()] {
             AnyTile::Open(count)
-                if count == self.count_flagged(coords) && !self.has_question_neighbor(coords) =>
+                if count == self.count_flagged(coords) && !self.has_adjacent_question(coords) =>
             {
                 self.check_in_progress()?;
                 // Perform opening of all closed neighbors when flagged count matches
