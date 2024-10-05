@@ -2,6 +2,7 @@ use chrono::prelude::*;
 use ndarray::Array2;
 use serde::{Deserialize, Serialize};
 use std::ops::{BitOr, Index, IndexMut};
+use std::num::Saturating;
 
 pub use error::*;
 pub use generator::*;
@@ -214,8 +215,8 @@ impl Default for GameState {
 pub struct Game {
     minefield: Minefield,
     grid: Array2<AnyTile>,
-    open_count: Ax,
-    flag_count: Ax,
+    open_count: Saturating<Ax>,
+    flag_count: Saturating<Ax>,
     state: GameState,
     started_at: Option<DateTime<Utc>>,
     ended_at: Option<DateTime<Utc>>,
@@ -228,8 +229,8 @@ impl Game {
         Self {
             minefield,
             grid: Array2::default(size.convert()),
-            open_count: 0,
-            flag_count: 0,
+            open_count: Saturating(0),
+            flag_count: Saturating(0),
             state: Default::default(),
             started_at: None,
             ended_at: None,
@@ -285,7 +286,7 @@ impl Game {
 
     /// How many mines have not been flagged yet
     pub fn mines_left(&self) -> isize {
-        (self.minefield.count as isize) - (self.flag_count as isize)
+        (self.minefield.count as isize) - (self.flag_count.0 as isize)
     }
 
     /// Flag a tile, do not consider question marker (unmark question if tile has one)
@@ -308,6 +309,7 @@ impl Game {
         for pos in self.minefield.mines.iter_adjacent(coords) {
             if matches!(self.grid[pos.convert()], Closed | Question) {
                 self.grid[pos.convert()] = Flag;
+                self.flag_count += 1;
             }
         }
         Ok(MarkChanged)
@@ -491,7 +493,7 @@ impl Game {
                     }
                 }
 
-                if self.open_count == self.minefield.safe_count() {
+                if self.open_count == Saturating(self.minefield.safe_count()) {
                     self.mark_ended(true);
                     Win
                 } else {
