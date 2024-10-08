@@ -49,10 +49,12 @@ struct TileProps {
     tile: game::AnyTile,
     #[prop_or_default]
     pressed: bool,
+    #[prop_or_default]
+    locked: bool,
     callback: Callback<TileMsg>,
 }
 
-#[function_component(Tile)]
+#[function_component(TileView)]
 fn tile_component(props: &TileProps) -> Html {
     use game::AnyTile::*;
 
@@ -61,6 +63,7 @@ fn tile_component(props: &TileProps) -> Html {
         y,
         tile,
         pressed,
+        locked,
         callback,
     } = props.clone();
     let mut class = classes!(
@@ -77,6 +80,9 @@ fn tile_component(props: &TileProps) -> Html {
     );
     if pressed {
         class.push("open");
+    }
+    if locked {
+        class.push("locked");
     }
 
     let onmousedown = {
@@ -425,11 +431,13 @@ impl Component for GameView {
                             <tr>
                                 {
                                     for (0..cols).map(|x| {
-                                        let tile = self.game.as_ref().map_or(game::AnyTile::Closed, |game| game.tile_at((x, y)));
-                                        let pressed = self.is_pressed((x, y), tile);
+                                        let pos = (x, y);
+                                        let tile = self.game.as_ref().map_or(game::AnyTile::Closed, |game| game.tile_at(pos));
+                                        let locked = self.game.as_ref().map_or(false, |game| !game.is_tile_playable(pos));
+                                        let pressed = self.is_pressed(pos, tile);
                                         let callback = ctx.link().callback(Msg::TileEvent);
                                         html! {
-                                            <Tile {x} {y} {tile} {callback} {pressed}/>
+                                            <TileView {x} {y} {tile} {callback} {pressed} {locked}/>
                                         }
                                     })
                                 }

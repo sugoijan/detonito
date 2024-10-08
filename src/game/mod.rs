@@ -257,6 +257,31 @@ impl Game {
         self.grid[coords.convert()]
     }
 
+    pub fn is_tile_playable(&self, coords: Ix2) -> bool {
+        use AnyTile::*;
+        match self.tile_at(coords) {
+            Closed => true,
+            Open(count) if count == 0 => false,
+            Open(count) => {
+                let mut adjacent_count = 0;
+                for pos in self.minefield.mines.iter_adjacent(coords) {
+                    let adjacent_tile = self.grid[pos.convert()];
+                    match adjacent_tile {
+                        Flag => { adjacent_count += 1; }
+                        Open(_) => continue,
+                        _ => return true,
+                    }
+                }
+                adjacent_count != count
+            }
+            Flag => true,
+            Question => true,
+            Exploded => false,
+            Mine => false,
+            IncorrectFlag => false,
+        }
+    }
+
     fn check_in_progress(&self) -> Result<()> {
         if matches!(self.state, GameState::InProgress) {
             Ok(())

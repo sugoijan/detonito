@@ -190,7 +190,7 @@ $state-size: 24px;
     margin: auto;
   }
 
-  table.playable td:not(.open):hover {
+  table.playable td:not(.locked):hover {
     background-color: var(#{$css-var-prefix}primary-hover);
   }
 
