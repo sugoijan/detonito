@@ -10,6 +10,22 @@ impl StorageKey for game::Game {
     const KEY: &'static str = "detonito:game";
 }
 
+pub trait HasUpdate {
+    fn has_update(self) -> bool;
+}
+
+impl<E> HasUpdate for Result<game::FlagOutcome, E> {
+    fn has_update(self) -> bool {
+        self.map_or(false, |r| r.has_update())
+    }
+}
+
+impl<E> HasUpdate for Result<game::OpenOutcome, E> {
+    fn has_update(self) -> bool {
+        self.map_or(false, |r| r.has_update())
+    }
+}
+
 bitflags! {
     #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
     struct MouseButtons: u16 {
@@ -161,9 +177,9 @@ impl GameView {
             use settings::Generator::*;
             let minefield = match settings.generator {
                 Random => RandomMinefieldGenerator::new(*seed, coords, StartTile::Random)
-                    .generate(settings.difficulty),
+                    .generate(settings.game_config),
                 NoRandom => RandomMinefieldGenerator::new(*seed, coords, StartTile::AlwaysZero)
-                    .generate(settings.difficulty),
+                    .generate(settings.game_config),
             };
             game::Game::new(minefield)
         })
@@ -173,14 +189,14 @@ impl GameView {
         self.game
             .as_ref()
             .map(|game| game.size())
-            .unwrap_or_else(|| self.settings.difficulty.size)
+            .unwrap_or_else(|| self.settings.game_config.size)
     }
 
     fn get_total_mines(&self) -> game::Ax {
         self.game
             .as_ref()
             .map(|game| game.total_mines())
-            .unwrap_or_else(|| self.settings.difficulty.mines)
+            .unwrap_or_else(|| self.settings.game_config.mines)
     }
 
     fn get_time(&self) -> u32 {
@@ -241,20 +257,21 @@ impl GameView {
         use game::AnyTile::*;
         let game = self.get_or_create_game(coords);
         match game.tile_at(coords) {
-            Closed => game.open(coords).map_or(false, |r| r.has_update()),
-            Open(_) => game.chord_open(coords).map_or(false, |r| r.has_update()),
+            Closed => game.open(coords).has_update(),
+            Open(_) => game.chord_open(coords).has_update(),
             _ => false,
         }
     }
 
     fn flag_question(&mut self, coords: game::Ix2) -> bool {
         use game::AnyTile::*;
-        let mark_question = self.settings.mark_question;
+        let enable_question_mark = self.settings.enable_question_mark;
+        let enable_flag_chord = self.settings.enable_flag_chord;
         let game = self.get_or_create_game(coords);
         match game.tile_at(coords) {
-            Flag if mark_question => game.flag_question(coords).map_or(false, |r| r.has_update()),
-            Closed | Flag | Question => game.flag(coords).map_or(false, |r| r.has_update()),
-            Open(_) => game.chord_flag(coords).map_or(false, |r| r.has_update()),
+            Flag if enable_question_mark => game.flag_question(coords).has_update(),
+            Closed | Flag | Question => game.flag(coords).has_update(),
+            Open(_) if enable_flag_chord => game.chord_flag(coords).has_update(),
             _ => false,
         }
     }

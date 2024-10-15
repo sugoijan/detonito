@@ -20,9 +20,11 @@ pub(in crate::app) enum Generator {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(in crate::app) struct Settings {
-    pub mark_question: bool,
-    pub difficulty: game::GameConfig,
+    pub game_config: game::GameConfig,
     pub generator: Generator,
+    pub enable_question_mark: bool,
+    pub enable_flag_chord: bool,
+    pub enable_auto_trivial: bool,
 }
 
 impl Settings {
@@ -32,9 +34,11 @@ impl Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            mark_question: false,
-            difficulty: BEGINNER,
+            game_config: BEGINNER,
             generator: Generator::NoRandom,
+            enable_question_mark: false,
+            enable_flag_chord: true,
+            enable_auto_trivial: true,
         }
     }
 }
@@ -64,45 +68,45 @@ impl Reducible for Settings {
         let mut settings = Rc::unwrap_or_clone(self);
         match action {
             ToggleMarkQuestion => {
-                settings.mark_question = !settings.mark_question;
+                settings.enable_question_mark = !settings.enable_question_mark;
             }
-            SetGameConfig(difficulty) => {
-                settings.difficulty = difficulty;
+            SetGameConfig(game_config) => {
+                settings.game_config = game_config;
             }
             SetGenerator(generator) => {
                 settings.generator = generator;
             }
             IncreaseSizeX => {
-                settings.difficulty.size.0 =
-                    (settings.difficulty.size.0 + 1).clamp(1, Settings::MAX_SIZE);
+                settings.game_config.size.0 =
+                    (settings.game_config.size.0 + 1).clamp(1, Settings::MAX_SIZE);
             }
             DecreaseSizeX => {
-                settings.difficulty.size.0 =
-                    (settings.difficulty.size.0 - 1).clamp(1, Settings::MAX_SIZE);
-                settings.difficulty.mines = settings
-                    .difficulty
+                settings.game_config.size.0 =
+                    (settings.game_config.size.0 - 1).clamp(1, Settings::MAX_SIZE);
+                settings.game_config.mines = settings
+                    .game_config
                     .mines
-                    .clamp(1, settings.difficulty.total_tiles());
+                    .clamp(1, settings.game_config.total_tiles());
             }
             IncreaseSizeY => {
-                settings.difficulty.size.1 =
-                    (settings.difficulty.size.1 + 1).clamp(1, Settings::MAX_SIZE);
+                settings.game_config.size.1 =
+                    (settings.game_config.size.1 + 1).clamp(1, Settings::MAX_SIZE);
             }
             DecreaseSizeY => {
-                settings.difficulty.size.1 =
-                    (settings.difficulty.size.1 - 1).clamp(1, Settings::MAX_SIZE);
-                settings.difficulty.mines = settings
-                    .difficulty
+                settings.game_config.size.1 =
+                    (settings.game_config.size.1 - 1).clamp(1, Settings::MAX_SIZE);
+                settings.game_config.mines = settings
+                    .game_config
                     .mines
-                    .clamp(1, settings.difficulty.total_tiles());
+                    .clamp(1, settings.game_config.total_tiles());
             }
             IncreaseMines => {
-                settings.difficulty.mines =
-                    (settings.difficulty.mines + 1).clamp(1, settings.difficulty.total_tiles());
+                settings.game_config.mines =
+                    (settings.game_config.mines + 1).clamp(1, settings.game_config.total_tiles());
             }
             DecreaseMines => {
-                settings.difficulty.mines =
-                    (settings.difficulty.mines - 1).clamp(1, settings.difficulty.total_tiles());
+                settings.game_config.mines =
+                    (settings.game_config.mines - 1).clamp(1, settings.game_config.total_tiles());
             }
         }
         settings.local_save();
@@ -228,19 +232,19 @@ pub(in crate::app) fn SettingsView(props: &SettingsProps) -> Html {
                 <tr><td/><td/><td/></tr>
                 <tr><td/><td/><td/></tr>
             </table>
-            <button class={classes!("diff-beginner", (settings.difficulty == BEGINNER).then_some("pressed"))} onclick={set_diff_beginner}/>
+            <button class={classes!("diff-beginner", (settings.game_config == BEGINNER).then_some("pressed"))} onclick={set_diff_beginner}/>
             {" "}
-            <button class={classes!("diff-intermediate", (settings.difficulty == INTERMEDIATE).then_some("pressed"))} onclick={set_diff_intermediate}/>
+            <button class={classes!("diff-intermediate", (settings.game_config == INTERMEDIATE).then_some("pressed"))} onclick={set_diff_intermediate}/>
             {" "}
-            <button class={classes!("diff-expert", (settings.difficulty == EXPERT).then_some("pressed"))} onclick={set_diff_expert}/>
+            <button class={classes!("diff-expert", (settings.game_config == EXPERT).then_some("pressed"))} onclick={set_diff_expert}/>
             {" "}
-            <button class={classes!("diff-evil", (settings.difficulty == EVIL).then_some("pressed"))} onclick={set_diff_evil}/>
+            <button class={classes!("diff-evil", (settings.game_config == EVIL).then_some("pressed"))} onclick={set_diff_evil}/>
             <br/>
             <small>
                 <button class={classes!("minus")} onclick={dec_size_x}/>
                 <button class={classes!("plus")} onclick={inc_size_x}/>
             </small>
-            {format!(" {} × {} ", settings.difficulty.size.0, settings.difficulty.size.1)}
+            {format!(" {} × {} ", settings.game_config.size.0, settings.game_config.size.1)}
             <small>
                 <button class={classes!("minus")} onclick={dec_size_y}/>
                 <button class={classes!("plus")} onclick={inc_size_y}/>
@@ -250,14 +254,14 @@ pub(in crate::app) fn SettingsView(props: &SettingsProps) -> Html {
                 <button class={classes!("minus")} onclick={dec_mines}/>
                 <button class={classes!("plus")} onclick={inc_mines}/>
             </small>
-            {format!(" {} × ", settings.difficulty.mines)}
+            {format!(" {} × ", settings.game_config.mines)}
             <button class={classes!("mine", "pressed", "locked")}/>
             <hr/>
             <button class="locked"/>
             {" "}
             <button class={classes!("flag", "locked")}/>
             {" "}
-            <button class={classes!("question", (!settings.mark_question).then_some("pressed"))} onclick={toggle_question}/>
+            <button class={classes!("question", (!settings.enable_question_mark).then_some("pressed"))} onclick={toggle_question}/>
             <hr/>
             <button class={classes!("random", (settings.generator == Generator::Random).then_some("pressed"))} onclick={set_generator_random}/>
             {" "}
