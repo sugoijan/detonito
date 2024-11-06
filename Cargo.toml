@@ -23,7 +23,7 @@ wasm-bindgen-futures = "0.4.43"
 yew = { version = "0.21.0", features = ["csr"] }
 ndarray = { version = "0.16.1", features = ["serde"] }
 rand = { version = "0.8.5", features = ["serde", "small_rng"] }
-thiserror = "1.0.63"
+thiserror = "2.0.0"
 log = { version = "0.4.22", features = ["serde"] }
 console_log = { version = "1.0.0", features = ["color", "wasm-bindgen"] }
 chrono = { version = "0.4.38", features = ["serde"] }
