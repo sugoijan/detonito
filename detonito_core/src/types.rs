@@ -45,13 +45,15 @@ impl<T> AdjacentIterator for Array2<T> {
 pub trait AdjacentTileIterator<T>: AdjacentIterator {
     fn iter_adjacent_tiles_with_index(&self, index: Ix2) -> impl Iterator<Item = (Ix2, T)>;
     fn iter_adjacent_tiles(&self, index: Ix2) -> impl Iterator<Item = T> {
-        self.iter_adjacent_tiles_with_index(index).map(|(_, tile)| tile)
+        self.iter_adjacent_tiles_with_index(index)
+            .map(|(_, tile)| tile)
     }
 }
 
 impl<T: Copy> AdjacentTileIterator<T> for Array2<T> {
     fn iter_adjacent_tiles_with_index(&self, index: Ix2) -> impl Iterator<Item = (Ix2, T)> {
-        self.iter_adjacent(index).map(|index| (index, self[index.convert()]))
+        self.iter_adjacent(index)
+            .map(|index| (index, self[index.convert()]))
     }
 }
 
@@ -107,7 +109,8 @@ impl Iterator for IterAdjacent {
             if usize::from(self.index) >= DISPLACEMENTS.len() {
                 return None;
             }
-            let next_item = apply_delta(self.center, DISPLACEMENTS[self.index as usize], self.bounds);
+            let next_item =
+                apply_delta(self.center, DISPLACEMENTS[self.index as usize], self.bounds);
             self.index += 1;
             if next_item.is_some() {
                 return next_item;

@@ -1,8 +1,8 @@
-use crate::app::utils::*;
+use crate::utils::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub(in crate::app) enum Theme {
+pub(crate) enum Theme {
     Light,
     Dark,
 }
@@ -10,7 +10,7 @@ pub(in crate::app) enum Theme {
 impl Theme {
     pub const ATTR_NAME: &'static str = "data-theme";
 
-    pub(in crate::app) const fn scheme(self) -> &'static str {
+    pub(crate) const fn scheme(self) -> &'static str {
         use Theme::*;
         match self {
             Light => "light",
@@ -38,11 +38,11 @@ impl Theme {
         }
     }
 
-    pub(in crate::app) fn init() {
+    pub(crate) fn init() {
         Self::update_html(LocalOrDefault::local_or_default());
     }
 
-    pub(in crate::app) fn apply(theme: Option<Self>) {
+    pub(crate) fn apply(theme: Option<Self>) {
         theme.local_save();
         Self::update_html(theme);
     }

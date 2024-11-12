@@ -1,8 +1,8 @@
 use chrono::prelude::*;
 use ndarray::Array2;
 use serde::{Deserialize, Serialize};
-use std::ops::{BitOr, Index, IndexMut};
 use std::num::Saturating;
+use std::ops::{BitOr, Index, IndexMut};
 
 pub use error::*;
 pub use generator::*;
@@ -21,7 +21,7 @@ pub struct GameConfig {
 }
 
 impl GameConfig {
-    pub(crate) const fn new_unchecked(size: Ix2, mines: Ax) -> Self {
+    pub const fn new_unchecked(size: Ix2, mines: Ax) -> Self {
         Self { size, mines }
     }
 
@@ -74,7 +74,12 @@ impl Minefield {
     }
 
     pub fn get_count(&self, coords: Ix2) -> u8 {
-        self.mines.iter_adjacent(coords).filter(|&pos| self[pos]).count().try_into().unwrap()
+        self.mines
+            .iter_adjacent(coords)
+            .filter(|&pos| self[pos])
+            .count()
+            .try_into()
+            .unwrap()
     }
 }
 
@@ -267,7 +272,9 @@ impl Game {
                 for pos in self.minefield.mines.iter_adjacent(coords) {
                     let adjacent_tile = self.grid[pos.convert()];
                     match adjacent_tile {
-                        Flag => { adjacent_count += 1; }
+                        Flag => {
+                            adjacent_count += 1;
+                        }
                         Open(_) => continue,
                         _ => return true,
                     }
@@ -327,7 +334,9 @@ impl Game {
     pub fn chord_flag(&mut self, coords: Ix2) -> Result<FlagOutcome> {
         use AnyTile::*;
         use FlagOutcome::*;
-        let Open(count) = self.grid[coords.convert()] else { return Ok(NoChange) };
+        let Open(count) = self.grid[coords.convert()] else {
+            return Ok(NoChange);
+        };
         if count != self.count_closed(coords) {
             return Ok(NoChange);
         }
@@ -368,7 +377,9 @@ impl Game {
     }
 
     fn count_flagged(&self, coords: Ix2) -> u8 {
-        self.minefield.mines.iter_adjacent(coords)
+        self.minefield
+            .mines
+            .iter_adjacent(coords)
             .filter(|&pos| self.grid[pos.convert()] == AnyTile::Flag)
             .count()
             .try_into()
@@ -376,7 +387,9 @@ impl Game {
     }
 
     fn count_closed(&self, coords: Ix2) -> u8 {
-        self.minefield.mines.iter_adjacent(coords)
+        self.minefield
+            .mines
+            .iter_adjacent(coords)
             .filter(|&pos| !matches!(self.grid[pos.convert()], AnyTile::Open(_)))
             .count()
             .try_into()
@@ -384,7 +397,9 @@ impl Game {
     }
 
     fn has_adjacent_question(&self, coords: Ix2) -> bool {
-        self.minefield.mines.iter_adjacent(coords)
+        self.minefield
+            .mines
+            .iter_adjacent(coords)
             .map(|pos| self.grid[pos.convert()])
             .any(|tile| tile == AnyTile::Question)
     }
@@ -420,7 +435,9 @@ impl Game {
             {
                 self.check_in_progress()?;
                 // Perform opening of all closed neighbors when flagged count matches
-                self.minefield.mines.iter_adjacent(coords)
+                self.minefield
+                    .mines
+                    .iter_adjacent(coords)
                     .map(|neighbor_coords| self.open_tile(neighbor_coords))
                     .reduce(BitOr::bitor)
                     .unwrap_or(NoChange)
@@ -443,7 +460,9 @@ impl Game {
             {
                 self.check_in_progress()?;
                 // Perform opening of all closed neighbors when flagged count matches
-                self.minefield.mines.iter_adjacent(coords)
+                self.minefield
+                    .mines
+                    .iter_adjacent(coords)
                     .map(|neighbor_coords| self.open_tile(neighbor_coords))
                     .reduce(BitOr::bitor)
                     .unwrap_or(NoChange)
@@ -476,7 +495,9 @@ impl Game {
                 if count == 0 {
                     let mut visited = HashSet::from([coords]);
                     let mut to_visit: VecDeque<_> = self
-                        .minefield.mines.iter_adjacent(coords)
+                        .minefield
+                        .mines
+                        .iter_adjacent(coords)
                         .filter(|&pos| matches!(self.grid[pos.convert()], Closed))
                         .collect();
                     log::trace!(
@@ -510,7 +531,8 @@ impl Game {
                         if visit_count == 0 {
                             to_visit.extend(
                                 self.minefield
-                                    .mines.iter_adjacent(visit_coords)
+                                    .mines
+                                    .iter_adjacent(visit_coords)
                                     .filter(|&pos| matches!(self.grid[pos.convert()], Closed))
                                     .filter(|pos| !visited.contains(pos)),
                             );

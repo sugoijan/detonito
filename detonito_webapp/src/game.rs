@@ -1,7 +1,7 @@
-use crate::app::settings;
-use crate::app::utils::*;
-use crate::game;
+use crate::settings;
+use crate::utils::*;
 use bitflags::bitflags;
+use detonito_core as game;
 use gloo::timers::callback::Interval;
 use serde::{Deserialize, Serialize};
 use yew::prelude::*;
@@ -38,19 +38,19 @@ bitflags! {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub(in crate::app) struct TileState {
+pub(crate) struct TileState {
     pos: (game::Ix, game::Ix),
     buttons: MouseButtons,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub(in crate::app) enum TileMsg {
+pub(crate) enum TileMsg {
     Update(TileState),
     Leave,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub(in crate::app) enum Msg {
+pub(crate) enum Msg {
     TileEvent(TileMsg),
     UpdateTime,
     NewGame,
@@ -154,7 +154,7 @@ fn tile_component(props: &TileProps) -> Html {
     }
 }
 
-pub(in crate::app) struct GameView {
+pub(crate) struct GameView {
     settings: settings::Settings,
     game: Option<game::Game>,
     seed: u64,
