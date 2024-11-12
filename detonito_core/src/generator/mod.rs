@@ -1,4 +1,4 @@
-use crate::game::*;
+use crate::*;
 pub use random::*;
 
 mod random;

@@ -1,8 +1,12 @@
+#![no_std]
+
+extern crate alloc;
+
 use chrono::prelude::*;
 use ndarray::Array2;
 use serde::{Deserialize, Serialize};
-use std::ops::{BitOr, Index, IndexMut};
-use std::num::Saturating;
+use core::num::Saturating;
+use core::ops::{BitOr, Index, IndexMut};
 
 pub use error::*;
 pub use generator::*;
@@ -14,6 +18,12 @@ mod generator;
 mod tile;
 mod types;
 
+fn utc_now() -> DateTime<Utc> {
+    // FIXME: figure out how to get the current time with no_std
+    // Utc::now()
+    Utc.with_ymd_and_hms(2024, 11, 12, 17, 25, 00).unwrap()
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GameConfig {
     pub size: Ix2,
@@ -21,7 +31,7 @@ pub struct GameConfig {
 }
 
 impl GameConfig {
-    pub(crate) const fn new_unchecked(size: Ix2, mines: Ax) -> Self {
+    pub const fn new_unchecked(size: Ix2, mines: Ax) -> Self {
         Self { size, mines }
     }
 
@@ -74,7 +84,12 @@ impl Minefield {
     }
 
     pub fn get_count(&self, coords: Ix2) -> u8 {
-        self.mines.iter_adjacent(coords).filter(|&pos| self[pos]).count().try_into().unwrap()
+        self.mines
+            .iter_adjacent(coords)
+            .filter(|&pos| self[pos])
+            .count()
+            .try_into()
+            .unwrap()
     }
 }
 
@@ -267,7 +282,9 @@ impl Game {
                 for pos in self.minefield.mines.iter_adjacent(coords) {
                     let adjacent_tile = self.grid[pos.convert()];
                     match adjacent_tile {
-                        Flag => { adjacent_count += 1; }
+                        Flag => {
+                            adjacent_count += 1;
+                        }
                         Open(_) => continue,
                         _ => return true,
                     }
@@ -301,7 +318,7 @@ impl Game {
     /// How many seconds have passed since game started, 0 if it hasn't started
     pub fn elapsed_secs(&self) -> u32 {
         if let Some(started_at) = self.started_at {
-            (self.ended_at.unwrap_or_else(Utc::now) - started_at)
+            (self.ended_at.unwrap_or_else(utc_now) - started_at)
                 .num_seconds()
                 .max(0) as u32
         } else {
@@ -327,7 +344,9 @@ impl Game {
     pub fn chord_flag(&mut self, coords: Ix2) -> Result<FlagOutcome> {
         use AnyTile::*;
         use FlagOutcome::*;
-        let Open(count) = self.grid[coords.convert()] else { return Ok(NoChange) };
+        let Open(count) = self.grid[coords.convert()] else {
+            return Ok(NoChange);
+        };
         if count != self.count_closed(coords) {
             return Ok(NoChange);
         }
@@ -368,7 +387,9 @@ impl Game {
     }
 
     fn count_flagged(&self, coords: Ix2) -> u8 {
-        self.minefield.mines.iter_adjacent(coords)
+        self.minefield
+            .mines
+            .iter_adjacent(coords)
             .filter(|&pos| self.grid[pos.convert()] == AnyTile::Flag)
             .count()
             .try_into()
@@ -376,7 +397,9 @@ impl Game {
     }
 
     fn count_closed(&self, coords: Ix2) -> u8 {
-        self.minefield.mines.iter_adjacent(coords)
+        self.minefield
+            .mines
+            .iter_adjacent(coords)
             .filter(|&pos| !matches!(self.grid[pos.convert()], AnyTile::Open(_)))
             .count()
             .try_into()
@@ -384,7 +407,9 @@ impl Game {
     }
 
     fn has_adjacent_question(&self, coords: Ix2) -> bool {
-        self.minefield.mines.iter_adjacent(coords)
+        self.minefield
+            .mines
+            .iter_adjacent(coords)
             .map(|pos| self.grid[pos.convert()])
             .any(|tile| tile == AnyTile::Question)
     }
@@ -420,7 +445,9 @@ impl Game {
             {
                 self.check_in_progress()?;
                 // Perform opening of all closed neighbors when flagged count matches
-                self.minefield.mines.iter_adjacent(coords)
+                self.minefield
+                    .mines
+                    .iter_adjacent(coords)
                     .map(|neighbor_coords| self.open_tile(neighbor_coords))
                     .reduce(BitOr::bitor)
                     .unwrap_or(NoChange)
@@ -443,7 +470,9 @@ impl Game {
             {
                 self.check_in_progress()?;
                 // Perform opening of all closed neighbors when flagged count matches
-                self.minefield.mines.iter_adjacent(coords)
+                self.minefield
+                    .mines
+                    .iter_adjacent(coords)
                     .map(|neighbor_coords| self.open_tile(neighbor_coords))
                     .reduce(BitOr::bitor)
                     .unwrap_or(NoChange)
@@ -454,7 +483,7 @@ impl Game {
 
     /// Helper function to open a single tile and perform flood-fill if necessary
     fn open_tile(&mut self, coords: Ix2) -> OpenOutcome {
-        use std::collections::{HashSet, VecDeque};
+        use alloc::collections::{BTreeSet, VecDeque};
         use AnyTile::*;
         use OpenOutcome::*;
 
@@ -474,9 +503,11 @@ impl Game {
                 log::debug!("Open tile at {:?}, mine count: {}", coords, count);
 
                 if count == 0 {
-                    let mut visited = HashSet::from([coords]);
+                    let mut visited = BTreeSet::from([coords]);
                     let mut to_visit: VecDeque<_> = self
-                        .minefield.mines.iter_adjacent(coords)
+                        .minefield
+                        .mines
+                        .iter_adjacent(coords)
                         .filter(|&pos| matches!(self.grid[pos.convert()], Closed))
                         .collect();
                     log::trace!(
@@ -510,7 +541,8 @@ impl Game {
                         if visit_count == 0 {
                             to_visit.extend(
                                 self.minefield
-                                    .mines.iter_adjacent(visit_coords)
+                                    .mines
+                                    .iter_adjacent(visit_coords)
                                     .filter(|&pos| matches!(self.grid[pos.convert()], Closed))
                                     .filter(|pos| !visited.contains(pos)),
                             );
@@ -533,7 +565,7 @@ impl Game {
     /// Checks if the state is initial and changes to in-progress recording the start time
     fn mark_started(&mut self) {
         if matches!(self.state, GameState::NotStarted) {
-            let now = Utc::now();
+            let now = utc_now();
             log::debug!("started at {}", now);
             self.started_at.replace(now);
             self.state = GameState::InProgress;
@@ -571,7 +603,7 @@ impl Game {
                 self.state = Win;
             }
         }
-        let now = Utc::now();
+        let now = utc_now();
         self.ended_at.replace(now);
         log::debug!("ended at {}", now);
         if matches!(self.state, InstantWin | InstantLoss) {

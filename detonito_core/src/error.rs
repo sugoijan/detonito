@@ -10,4 +10,4 @@ pub enum GameError {
     AlreadyEnded,
 }
 
-pub type Result<T> = std::result::Result<T, GameError>;
+pub type Result<T> = core::result::Result<T, GameError>;

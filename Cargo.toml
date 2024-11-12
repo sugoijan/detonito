@@ -1,41 +1,9 @@
-[package]
-name = "detonito"
-version = "0.1.0"
-authors = ["すごいジャン <sugokunaijan@gmail.com>"]
-edition = "2021"
-
-[lib]
-crate-type = ["cdylib", "rlib"]
-
-[features]
-default = ["console_error_panic_hook"]
-
-[dependencies]
-wasm-bindgen = "0.2.84"
-
-# The `console_error_panic_hook` crate provides better debugging of panics by
-# logging them with `console.error`. This is great for development, but requires
-# all the `std::fmt` and `std::panicking` infrastructure, so isn't great for
-# code size when deploying.
-console_error_panic_hook = { version = "0.1.7", optional = true }
-js-sys = "0.3.70"
-wasm-bindgen-futures = "0.4.43"
-yew = { version = "0.21.0", features = ["csr"] }
-ndarray = { version = "0.16.1", features = ["serde"] }
-rand = { version = "0.8.5", features = ["serde", "small_rng"] }
-thiserror = "1.0.63"
-log = { version = "0.4.22", features = ["serde"] }
-console_log = { version = "1.0.0", features = ["color", "wasm-bindgen"] }
-chrono = { version = "0.4.38", features = ["serde"] }
-serde = "1.0.210"
-anyhow = "1.0.89"
-gloo = "0.11.0"
-bitflags = { version = "2.6.0", features = ["serde"] }
-clap = { version = "4.5.19", features = ["derive"] }
-clap-verbosity-flag = "2.2.2"
-
-[dev-dependencies]
-wasm-bindgen-test = "0.3.34"
+[workspace]
+resolver = "2"
+members = [
+    "detonito_core",
+    "detonito_webapp",
+]
 
 [profile.release]
 # less code to include into binary

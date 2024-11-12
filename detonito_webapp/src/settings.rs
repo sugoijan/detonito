@@ -1,5 +1,5 @@
-use crate::app::utils::*;
-use crate::game;
+use crate::utils::*;
+use detonito_core as game;
 use serde::{Deserialize, Serialize};
 use std::rc::Rc;
 use yew::prelude::*;
@@ -10,7 +10,7 @@ pub const EXPERT: game::GameConfig = game::GameConfig::new_unchecked((30, 16), 9
 pub const EVIL: game::GameConfig = game::GameConfig::new_unchecked((30, 20), 130);
 
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub(in crate::app) enum Generator {
+pub(crate) enum Generator {
     /// Purely random, even the first tile can have a bomb, that's unlucky
     Random,
     /// First tile is always zero (when possible), in the future this will guaranteed a solvable game
@@ -19,7 +19,7 @@ pub(in crate::app) enum Generator {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub(in crate::app) struct Settings {
+pub(crate) struct Settings {
     pub game_config: game::GameConfig,
     pub generator: Generator,
     pub enable_question_mark: bool,
@@ -48,7 +48,7 @@ impl StorageKey for Settings {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub(in crate::app) enum SettingsAction {
+pub(crate) enum SettingsAction {
     ToggleMarkQuestion,
     SetGameConfig(game::GameConfig),
     SetGenerator(Generator),
@@ -115,14 +115,14 @@ impl Reducible for Settings {
 }
 
 #[derive(Properties, PartialEq)]
-pub(in crate::app) struct SettingsProps {
+pub(crate) struct SettingsProps {
     #[prop_or_default]
     pub open: bool,
 }
 
 #[function_component]
-pub(in crate::app) fn SettingsView(props: &SettingsProps) -> Html {
-    use crate::app::theme::Theme;
+pub(crate) fn SettingsView(props: &SettingsProps) -> Html {
+    use crate::theme::Theme;
 
     let settings: UseReducerHandle<Settings> = use_reducer_eq(LocalOrDefault::local_or_default);
     let theme: UseStateHandle<Option<Theme>> = use_state_eq(LocalOrDefault::local_or_default);

@@ -25,6 +25,8 @@ jobs:
   # Build job
   build:
     runs-on: ubuntu-latest
+    env:
+      BINARYEN_VERSION: "version_120"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -42,6 +44,12 @@ jobs:
         with:
           node-version: lts/*
 
+      - name: Install Binaryen
+        run: |
+          wget https://github.com/WebAssembly/binaryen/releases/download/${BINARYEN_VERSION}/binaryen-${BINARYEN_VERSION}-x86_64-linux.tar.gz
+          tar -xzf binaryen-${BINARYEN_VERSION}-x86_64-linux.tar.gz
+          sudo cp binaryen-${BINARYEN_VERSION}/bin/* /usr/local/bin/
+
       - name: Install ttfautohint
         shell: bash
         run: |
@@ -51,26 +59,26 @@ jobs:
       - name: Get Iosevka Submodule Commit Hash
         id: iosevka-commit-hash
         run: |
-          echo "IOSEVKA_COMMIT=$(git -C vendor/Iosevka rev-parse HEAD)" >> $GITHUB_ENV
+          echo "IOSEVKA_COMMIT=$(git -C detonito_webapp/vendor/Iosevka rev-parse HEAD)" >> $GITHUB_ENV
 
       - name: Calculate Hash of private-build-plans.toml
         id: build-plan-hash
         run: |
-          BUILD_PLAN_HASH=$(sha256sum vendor/Iosevka-custom/private-build-plans.toml | cut -d' ' -f1)
+          BUILD_PLAN_HASH=$(sha256sum detonito_webapp/vendor/Iosevka-custom/private-build-plans.toml | cut -d' ' -f1)
           echo "BUILD_PLAN_HASH=$BUILD_PLAN_HASH" >> $GITHUB_ENV
 
       - name: Cache Fonts
         id: cache-fonts
         uses: actions/cache@v4
         with:
-          path: vendor/Iosevka/dist
+          path: detonito_webapp/vendor/Iosevka/dist
           key: iosevka-${{ env.IOSEVKA_COMMIT }}-${{ env.BUILD_PLAN_HASH }}
 
       - name: Generate Custom Iosevka Font
         if: steps.cache-fonts.outputs.cache-hit != 'true'
         shell: bash
         run: |
-          cd vendor
+          cd detonito_webapp/vendor
           cp Iosevka-custom/private-build-plans.toml Iosevka/
           cd Iosevka
           npm install
@@ -86,7 +94,9 @@ jobs:
 
       - name: Build with Trunk
         # Build for release into ./_site (default is ./dist) and consider the public url
-        run: trunk build --release --minify --dist ./_site --public-url "${{ steps.pages.outputs.base_path }}"
+        run: |
+          cd detonito_webapp
+          trunk build --release --minify --dist ../_site --public-url "${{ steps.pages.outputs.base_path }}"
 
       - name: Upload artifact
         # Automatically uploads an artifact from the './_site' directory by default

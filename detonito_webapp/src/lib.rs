@@ -22,7 +22,10 @@ struct Args {
 pub fn run_app() {
     use gloo::utils::{document, window};
 
-    console_error_panic_hook::set_once();
+    #[cfg(feature = "console_error_panic_hook")]
+    {
+        console_error_panic_hook::set_once();
+    }
 
     let location_hash = window()
         .location()

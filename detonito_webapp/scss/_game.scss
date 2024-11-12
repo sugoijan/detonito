@@ -81,7 +81,7 @@ $state-size: 24px;
   user-select: none; // selecting can get in the way, disable it
   display: inline-block;  // prevent it from enlargening horizontally
   @include drop-shadow;  // very slight, makes the white borders visible
-  zoom: 2;  // default zoom
+  zoom: 1.75;  // default zoom
   min-width: 145px;
   min-height: 105px;
 
