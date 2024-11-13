@@ -18,12 +18,6 @@ mod generator;
 mod tile;
 mod types;
 
-fn utc_now() -> DateTime<Utc> {
-    // FIXME: figure out how to get the current time with no_std
-    // Utc::now()
-    Utc.with_ymd_and_hms(2024, 11, 12, 17, 25, 00).unwrap()
-}
-
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GameConfig {
     pub size: Ix2,
@@ -316,9 +310,9 @@ impl Game {
     }
 
     /// How many seconds have passed since game started, 0 if it hasn't started
-    pub fn elapsed_secs(&self) -> u32 {
+    pub fn elapsed_secs(&self, now: DateTime<Utc>) -> u32 {
         if let Some(started_at) = self.started_at {
-            (self.ended_at.unwrap_or_else(utc_now) - started_at)
+            (self.ended_at.unwrap_or(now) - started_at)
                 .num_seconds()
                 .max(0) as u32
         } else {
@@ -415,9 +409,9 @@ impl Game {
     }
 
     /// Open a closed tile, do not open neighbor tiles
-    pub fn open(&mut self, coords: Ix2) -> Result<OpenOutcome> {
+    pub fn open(&mut self, coords: Ix2, now: DateTime<Utc>) -> Result<OpenOutcome> {
         if matches!(self.grid[coords.convert()], AnyTile::Closed) {
-            self.open_with_chords(coords)
+            self.open_with_chords(coords, now)
         } else {
             Ok(OpenOutcome::NoChange)
         }
@@ -432,7 +426,7 @@ impl Game {
     }
 
     /// Open a tile, or try to open neighbor tiles
-    pub fn chord_open(&mut self, coords: Ix2) -> Result<OpenOutcome> {
+    pub fn chord_open(&mut self, coords: Ix2, now: DateTime<Utc>) -> Result<OpenOutcome> {
         use OpenOutcome::*;
 
         let coords = self.minefield.validate_coords(coords)?;
@@ -448,16 +442,16 @@ impl Game {
                 self.minefield
                     .mines
                     .iter_adjacent(coords)
-                    .map(|neighbor_coords| self.open_tile(neighbor_coords))
+                    .map(|neighbor_coords| self.open_tile(neighbor_coords, now))
                     .reduce(BitOr::bitor)
                     .unwrap_or(NoChange)
             }
             // TODO: make this an error:
-            _ => self.open_tile(coords),
+            _ => self.open_tile(coords, now),
         })
     }
 
-    pub fn open_with_chords(&mut self, coords: Ix2) -> Result<OpenOutcome> {
+    pub fn open_with_chords(&mut self, coords: Ix2, now: DateTime<Utc>) -> Result<OpenOutcome> {
         use OpenOutcome::*;
 
         let coords = self.minefield.validate_coords(coords)?;
@@ -473,16 +467,16 @@ impl Game {
                 self.minefield
                     .mines
                     .iter_adjacent(coords)
-                    .map(|neighbor_coords| self.open_tile(neighbor_coords))
+                    .map(|neighbor_coords| self.open_tile(neighbor_coords, now))
                     .reduce(BitOr::bitor)
                     .unwrap_or(NoChange)
             }
-            _ => self.open_tile(coords),
+            _ => self.open_tile(coords, now),
         })
     }
 
     /// Helper function to open a single tile and perform flood-fill if necessary
-    fn open_tile(&mut self, coords: Ix2) -> OpenOutcome {
+    fn open_tile(&mut self, coords: Ix2, now: DateTime<Utc>) -> OpenOutcome {
         use alloc::collections::{BTreeSet, VecDeque};
         use AnyTile::*;
         use OpenOutcome::*;
@@ -493,7 +487,7 @@ impl Game {
         match (tile, mine) {
             (Closed, true) => {
                 self.grid[coords.convert()] = Exploded;
-                self.mark_ended(false);
+                self.mark_ended(false, now);
                 Explode
             }
             (Closed, false) => {
@@ -551,10 +545,10 @@ impl Game {
                 }
 
                 if self.open_count == Saturating(self.minefield.safe_count()) {
-                    self.mark_ended(true);
+                    self.mark_ended(true, now);
                     Win
                 } else {
-                    self.mark_started();
+                    self.mark_started(now);
                     Safe
                 }
             }
@@ -563,9 +557,8 @@ impl Game {
     }
 
     /// Checks if the state is initial and changes to in-progress recording the start time
-    fn mark_started(&mut self) {
+    fn mark_started(&mut self, now: DateTime<Utc>) {
         if matches!(self.state, GameState::NotStarted) {
-            let now = utc_now();
             log::debug!("started at {}", now);
             self.started_at.replace(now);
             self.state = GameState::InProgress;
@@ -573,7 +566,7 @@ impl Game {
     }
 
     /// Checks for wrong flags and unflagged mines after game ends
-    fn mark_ended(&mut self, won: bool) {
+    fn mark_ended(&mut self, won: bool, now: DateTime<Utc>) {
         use GameState::*;
         match (self.state, won) {
             (Win, false) => {
@@ -603,7 +596,6 @@ impl Game {
                 self.state = Win;
             }
         }
-        let now = utc_now();
         self.ended_at.replace(now);
         log::debug!("ended at {}", now);
         if matches!(self.state, InstantWin | InstantLoss) {

@@ -1,10 +1,15 @@
 use crate::settings;
+use chrono::prelude::*;
 use crate::utils::*;
 use bitflags::bitflags;
 use detonito_core as game;
 use gloo::timers::callback::Interval;
 use serde::{Deserialize, Serialize};
 use yew::prelude::*;
+
+fn utc_now() -> DateTime<Utc> {
+    DateTime::<Utc>::from_timestamp_millis(js_sys::Date::now() as i64).unwrap()
+}
 
 impl StorageKey for game::Game {
     const KEY: &'static str = "detonito:game";
@@ -200,7 +205,7 @@ impl GameView {
     }
 
     fn get_time(&self) -> u32 {
-        self.game.as_ref().map(|g| g.elapsed_secs()).unwrap_or(0)
+        self.game.as_ref().map(|g| g.elapsed_secs(utc_now())).unwrap_or(0)
     }
 
     fn get_mines_left(&self) -> i32 {
@@ -256,9 +261,10 @@ impl GameView {
     fn open_tile(&mut self, coords: game::Ix2) -> bool {
         use game::AnyTile::*;
         let game = self.get_or_create_game(coords);
+        let now = utc_now();
         match game.tile_at(coords) {
-            Closed => game.open(coords).has_update(),
-            Open(_) => game.chord_open(coords).has_update(),
+            Closed => game.open(coords, now).has_update(),
+            Open(_) => game.chord_open(coords, now).has_update(),
             _ => false,
         }
     }
