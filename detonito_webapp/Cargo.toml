@@ -15,7 +15,7 @@ detonito-core = { path = "../detonito_core" }
 bitflags = { version = "2.6.0", features = ["serde"] }
 chrono = { version = "0.4.38", features = ["serde"], default-features = false }
 clap = { version = "4.5.20", features = ["derive"] }
-clap-verbosity-flag = "2.2.2"
+clap-verbosity-flag = "2.2.3"
 console_log = { version = "1.0.0", features = ["color", "wasm-bindgen"] }
 gloo = "0.11.0"
 js-sys = "0.3.72"
