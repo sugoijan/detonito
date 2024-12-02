@@ -18,7 +18,7 @@ clap = { version = "4.5.20", features = ["derive"] }
 clap-verbosity-flag = "2.2.2"
 console_log = { version = "1.0.0", features = ["color", "wasm-bindgen"] }
 gloo = "0.11.0"
-js-sys = "0.3.72"
+js-sys = "0.3.74"
 log = { version = "0.4.22", features = ["serde"] }
 serde = "1.0.215"
 wasm-bindgen = "0.2.95"
