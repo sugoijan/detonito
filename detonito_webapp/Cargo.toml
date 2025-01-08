@@ -14,7 +14,7 @@ default = ["console_error_panic_hook"]
 detonito-core = { path = "../detonito_core" }
 bitflags = { version = "2.6.0", features = ["serde"] }
 chrono = { version = "0.4.38", features = ["serde"], default-features = false }
-clap = { version = "4.5.20", features = ["derive"] }
+clap = { version = "4.5.24", features = ["derive"] }
 clap-verbosity-flag = "2.2.2"
 console_log = { version = "1.0.0", features = ["color", "wasm-bindgen"] }
 gloo = "0.11.0"
