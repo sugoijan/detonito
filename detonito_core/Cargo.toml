@@ -10,7 +10,7 @@ crate-type = ["rlib", "cdylib"]
 [dependencies]
 ndarray = { version = "0.16.1", features = ["serde"], default-features = false}
 rand = { version = "0.8.5", features = ["serde", "small_rng"], default-features = false }
-thiserror = { version = "2.0.3", default-features = false }
+thiserror = { version = "2.0.11", default-features = false }
 log = { version = "0.4.22", features = ["serde"] }
 chrono = { version = "0.4.38", features = ["serde"], default-features = false }
 serde = { version = "1.0.215", default-features = false }
