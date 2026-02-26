@@ -13,9 +13,8 @@ struct Args {
     #[command(flatten)]
     verbose: clap_verbosity_flag::Verbosity,
 
-    /// Force a seed instead of random
-    #[arg(short, long)]
-    seed: Option<String>,
+    #[command(flatten)]
+    init_settings: game::GameProps,
 }
 
 #[wasm_bindgen(start)]
@@ -36,7 +35,6 @@ pub fn run_app() {
     if let Some(log_level) = args.verbose.log_level() {
         console_log::init_with_level(log_level).expect("Error initializing logger");
     }
-    log::debug!("seed: {:?}", args.seed);
 
     theme::Theme::init();
 
@@ -45,5 +43,5 @@ pub fn run_app() {
         .expect("Could not find id=\"game\" element");
 
     log::debug!("App started");
-    yew::Renderer::<game::GameView>::with_root(root).render();
+    yew::Renderer::<game::GameView>::with_root_and_props(root, args.init_settings).render();
 }

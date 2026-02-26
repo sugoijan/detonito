@@ -1,18 +1,3 @@
-use yew::prelude::*;
-
-#[derive(Properties, PartialEq)]
-pub(crate) struct ModalProps {
-    #[prop_or_default]
-    pub children: Html,
-}
-
-/// Helper component to attatch the contents into the document.body instead of in the place where it's used.
-#[function_component]
-pub(crate) fn Modal(props: &ModalProps) -> Html {
-    let modal_host = gloo::utils::body();
-    create_portal(props.children.clone(), modal_host.into())
-}
-
 /// Helper function to use JavaScript's Math.random
 pub(crate) fn js_random_seed() -> u64 {
     use js_sys::Math::random;

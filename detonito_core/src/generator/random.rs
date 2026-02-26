@@ -78,7 +78,7 @@ impl MinefieldGenerator for RandomMinefieldGenerator {
                 if free_tiles == 0 {
                     break;
                 }
-                let mut place: Ax = rng.gen_range(0..free_tiles);
+                let mut place: Ax = rng.random_range(0..free_tiles);
                 for (i, tile) in tiles.iter_mut().enumerate() {
                     let i = i as Ax;
                     if *tile {

@@ -1,7 +1,8 @@
-use crate::settings;
-use chrono::prelude::*;
-use crate::utils::*;
 use bitflags::bitflags;
+use chrono::prelude::*;
+use clap::Args;
+use crate::settings;
+use crate::utils::*;
 use detonito_core as game;
 use gloo::timers::callback::Interval;
 use serde::{Deserialize, Serialize};
@@ -159,6 +160,14 @@ fn tile_component(props: &TileProps) -> Html {
     }
 }
 
+#[derive(Args, Properties, Debug, Clone, PartialEq)]
+pub(crate) struct GameProps {
+    /// Force a seed instead of random
+    #[arg(short, long)]
+    seed: Option<String>,
+}
+
+#[derive(Debug)]
 pub(crate) struct GameView {
     settings: settings::Settings,
     game: Option<game::Game>,
@@ -167,6 +176,7 @@ pub(crate) struct GameView {
     settings_open: bool,
     cur_tile_state: Option<TileState>,
     _timer_interval: Interval,
+    _init_settings: GameProps,
 }
 
 impl GameView {
@@ -322,7 +332,7 @@ impl GameView {
 
 impl Component for GameView {
     type Message = Msg;
-    type Properties = ();
+    type Properties = GameProps;
 
     fn create(ctx: &Context<Self>) -> Self {
         Self {
@@ -333,6 +343,7 @@ impl Component for GameView {
             settings_open: false,
             cur_tile_state: None,
             _timer_interval: GameView::create_timer(ctx),
+            _init_settings: ctx.props().clone(),
         }
     }
 
