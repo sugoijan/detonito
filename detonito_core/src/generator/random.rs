@@ -1,122 +1,124 @@
 use super::*;
 
-/// Generation strategy that can optionally try to make the starting tile zero or at least safe, but other than that is
-/// purely random.
+/// Random board generation with optional first-move constraints.
 #[derive(Clone, Debug, PartialEq)]
-pub struct RandomMinefieldGenerator {
+pub struct RandomLayoutGenerator {
     seed: u64,
-    start: Ix2,
-    start_tile: StartTile,
+    first_move: Coord2,
+    first_move_policy: FirstMovePolicy,
 }
 
-impl RandomMinefieldGenerator {
-    pub fn new(seed: u64, start: Ix2, start_tile: StartTile) -> Self {
+impl RandomLayoutGenerator {
+    pub fn new(seed: u64, first_move: Coord2, first_move_policy: FirstMovePolicy) -> Self {
         Self {
             seed,
-            start,
-            start_tile,
+            first_move,
+            first_move_policy,
         }
     }
 }
 
-impl MinefieldGenerator for RandomMinefieldGenerator {
-    fn generate(self, config: GameConfig) -> Minefield {
+impl LayoutGenerator for RandomLayoutGenerator {
+    fn generate(self, config: GameConfig) -> MineLayout {
         use rand::prelude::*;
-        use StartTile::*;
+        use FirstMovePolicy::*;
 
-        let total_tiles = config.total_tiles();
+        let total_cells = config.total_cells();
 
-        // optimize for full boards
-        if config.mines >= total_tiles {
-            if config.mines > total_tiles {
+        if config.mines >= total_cells {
+            if config.mines > total_cells {
                 log::warn!(
-                    "Minefield already full, generated anyway, requested {} but only fits {}",
+                    "Layout already full, generated anyway, requested {} but only fits {}",
                     config.mines,
-                    total_tiles
+                    total_cells
                 );
             }
-            return Minefield {
-                mines: Array2::from_elem(config.size.convert(), true),
-                count: config.mines,
+            return MineLayout {
+                mine_mask: Array2::from_elem(config.size.to_nd_index(), true),
+                mine_count: config.mines,
             };
         }
 
-        let actual_start_tile = match self.start_tile {
+        let effective_policy = match self.first_move_policy {
             Random => Random,
-            SimpleSafe | AlwaysZero if config.mines + 1 > total_tiles => {
-                log::warn!("Cannot make start tile safe, fallback to random");
+            FirstMoveSafe | FirstMoveZero if config.mines + 1 > total_cells => {
+                log::warn!("Cannot make first move safe, fallback to random");
                 Random
             }
-            SimpleSafe => SimpleSafe,
-            AlwaysZero if config.mines + 9 > total_tiles => {
-                log::warn!("Cannot make start tile zero, fallback to simple safe");
-                SimpleSafe
+            FirstMoveSafe => FirstMoveSafe,
+            FirstMoveZero if config.mines + 9 > total_cells => {
+                log::warn!("Cannot make first move zero, fallback to first-move-safe");
+                FirstMoveSafe
             }
-            AlwaysZero => AlwaysZero,
+            FirstMoveZero => FirstMoveZero,
         };
-        let mut mines: Array2<bool> = Array2::default(config.size.convert());
-        let mut free_tiles = match actual_start_tile {
-            Random => total_tiles,
-            SimpleSafe => {
-                mines[self.start.convert()] = true;
-                total_tiles - 1
+
+        let mut mine_mask: Array2<bool> = Array2::default(config.size.to_nd_index());
+        let mut available_cells = match effective_policy {
+            Random => total_cells,
+            FirstMoveSafe => {
+                mine_mask[self.first_move.to_nd_index()] = true;
+                total_cells - 1
             }
-            AlwaysZero => {
-                mines[self.start.convert()] = true;
-                for coord in mines.iter_adjacent(self.start) {
-                    mines[coord.convert()] = true;
+            FirstMoveZero => {
+                mine_mask[self.first_move.to_nd_index()] = true;
+                for coord in mine_mask.iter_neighbors(self.first_move) {
+                    mine_mask[coord.to_nd_index()] = true;
                 }
-                total_tiles - 9
+                total_cells - 9
             }
         };
-        let mut mines_placed = 0;
+        let mut placed_mines = 0;
 
         let mut rng = SmallRng::seed_from_u64(self.seed);
         {
-            let tiles = mines.as_slice_mut().expect("layout should be standard");
-            while mines_placed < config.mines {
-                if free_tiles == 0 {
+            let cells = mine_mask.as_slice_mut().expect("layout should be standard");
+            while placed_mines < config.mines {
+                if available_cells == 0 {
                     break;
                 }
-                let mut place: Ax = rng.random_range(0..free_tiles);
-                for (i, tile) in tiles.iter_mut().enumerate() {
-                    let i = i as Ax;
-                    if *tile {
+
+                let mut place: CellCount = rng.random_range(0..available_cells);
+                for (i, is_reserved) in cells.iter_mut().enumerate() {
+                    let i = i as CellCount;
+                    if *is_reserved {
                         place += 1;
                     }
                     if i == place {
-                        *tile = true;
-                        mines_placed += 1;
-                        free_tiles -= 1;
+                        *is_reserved = true;
+                        placed_mines += 1;
+                        available_cells -= 1;
                         break;
                     }
                 }
             }
         }
 
-        // undo to make safe tiles
-        match actual_start_tile {
+        match effective_policy {
             Random => {}
-            SimpleSafe => {
-                mines[self.start.convert()] = false;
+            FirstMoveSafe => {
+                mine_mask[self.first_move.to_nd_index()] = false;
             }
-            AlwaysZero => {
-                mines[self.start.convert()] = false;
-                for coord in mines.iter_adjacent(self.start) {
-                    mines[coord.convert()] = false;
+            FirstMoveZero => {
+                mine_mask[self.first_move.to_nd_index()] = false;
+                for coord in mine_mask.iter_neighbors(self.first_move) {
+                    mine_mask[coord.to_nd_index()] = false;
                 }
             }
         }
 
-        // double check mine count
-        let count = mines.iter().filter(|&&tile| tile).count() as Ax;
-        if count != config.mines {
+        let mine_count = mine_mask.iter().filter(|&&cell| cell).count() as CellCount;
+        if mine_count != config.mines {
             log::warn!(
-                "Generated minefield count mismatch, actual: {}, requested: {}",
-                count,
+                "Generated mine count mismatch, actual: {}, requested: {}",
+                mine_count,
                 config.mines
             );
         }
-        Minefield { mines, count }
+
+        MineLayout {
+            mine_mask,
+            mine_count,
+        }
     }
 }

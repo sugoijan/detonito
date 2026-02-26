@@ -13,8 +13,8 @@ pub const EVIL: game::GameConfig = game::GameConfig::new_unchecked((30, 20), 130
 pub(crate) enum Generator {
     /// Purely random, even the first tile can have a bomb, that's unlucky
     Random,
-    /// First tile is always zero (when possible), in the future this will guaranteed a solvable game
-    NoRandom,
+    /// First move is forced to a zero-cell when possible.
+    GuaranteedZeroStart,
     // TODO: NoGuess where guesses are guaranteed losses
 }
 
@@ -28,14 +28,14 @@ pub(crate) struct Settings {
 }
 
 impl Settings {
-    const MAX_SIZE: game::Ix = 99;
+    const MAX_SIZE: game::Coord = 99;
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
             game_config: BEGINNER,
-            generator: Generator::NoRandom,
+            generator: Generator::GuaranteedZeroStart,
             enable_question_mark: false,
             enable_flag_chord: true,
             enable_auto_trivial: true,
@@ -49,7 +49,7 @@ impl StorageKey for Settings {
 
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) enum SettingsAction {
-    ToggleMarkQuestion,
+    ToggleQuestionMark,
     SetGameConfig(game::GameConfig),
     SetGenerator(Generator),
     IncreaseSizeX,
@@ -67,7 +67,7 @@ impl Reducible for Settings {
         use SettingsAction::*;
         let mut settings = Rc::unwrap_or_clone(self);
         match action {
-            ToggleMarkQuestion => {
+            ToggleQuestionMark => {
                 settings.enable_question_mark = !settings.enable_question_mark;
             }
             SetGameConfig(game_config) => {
@@ -86,7 +86,7 @@ impl Reducible for Settings {
                 settings.game_config.mines = settings
                     .game_config
                     .mines
-                    .clamp(1, settings.game_config.total_tiles());
+                    .clamp(1, settings.game_config.total_cells());
             }
             IncreaseSizeY => {
                 settings.game_config.size.1 =
@@ -98,15 +98,15 @@ impl Reducible for Settings {
                 settings.game_config.mines = settings
                     .game_config
                     .mines
-                    .clamp(1, settings.game_config.total_tiles());
+                    .clamp(1, settings.game_config.total_cells());
             }
             IncreaseMines => {
                 settings.game_config.mines =
-                    (settings.game_config.mines + 1).clamp(1, settings.game_config.total_tiles());
+                    (settings.game_config.mines + 1).clamp(1, settings.game_config.total_cells());
             }
             DecreaseMines => {
                 settings.game_config.mines =
-                    (settings.game_config.mines - 1).clamp(1, settings.game_config.total_tiles());
+                    (settings.game_config.mines - 1).clamp(1, settings.game_config.total_cells());
             }
         }
         settings.local_save();
@@ -161,12 +161,12 @@ pub(crate) fn SettingsView(props: &SettingsProps) -> Html {
 
     let set_generator_puzzle = {
         let settings = settings.clone();
-        move |_| settings.dispatch(SettingsAction::SetGenerator(Generator::NoRandom))
+        move |_| settings.dispatch(SettingsAction::SetGenerator(Generator::GuaranteedZeroStart))
     };
 
     let toggle_question = {
         let settings = settings.clone();
-        move |_| settings.dispatch(SettingsAction::ToggleMarkQuestion)
+        move |_| settings.dispatch(SettingsAction::ToggleQuestionMark)
     };
 
     let inc_mines = {
@@ -265,7 +265,7 @@ pub(crate) fn SettingsView(props: &SettingsProps) -> Html {
             <hr/>
             <button class={classes!("random", (settings.generator == Generator::Random).then_some("pressed"))} onclick={set_generator_random}/>
             {" "}
-            <button class={classes!("puzzle", (settings.generator == Generator::NoRandom).then_some("pressed"))} onclick={set_generator_puzzle}/>
+            <button class={classes!("puzzle", (settings.generator == Generator::GuaranteedZeroStart).then_some("pressed"))} onclick={set_generator_puzzle}/>
         </dialog>
     }
 }

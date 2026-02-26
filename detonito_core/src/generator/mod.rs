@@ -3,13 +3,13 @@ pub use random::*;
 
 mod random;
 
-pub trait MinefieldGenerator {
-    fn generate(self, config: GameConfig) -> Minefield;
+pub trait LayoutGenerator {
+    fn generate(self, config: GameConfig) -> MineLayout;
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub enum StartTile {
+pub enum FirstMovePolicy {
     Random,
-    SimpleSafe,
-    AlwaysZero,
+    FirstMoveSafe,
+    FirstMoveZero,
 }

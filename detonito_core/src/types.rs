@@ -1,100 +1,101 @@
 use ndarray::Array2;
 
-/// Linear dimension, used for individual coordinates or minefield width/height
-pub type Ix = u8;
+/// Single coordinate axis used for board width, height, and positions.
+pub type Coord = u8;
 
-/// Area dimension, used for mine/tile counts
-pub type Ax = u16;
+/// Count type used for mine counts and total-cell counts.
+pub type CellCount = u16;
 
-/// Shorthand for position/size with Ix
-pub type Ix2 = (Ix, Ix);
+/// Two-dimensional coordinates `(x, y)`.
+pub type Coord2 = (Coord, Coord);
 
-pub trait NdConvert {
+pub trait ToNdIndex {
     type Output;
-    fn convert(self) -> Self::Output;
+    fn to_nd_index(self) -> Self::Output;
 }
 
-impl NdConvert for Ix2 {
+impl ToNdIndex for Coord2 {
     type Output = [usize; 2];
-    fn convert(self) -> Self::Output {
+
+    fn to_nd_index(self) -> Self::Output {
         [self.0.into(), self.1.into()]
     }
 }
 
-pub const fn mult(a: Ix, b: Ix) -> Ax {
-    let a = a as Ax;
-    let b = b as Ax;
+pub const fn mult(a: Coord, b: Coord) -> CellCount {
+    let a = a as CellCount;
+    let b = b as CellCount;
     a.saturating_mul(b)
 }
 
-pub trait AdjacentIterator {
-    // XXX: returning a impl Iterator seems to imply a &self borrow, using concrete type for now
-    //fn iter_adjacent(&self, index: Ix2) -> impl Iterator<Item = Ix2>;
-    fn iter_adjacent(&self, index: Ix2) -> IterAdjacent;
+pub trait NeighborIterExt {
+    fn iter_neighbors(&self, index: Coord2) -> NeighborIter;
 }
 
-impl<T> AdjacentIterator for Array2<T> {
-    //fn iter_adjacent(&self, index: Ix2) -> impl Iterator<Item = Ix2> {
-    fn iter_adjacent(&self, index: Ix2) -> IterAdjacent {
+impl<T> NeighborIterExt for Array2<T> {
+    fn iter_neighbors(&self, index: Coord2) -> NeighborIter {
         let dim = self.dim();
         let size = (dim.0.try_into().unwrap(), dim.1.try_into().unwrap());
-        IterAdjacent::new(index, size)
+        NeighborIter::new(index, size)
     }
 }
 
-pub trait AdjacentTileIterator<T>: AdjacentIterator {
-    fn iter_adjacent_tiles_with_index(&self, index: Ix2) -> impl Iterator<Item = (Ix2, T)>;
-    fn iter_adjacent_tiles(&self, index: Ix2) -> impl Iterator<Item = T> {
-        self.iter_adjacent_tiles_with_index(index)
-            .map(|(_, tile)| tile)
+pub trait NeighborCellIterExt<T>: NeighborIterExt {
+    fn iter_neighbor_cells_with_index(&self, index: Coord2) -> impl Iterator<Item = (Coord2, T)>;
+
+    fn iter_neighbor_cells(&self, index: Coord2) -> impl Iterator<Item = T> {
+        self.iter_neighbor_cells_with_index(index)
+            .map(|(_, cell)| cell)
     }
 }
 
-impl<T: Copy> AdjacentTileIterator<T> for Array2<T> {
-    fn iter_adjacent_tiles_with_index(&self, index: Ix2) -> impl Iterator<Item = (Ix2, T)> {
-        self.iter_adjacent(index)
-            .map(|index| (index, self[index.convert()]))
+impl<T: Copy> NeighborCellIterExt<T> for Array2<T> {
+    fn iter_neighbor_cells_with_index(&self, index: Coord2) -> impl Iterator<Item = (Coord2, T)> {
+        self.iter_neighbors(index)
+            .map(|index| (index, self[index.to_nd_index()]))
     }
 }
 
-// Define a displacement mapping for each direction
 const DISPLACEMENTS: [(isize, isize); 8] = [
-    (-1, -1), // Top-Left
-    (0, -1),  // Top
-    (1, -1),  // Top-Right
-    (-1, 0),  // Left
-    (1, 0),   // Right
-    (-1, 1),  // Bottom-Left
-    (0, 1),   // Bottom
-    (1, 1),   // Bottom-Right
+    (-1, -1),
+    (0, -1),
+    (1, -1),
+    (-1, 0),
+    (1, 0),
+    (-1, 1),
+    (0, 1),
+    (1, 1),
 ];
 
-/// Will make coords + delta and return the result if it is withing bounds
-fn apply_delta(coords: Ix2, delta: (isize, isize), bounds: Ix2) -> Option<Ix2> {
+/// Applies `delta` to `coords`, returning a value only when it remains in bounds.
+fn apply_delta(coords: Coord2, delta: (isize, isize), bounds: Coord2) -> Option<Coord2> {
     let (x, y) = coords;
     let (dx, dy) = delta;
-    let (bx, by) = bounds;
-    let nx = x.checked_add_signed(dx.try_into().ok()?)?;
-    if nx >= bx {
+    let (max_x, max_y) = bounds;
+
+    let next_x = x.checked_add_signed(dx.try_into().ok()?)?;
+    if next_x >= max_x {
         return None;
     }
-    let ny = y.checked_add_signed(dy.try_into().ok()?)?;
-    if ny >= by {
+
+    let next_y = y.checked_add_signed(dy.try_into().ok()?)?;
+    if next_y >= max_y {
         return None;
     }
-    Some((nx, ny))
+
+    Some((next_x, next_y))
 }
 
 #[derive(Debug)]
-pub struct IterAdjacent {
-    center: Ix2,
-    bounds: Ix2,
+pub struct NeighborIter {
+    center: Coord2,
+    bounds: Coord2,
     index: u8,
 }
 
-impl IterAdjacent {
-    fn new(center: Ix2, bounds: Ix2) -> Self {
-        IterAdjacent {
+impl NeighborIter {
+    fn new(center: Coord2, bounds: Coord2) -> Self {
+        Self {
             center,
             bounds,
             index: 0,
@@ -102,16 +103,19 @@ impl IterAdjacent {
     }
 }
 
-impl Iterator for IterAdjacent {
-    type Item = Ix2;
+impl Iterator for NeighborIter {
+    type Item = Coord2;
+
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             if usize::from(self.index) >= DISPLACEMENTS.len() {
                 return None;
             }
+
             let next_item =
                 apply_delta(self.center, DISPLACEMENTS[self.index as usize], self.bounds);
             self.index += 1;
+
             if next_item.is_some() {
                 return next_item;
             }

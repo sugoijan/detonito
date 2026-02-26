@@ -212,7 +212,6 @@ dependencies = [
 name = "detonito-core"
 version = "0.1.0"
 dependencies = [
- "chrono",
  "log",
  "ndarray",
  "rand",
@@ -234,6 +233,7 @@ dependencies = [
  "gloo",
  "js-sys",
  "log",
+ "ndarray",
  "serde",
  "wasm-bindgen",
  "wasm-bindgen-futures",

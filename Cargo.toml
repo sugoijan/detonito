@@ -1,9 +1,36 @@
 [workspace]
-resolver = "2"
+resolver = "3"
 members = [
     "detonito_core",
     "detonito_webapp",
 ]
+
+[workspace.package]
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+authors = ["すごいジャン <me@sugoijan.dev>"]
+edition = "2024"
+rust-version = "1.93"
+
+[workspace.dependencies]
+detonito-core.path = "detonito_core"
+bitflags = { version = "2", features = ["serde"] }
+chrono = { version = "0.4", default-features = false, features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+clap-verbosity-flag = "3"
+console_error_panic_hook = "0.1"
+console_log = { version = "1", features = ["color", "wasm-bindgen"] }
+gloo = "0.11"
+js-sys = "0.3"
+log = { version = "0.4", features = ["serde"] }
+ndarray = { version = "0.17", default-features = false, features = ["serde"] }
+rand = { version = "0.10", default-features = false, features = ["serde"] }
+serde = { version = "1", default-features = false }
+thiserror = { version = "2", default-features = false }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+wasm-bindgen-test = "0.3"
+yew = { version = "0.22", features = ["csr"] }
 
 [profile.release]
 # less code to include into binary
