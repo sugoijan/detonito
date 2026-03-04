@@ -1,3 +1,4 @@
+use crate::no_guess_worker;
 use crate::settings;
 use crate::utils::*;
 use bitflags::bitflags;
@@ -5,7 +6,7 @@ use chrono::prelude::*;
 use clap::Args;
 use detonito_core as game;
 use game::{NeighborIterExt, ToNdIndex};
-use gloo::timers::callback::Interval;
+use gloo::timers::callback::{Interval, Timeout};
 use ndarray::Array2;
 use serde::{Deserialize, Serialize};
 use yew::prelude::*;
@@ -270,6 +271,8 @@ pub(crate) enum Msg {
     NewGame,
     ToggleSettings,
     UpdateSettings(settings::Settings),
+    NoGuessGenerated(no_guess_worker::NoGuessGenResponse),
+    NoGuessGenerationTimeout(u64),
 }
 
 #[derive(Properties, Clone, PartialEq)]
@@ -279,6 +282,8 @@ struct CellProps {
     cell_state: ViewCellState,
     #[prop_or_default]
     pressed: bool,
+    #[prop_or_default]
+    loading: bool,
     #[prop_or_default]
     locked: bool,
     callback: Callback<CellMsg>,
@@ -293,6 +298,7 @@ fn cell_component(props: &CellProps) -> Html {
         y,
         cell_state,
         pressed,
+        loading,
         locked,
         callback,
     } = props.clone();
@@ -311,6 +317,9 @@ fn cell_component(props: &CellProps) -> Html {
     );
     if pressed {
         class.push("open");
+    }
+    if loading {
+        class.push("loading");
     }
     if locked {
         class.push("locked");
@@ -384,6 +393,11 @@ pub(crate) struct GameView {
     prev_time: u32,
     settings_open: bool,
     current_cell_state: Option<CellPointerState>,
+    no_guess_worker: Option<no_guess_worker::NoGuessWorkerBridge>,
+    pending_first_action: Option<game::Coord2>,
+    generation_id: u64,
+    is_generating_layout: bool,
+    generation_timeout: Option<Timeout>,
     _timer_interval: Interval,
     _init_settings: GameProps,
 }
@@ -398,21 +412,141 @@ impl GameView {
         } = self;
 
         game.get_or_insert_with(|| {
-            use game::{FirstMovePolicy, LayoutGenerator, RandomLayoutGenerator};
+            use game::{
+                FirstMovePolicy, LayoutGenerator, NoGuessLayoutGenerator, RandomLayoutGenerator,
+            };
             use settings::Generator::*;
 
             let mine_layout = match settings.generator {
-                Random => RandomLayoutGenerator::new(*seed, coords, FirstMovePolicy::Random)
+                RandomGamble => RandomLayoutGenerator::new(*seed, coords, FirstMovePolicy::Random)
                     .generate(settings.game_config),
-                GuaranteedZeroStart => {
+                RandomZeroStart => {
                     RandomLayoutGenerator::new(*seed, coords, FirstMovePolicy::FirstMoveZero)
                         .generate(settings.game_config)
+                }
+                NoGuess => {
+                    NoGuessLayoutGenerator::new(*seed, coords).generate(settings.game_config)
                 }
             };
 
             let engine = game::PlayEngine::new(mine_layout);
             GameSession::new(engine)
         })
+    }
+
+    fn ensure_no_guess_worker(&mut self, ctx: &Context<Self>) -> bool {
+        if self.no_guess_worker.is_some() {
+            return true;
+        }
+
+        let link = ctx.link().clone();
+        self.no_guess_worker = no_guess_worker::spawn_bridge(move |response| {
+            link.send_message(Msg::NoGuessGenerated(response));
+        });
+
+        self.no_guess_worker.is_some()
+    }
+
+    fn begin_no_guess_generation(&mut self, ctx: &Context<Self>, coords: game::Coord2) -> bool {
+        if self.is_generating_layout {
+            return false;
+        }
+
+        self.generation_id = self.generation_id.wrapping_add(1);
+        self.pending_first_action = Some(coords);
+        self.is_generating_layout = true;
+        self.current_cell_state = None;
+
+        let generation_id = self.generation_id;
+        let req = no_guess_worker::NoGuessGenRequest {
+            generation_id,
+            seed: self.seed,
+            first_move: coords,
+            config: self.settings.game_config,
+        };
+
+        self.ensure_no_guess_worker(ctx);
+        let send_ok = self.no_guess_worker.as_ref().map(|w| w.send(req));
+        match send_ok {
+            Some(true) => {
+                self.arm_generation_timeout(ctx, generation_id);
+                true
+            }
+            Some(false) => self.fail_generation(
+                "No-guess worker rejected generation request; cancelled generation",
+            ),
+            None => self.fail_generation("No-guess worker unavailable; cancelled generation"),
+        }
+    }
+
+    fn complete_no_guess_generation(
+        &mut self,
+        response: no_guess_worker::NoGuessGenResponse,
+    ) -> bool {
+        if response.generation_id != self.generation_id {
+            return false;
+        }
+
+        self.is_generating_layout = false;
+        self.generation_timeout = None;
+
+        let summary = response.summary;
+        log::debug!(
+            "No-guess generation done: attempts={} backtracks={} depth={} elapsed={}us succeeded={}",
+            summary.attempts,
+            summary.backtracks,
+            summary.max_depth_reached,
+            summary.elapsed_micros,
+            summary.succeeded
+        );
+
+        self.game = Some(GameSession::new(game::PlayEngine::new(response.layout)));
+
+        if let Some(coords) = self.pending_first_action.take() {
+            self.reveal_cell(coords);
+        }
+
+        true
+    }
+
+    fn cancel_pending_generation(&mut self) -> bool {
+        if !self.is_generating_layout {
+            return false;
+        }
+
+        self.generation_id = self.generation_id.wrapping_add(1);
+        self.pending_first_action = None;
+        self.is_generating_layout = false;
+        self.generation_timeout = None;
+        true
+    }
+
+    fn arm_generation_timeout(&mut self, ctx: &Context<Self>, generation_id: u64) {
+        let timeout_ms = self.generation_timeout_ms();
+        let link = ctx.link().clone();
+        self.generation_timeout = Some(Timeout::new(timeout_ms, move || {
+            link.send_message(Msg::NoGuessGenerationTimeout(generation_id));
+        }));
+    }
+
+    fn generation_timeout_ms(&self) -> u32 {
+        let total_cells = self.settings.game_config.total_cells() as u32;
+        20_000u32
+            .saturating_add(total_cells.saturating_mul(150))
+            .clamp(20_000, 180_000)
+    }
+
+    fn fail_generation(&mut self, reason: &str) -> bool {
+        console_error(reason);
+        self.generation_timeout = None;
+        self.pending_first_action = None;
+        self.is_generating_layout = false;
+        self.current_cell_state = None;
+        self.generation_id = self.generation_id.wrapping_add(1);
+        if let Some(worker) = self.no_guess_worker.take() {
+            worker.terminate();
+        }
+        true
     }
 
     fn get_size(&self) -> game::Coord2 {
@@ -460,6 +594,10 @@ impl GameView {
     }
 
     fn get_game_state_class(&self) -> Classes {
+        if self.is_generating_layout {
+            return classes!("mid-open");
+        }
+
         let mid_open = self.is_mid_open();
         let game_state = self.get_game_state();
 
@@ -475,6 +613,10 @@ impl GameView {
     }
 
     fn is_playable(&self) -> bool {
+        if self.is_generating_layout {
+            return false;
+        }
+
         matches!(
             self.get_game_state(),
             ViewGameState::Ready | ViewGameState::Active
@@ -482,6 +624,10 @@ impl GameView {
     }
 
     fn reveal_cell(&mut self, coords: game::Coord2) -> bool {
+        if self.is_generating_layout {
+            return false;
+        }
+
         use ViewCellState::*;
 
         let now = utc_now();
@@ -504,6 +650,10 @@ impl GameView {
     }
 
     fn mark_cell(&mut self, coords: game::Coord2) -> bool {
+        if self.is_generating_layout {
+            return false;
+        }
+
         use ViewCellState::*;
 
         let enable_question_mark = self.settings.enable_question_mark;
@@ -601,46 +751,76 @@ impl Component for GameView {
             prev_time: 0,
             settings_open: false,
             current_cell_state: None,
+            no_guess_worker: None,
+            pending_first_action: None,
+            generation_id: 0,
+            is_generating_layout: false,
+            generation_timeout: None,
             _timer_interval: GameView::create_timer(ctx),
             _init_settings: ctx.props().clone(),
         }
     }
 
-    fn update(&mut self, _ctx: &Context<Self>, msg: Self::Message) -> bool {
+    fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         use CellMsg::*;
         use Msg::*;
 
         let updated = match msg {
             CellEvent(Leave) => {
-                log::trace!("cell leave");
-                self.current_cell_state.take().is_some()
+                if self.is_generating_layout {
+                    false
+                } else {
+                    log::trace!("cell leave");
+                    self.current_cell_state.take().is_some()
+                }
             }
             CellEvent(Update(cell_state)) => {
-                log::trace!("cell update: {:?}", cell_state);
-                if cell_state.buttons.is_empty() {
-                    match self.current_cell_state.take() {
-                        None => false,
-                        Some(CellPointerState { pos, buttons }) => match buttons {
-                            MouseButtons::LEFT => {
-                                log::debug!("reveal cell: {:?}", pos);
-                                self.reveal_cell(pos);
-                                true
-                            }
-                            MouseButtons::RIGHT => {
-                                log::debug!("mark cell: {:?}", pos);
-                                self.mark_cell(pos);
-                                true
-                            }
-                            _ => true,
-                        },
-                    }
+                if self.is_generating_layout {
+                    self.current_cell_state = None;
+                    false
                 } else {
-                    match self.current_cell_state.replace(cell_state) {
-                        None => true,
-                        Some(CellPointerState { pos, buttons }) => {
-                            (pos != cell_state.pos)
-                                && ((buttons & MouseButtons::LEFT)
-                                    != (cell_state.buttons & MouseButtons::LEFT))
+                    log::trace!("cell update: {:?}", cell_state);
+                    if cell_state.buttons.is_empty() {
+                        match self.current_cell_state.take() {
+                            None => false,
+                            Some(CellPointerState { pos, buttons }) => match buttons {
+                                MouseButtons::LEFT => {
+                                    log::debug!("reveal cell: {:?}", pos);
+                                    if self.game.is_none()
+                                        && matches!(
+                                            self.settings.generator,
+                                            settings::Generator::NoGuess
+                                        )
+                                    {
+                                        self.begin_no_guess_generation(ctx, pos)
+                                    } else {
+                                        self.reveal_cell(pos)
+                                    }
+                                }
+                                MouseButtons::RIGHT => {
+                                    log::debug!("mark cell: {:?}", pos);
+                                    if self.game.is_none()
+                                        && matches!(
+                                            self.settings.generator,
+                                            settings::Generator::NoGuess
+                                        )
+                                    {
+                                        false
+                                    } else {
+                                        self.mark_cell(pos)
+                                    }
+                                }
+                                _ => true,
+                            },
+                        }
+                    } else {
+                        match self.current_cell_state.replace(cell_state) {
+                            None => true,
+                            Some(CellPointerState { pos, buttons }) => {
+                                (pos != cell_state.pos)
+                                    && ((buttons & MouseButtons::LEFT)
+                                        != (cell_state.buttons & MouseButtons::LEFT))
+                            }
                         }
                     }
                 }
@@ -655,8 +835,10 @@ impl Component for GameView {
                 }
             }
             NewGame => {
+                let was_generating = self.cancel_pending_generation();
                 self.seed = js_random_seed();
-                self.game.take().is_some()
+                self.current_cell_state = None;
+                self.game.take().is_some() || was_generating
             }
             ToggleSettings => {
                 self.settings_open = !self.settings_open;
@@ -668,7 +850,20 @@ impl Component for GameView {
             UpdateSettings(settings) => {
                 if self.settings != settings {
                     self.settings = settings;
+                    self.cancel_pending_generation();
                     true
+                } else {
+                    false
+                }
+            }
+            NoGuessGenerated(response) => self.complete_no_guess_generation(response),
+            NoGuessGenerationTimeout(generation_id) => {
+                if self.is_generating_layout && self.generation_id == generation_id {
+                    let reason = format!(
+                        "No-guess worker timed out after {} ms; cancelled generation (no inline fallback)",
+                        self.generation_timeout_ms()
+                    );
+                    self.fail_generation(&reason)
                 } else {
                     false
                 }
@@ -680,12 +875,18 @@ impl Component for GameView {
     }
 
     fn view(&self, ctx: &Context<Self>) -> Html {
-        use settings::SettingsView;
         use Msg::*;
+        use settings::SettingsView;
 
         let (cols, rows) = self.get_size();
         let game_state_class = classes!(self.get_game_state_class());
         let is_playable = self.is_playable();
+        let is_generating_layout = self.is_generating_layout;
+        let new_game_button_title = if is_generating_layout {
+            "Cancel generation"
+        } else {
+            "New game"
+        };
         let mines_left = format_for_counter(self.get_mines_left());
         let elapsed_time = format_for_counter(self.get_time() as i32);
 
@@ -700,10 +901,10 @@ impl Component for GameView {
                 <small onclick={cb_show_settings}>{"···"}</small>
                 <nav>
                     <aside>{mines_left}</aside>
-                    <span><button class={game_state_class} onclick={cb_new_game}/></span>
+                    <span><button class={game_state_class} title={new_game_button_title} onclick={cb_new_game}/></span>
                     <aside>{elapsed_time}</aside>
                 </nav>
-                <table class={is_playable.then_some("playable")}>
+                <table class={classes!(is_playable.then_some("playable"), is_generating_layout.then_some("loading"))}>
                     {
                         for (0..rows).map(|y| html! {
                             <tr>
@@ -714,14 +915,16 @@ impl Component for GameView {
                                             .game
                                             .as_ref()
                                             .map_or(ViewCellState::Hidden, |game| game.cell_state_at(pos));
+                                        let loading_cell = self.is_generating_layout
+                                            && self.pending_first_action == Some(pos);
                                         let locked = self
                                             .game
                                             .as_ref()
                                             .map_or(false, |game| !game.can_interact_at(pos));
-                                        let pressed = self.is_pressed(pos, cell_state);
+                                        let pressed = loading_cell || self.is_pressed(pos, cell_state);
                                         let callback = ctx.link().callback(Msg::CellEvent);
                                         html! {
-                                            <CellView {x} {y} {cell_state} {callback} {pressed} {locked}/>
+                                            <CellView {x} {y} {cell_state} {callback} {pressed} loading={loading_cell} {locked}/>
                                         }
                                     })
                                 }

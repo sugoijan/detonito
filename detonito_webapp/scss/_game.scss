@@ -26,6 +26,7 @@ $marks-openmoji: (
   "diff-evil": "1F608",
   "plus": "2795",
   "minus": "2796",
+  "gamble": "1F3B0",
   "random": "1F3B2",
   "puzzle": "1F9E9",
 );
@@ -188,6 +189,22 @@ $state-size: 24px;
   table {
     border-spacing: 0;
     margin: auto;
+
+    &.loading {
+      pointer-events: none;
+      td {
+        cursor: wait;
+      }
+    }
+  }
+
+  @keyframes loading-spin {
+    from {
+      transform: translate(-9px, -9px) rotate(0deg);
+    }
+    to {
+      transform: translate(-9px, -9px) rotate(360deg);
+    }
   }
 
   table.playable td:not(.locked):hover {
@@ -239,6 +256,26 @@ $state-size: 24px;
     &.open {
       background-color: var(#{$css-var-prefix}background);
       @include pressed-border;
+    }
+
+    &.loading {
+      position: relative;
+
+      &::after {
+        content: "";
+        position: absolute;
+        width: 10px;
+        height: 10px;
+        box-sizing: border-box;
+        $light: var(#{$css-var-prefix}highlight);
+        $light2: var(#{$css-var-prefix}highlight-hover);
+        $dark: var(#{$css-var-prefix}primary-hover);
+        border-width: $border-mid;
+        border-style: solid;
+        border-color: $dark $light2 $light transparent;
+        border-radius: 50%;
+        animation: loading-spin 0.8s linear infinite;
+      }
     }
 
     &.wrong {

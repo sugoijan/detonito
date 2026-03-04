@@ -1,3 +1,7 @@
+pub(crate) fn console_error(message: &str) {
+    web_sys::console::error_1(&wasm_bindgen::JsValue::from_str(message));
+}
+
 /// Helper function to use JavaScript's Math.random
 pub(crate) fn js_random_seed() -> u64 {
     use js_sys::Math::random;

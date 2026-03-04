@@ -20,8 +20,8 @@ impl RandomLayoutGenerator {
 
 impl LayoutGenerator for RandomLayoutGenerator {
     fn generate(self, config: GameConfig) -> MineLayout {
-        use rand::prelude::*;
         use FirstMovePolicy::*;
+        use rand::prelude::*;
 
         let total_cells = config.total_cells();
 

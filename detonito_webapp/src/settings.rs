@@ -12,9 +12,11 @@ pub const EVIL: game::GameConfig = game::GameConfig::new_unchecked((30, 20), 130
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) enum Generator {
     /// Purely random, even the first tile can have a bomb, that's unlucky
-    Random,
+    RandomGamble,
     /// First move is forced to a zero-cell when possible.
-    GuaranteedZeroStart,
+    RandomZeroStart,
+    /// Guaranteed no guess needed to win
+    NoGuess,
     // TODO: NoGuess where guesses are guaranteed losses
 }
 
@@ -35,7 +37,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             game_config: BEGINNER,
-            generator: Generator::GuaranteedZeroStart,
+            generator: Generator::NoGuess,
             enable_question_mark: false,
             enable_flag_chord: true,
             enable_auto_trivial: true,
@@ -154,14 +156,19 @@ pub(crate) fn SettingsView(props: &SettingsProps) -> Html {
         }
     };
 
+    let set_generator_gamble = {
+        let settings = settings.clone();
+        move |_| settings.dispatch(SettingsAction::SetGenerator(Generator::RandomGamble))
+    };
+
     let set_generator_random = {
         let settings = settings.clone();
-        move |_| settings.dispatch(SettingsAction::SetGenerator(Generator::Random))
+        move |_| settings.dispatch(SettingsAction::SetGenerator(Generator::RandomZeroStart))
     };
 
     let set_generator_puzzle = {
         let settings = settings.clone();
-        move |_| settings.dispatch(SettingsAction::SetGenerator(Generator::GuaranteedZeroStart))
+        move |_| settings.dispatch(SettingsAction::SetGenerator(Generator::NoGuess))
     };
 
     let toggle_question = {
@@ -263,9 +270,11 @@ pub(crate) fn SettingsView(props: &SettingsProps) -> Html {
             {" "}
             <button class={classes!("question", (!settings.enable_question_mark).then_some("pressed"))} onclick={toggle_question}/>
             <hr/>
-            <button class={classes!("random", (settings.generator == Generator::Random).then_some("pressed"))} onclick={set_generator_random}/>
+            <button class={classes!("gamble", (settings.generator == Generator::RandomGamble).then_some("pressed"))} onclick={set_generator_gamble}/>
             {" "}
-            <button class={classes!("puzzle", (settings.generator == Generator::GuaranteedZeroStart).then_some("pressed"))} onclick={set_generator_puzzle}/>
+            <button class={classes!("random", (settings.generator == Generator::RandomZeroStart).then_some("pressed"))} onclick={set_generator_random}/>
+            {" "}
+            <button class={classes!("puzzle", (settings.generator == Generator::NoGuess).then_some("pressed"))} onclick={set_generator_puzzle}/>
         </dialog>
     }
 }

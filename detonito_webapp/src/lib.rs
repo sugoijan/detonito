@@ -2,6 +2,7 @@ use clap::Parser;
 use wasm_bindgen::prelude::*;
 
 mod game;
+mod no_guess_worker;
 mod settings;
 mod theme;
 mod utils;
@@ -19,12 +20,18 @@ struct Args {
 
 #[wasm_bindgen(start)]
 pub fn run_app() {
-    use gloo::utils::{document, window};
-
     #[cfg(feature = "console_error_panic_hook")]
     {
         console_error_panic_hook::set_once();
     }
+
+    if is_worker_context() {
+        let _ = console_log::init_with_level(log::Level::Info);
+        no_guess_worker::register_worker();
+        return;
+    }
+
+    use gloo::utils::{document, window};
 
     let location_hash = window()
         .location()
@@ -32,9 +39,8 @@ pub fn run_app() {
         .unwrap_or_else(|_| "".to_string());
 
     let args = Args::try_parse_from(location_hash.split(['#', '&'])).expect("Could not parse args");
-    if let Some(log_level) = args.verbose.log_level() {
-        console_log::init_with_level(log_level).expect("Error initializing logger");
-    }
+    let log_level = args.verbose.log_level().unwrap_or(log::Level::Info);
+    let _ = console_log::init_with_level(log_level);
 
     theme::Theme::init();
 
@@ -44,4 +50,8 @@ pub fn run_app() {
 
     log::debug!("App started");
     yew::Renderer::<game::GameView>::with_root_and_props(root, args.init_settings).render();
+}
+
+fn is_worker_context() -> bool {
+    web_sys::window().is_none()
 }

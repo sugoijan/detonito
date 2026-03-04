@@ -7,7 +7,8 @@ edition.workspace = true
 rust-version.workspace = true
 
 [lib]
-crate-type = ["rlib", "cdylib"]
+crate-type = ["rlib"]
+bench = false
 
 [dependencies]
 ndarray.workspace = true
@@ -15,3 +16,28 @@ rand.workspace = true
 thiserror.workspace = true
 log.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+rustsat.workspace = true
+rustsat-batsat.workspace = true
+web-time.workspace = true
+smallvec.workspace = true
+hashbrown.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test.workspace = true
+
+[[bench]]
+name = "solver_tiers"
+harness = false
+
+[[bench]]
+name = "gen_tiers"
+harness = false
+
+[[bin]]
+name = "bench_solver"
+bench = false
+test = false
