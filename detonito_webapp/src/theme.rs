@@ -1,8 +1,9 @@
 use crate::utils::*;
 use serde::{Deserialize, Serialize};
 
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub(crate) enum Theme {
+    #[default]
     Light,
     Dark,
 }
@@ -45,12 +46,6 @@ impl Theme {
     pub(crate) fn apply(theme: Option<Self>) {
         theme.local_save();
         Self::update_html(theme);
-    }
-}
-
-impl Default for Theme {
-    fn default() -> Self {
-        Self::Light
     }
 }
 

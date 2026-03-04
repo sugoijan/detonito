@@ -398,15 +398,20 @@ impl GameView {
         } = self;
 
         game.get_or_insert_with(|| {
-            use game::{FirstMovePolicy, LayoutGenerator, RandomLayoutGenerator};
+            use game::{
+                FirstMovePolicy, LayoutGenerator, NoGuessLayoutGenerator, RandomLayoutGenerator,
+            };
             use settings::Generator::*;
 
             let mine_layout = match settings.generator {
-                Random => RandomLayoutGenerator::new(*seed, coords, FirstMovePolicy::Random)
+                RandomGamble => RandomLayoutGenerator::new(*seed, coords, FirstMovePolicy::Random)
                     .generate(settings.game_config),
-                GuaranteedZeroStart => {
+                RandomZeroStart => {
                     RandomLayoutGenerator::new(*seed, coords, FirstMovePolicy::FirstMoveZero)
                         .generate(settings.game_config)
+                }
+                NoGuess => {
+                    NoGuessLayoutGenerator::new(*seed, coords).generate(settings.game_config)
                 }
             };
 
@@ -680,8 +685,8 @@ impl Component for GameView {
     }
 
     fn view(&self, ctx: &Context<Self>) -> Html {
-        use settings::SettingsView;
         use Msg::*;
+        use settings::SettingsView;
 
         let (cols, rows) = self.get_size();
         let game_state_class = classes!(self.get_game_state_class());

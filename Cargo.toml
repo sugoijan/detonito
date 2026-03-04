@@ -25,11 +25,15 @@ js-sys = "0.3"
 log = { version = "0.4", features = ["serde"] }
 ndarray = { version = "0.17", default-features = false, features = ["serde"] }
 rand = { version = "0.10", default-features = false, features = ["serde"] }
+rustsat = { version = "0.7", default-features = true }
+rustsat-batsat = "0.7"
 serde = { version = "1", default-features = false }
+serde_json = "1"
 thiserror = { version = "2", default-features = false }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 wasm-bindgen-test = "0.3"
+web-time = "1"
 yew = { version = "0.22", features = ["csr"] }
 
 [profile.release]
@@ -40,4 +44,9 @@ codegen-units = 1
 # optimization for size ( more aggressive )
 opt-level = 'z'
 # link time optimization using using whole-program analysis
+lto = true
+
+[profile.bench]
+# XXX: mostly match the tuning from the release profile
+codegen-units = 1
 lto = true

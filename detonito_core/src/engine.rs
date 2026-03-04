@@ -5,8 +5,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::*;
 
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub enum EngineState {
+    #[default]
     Ready,
     Active,
     Won,
@@ -20,12 +21,6 @@ impl EngineState {
 
     pub const fn is_finished(self) -> bool {
         matches!(self, Self::Won | Self::Lost)
-    }
-}
-
-impl Default for EngineState {
-    fn default() -> Self {
-        Self::Ready
     }
 }
 
