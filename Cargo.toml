@@ -1,8 +1,8 @@
 [workspace]
 resolver = "3"
 members = [
-    "detonito_core",
-    "detonito_webapp",
+    "core",
+    "web",
 ]
 
 [workspace.package]
@@ -13,7 +13,7 @@ edition = "2024"
 rust-version = "1.93"
 
 [workspace.dependencies]
-detonito-core.path = "detonito_core"
+detonito-core = { path = "core" }
 bitflags = { version = "2", features = ["serde"] }
 chrono = { version = "0.4", default-features = false, features = ["serde"] }
 clap = { version = "4", features = ["derive"] }

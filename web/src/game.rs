@@ -76,6 +76,14 @@ impl GameSession {
         }
     }
 
+    fn mines_left_for_display(&self) -> i32 {
+        if matches!(self.engine.state(), game::EngineState::Won) {
+            0
+        } else {
+            self.engine.mines_left() as i32
+        }
+    }
+
     fn view_state(&self) -> ViewGameState {
         use game::EngineState::*;
         match self.engine.state() {
@@ -573,7 +581,7 @@ impl GameView {
     fn get_mines_left(&self) -> i32 {
         self.game
             .as_ref()
-            .map(|g| g.engine.mines_left() as i32)
+            .map(|g| g.mines_left_for_display())
             .unwrap_or(self.get_total_mines() as i32)
     }
 
@@ -986,6 +994,43 @@ mod tests {
         session.on_successful_move(t0());
 
         assert_eq!(session.view_state(), ViewGameState::WonOnFirstMove);
+    }
+
+    #[test]
+    fn mines_left_for_display_is_zero_when_won() {
+        let layout = game::MineLayout::from_mine_coords((2, 1), &[(0, 0)]).unwrap();
+        let mut session = GameSession::new(game::PlayEngine::new(layout));
+
+        assert_eq!(
+            session.engine.reveal((1, 0)).unwrap(),
+            game::RevealOutcome::Won
+        );
+        session.on_successful_move(t0());
+
+        assert_eq!(session.mines_left_for_display(), 0);
+    }
+
+    #[test]
+    fn mines_left_for_display_matches_engine_while_active() {
+        let layout = game::MineLayout::from_mine_coords((2, 2), &[(0, 0), (1, 1)]).unwrap();
+        let mut session = GameSession::new(game::PlayEngine::new(layout));
+
+        assert_eq!(
+            session.engine.reveal((1, 0)).unwrap(),
+            game::RevealOutcome::Revealed
+        );
+        session.on_successful_move(t0());
+
+        assert_eq!(
+            session.engine.toggle_flag((0, 0)).unwrap(),
+            game::MarkOutcome::Changed
+        );
+        session.on_successful_move(t0());
+
+        assert_eq!(
+            session.mines_left_for_display(),
+            session.engine.mines_left() as i32
+        );
     }
 
     #[test]

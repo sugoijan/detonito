@@ -5,9 +5,9 @@
 
 ## Build it yourself
 
-You'll need Rust, trunk, Sass, Node.js and ttfautohint.
+You'll need Rust, trunk, Sass, Node.js, ttfautohint and just
 
-Use `trunk serve` (in the `detonito_webapp` dir) for local testing. For actual builds see [the CI script](.github/workflows/pages.yml).
+Use `just web` for local testing. For actual builds see [the CI script](.github/workflows/pages.yml).
 
 ## License
 

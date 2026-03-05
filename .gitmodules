@@ -1,6 +1,6 @@
 [submodule "openmoji"]
-	path = detonito_webapp/vendor/openmoji
+	path = web/vendor/openmoji
 	url = https://github.com/hfg-gmuend/openmoji.git
 [submodule "vendor/Iosevka"]
-	path = detonito_webapp/vendor/Iosevka
+	path = web/vendor/Iosevka
 	url = https://github.com/be5invis/Iosevka.git

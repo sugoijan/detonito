@@ -207,6 +207,15 @@ $state-size: 24px;
     }
   }
 
+  @keyframes loading-spinner-show {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
   table.playable td:not(.locked):hover {
     background-color: var(#{$css-var-prefix}primary-hover);
   }
@@ -274,7 +283,10 @@ $state-size: 24px;
         border-style: solid;
         border-color: $dark $light2 $light transparent;
         border-radius: 50%;
-        animation: loading-spin 0.8s linear infinite;
+        opacity: 0;
+        animation:
+          loading-spin 0.8s linear infinite,
+          loading-spinner-show 0s linear 100ms forwards;
       }
     }
 

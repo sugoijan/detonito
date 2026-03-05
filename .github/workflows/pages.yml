@@ -59,26 +59,26 @@ jobs:
       - name: Get Iosevka Submodule Commit Hash
         id: iosevka-commit-hash
         run: |
-          echo "IOSEVKA_COMMIT=$(git -C detonito_webapp/vendor/Iosevka rev-parse HEAD)" >> $GITHUB_ENV
+          echo "IOSEVKA_COMMIT=$(git -C web/vendor/Iosevka rev-parse HEAD)" >> $GITHUB_ENV
 
       - name: Calculate Hash of private-build-plans.toml
         id: build-plan-hash
         run: |
-          BUILD_PLAN_HASH=$(sha256sum detonito_webapp/vendor/Iosevka-custom/private-build-plans.toml | cut -d' ' -f1)
+          BUILD_PLAN_HASH=$(sha256sum web/vendor/Iosevka-custom/private-build-plans.toml | cut -d' ' -f1)
           echo "BUILD_PLAN_HASH=$BUILD_PLAN_HASH" >> $GITHUB_ENV
 
       - name: Cache Fonts
         id: cache-fonts
         uses: actions/cache@v4
         with:
-          path: detonito_webapp/vendor/Iosevka/dist
+          path: web/vendor/Iosevka/dist
           key: iosevka-${{ env.IOSEVKA_COMMIT }}-${{ env.BUILD_PLAN_HASH }}
 
       - name: Generate Custom Iosevka Font
         if: steps.cache-fonts.outputs.cache-hit != 'true'
         shell: bash
         run: |
-          cd detonito_webapp/vendor
+          cd web/vendor
           cp Iosevka-custom/private-build-plans.toml Iosevka/
           cd Iosevka
           npm install
@@ -95,7 +95,7 @@ jobs:
       - name: Build with Trunk
         # Build for release into ./_site (default is ./dist) and consider the public url
         run: |
-          cd detonito_webapp
+          cd web
           trunk build --release --minify --dist ../_site --public-url "${{ steps.pages.outputs.base_path }}"
 
       - name: Upload artifact
