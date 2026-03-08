@@ -384,8 +384,7 @@ impl StatefulSolver {
             mines_sorted.sort_unstable();
             let mut safe_sorted = all_safe_ids.clone();
             safe_sorted.sort_unstable();
-            current_problem =
-                current_problem.apply_prior_assignments(&mines_sorted, &safe_sorted);
+            current_problem = current_problem.apply_prior_assignments(&mines_sorted, &safe_sorted);
 
             if !current_problem.variables.is_empty() {
                 let cascade = propagation::run_propagation(&current_problem);

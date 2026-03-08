@@ -121,8 +121,7 @@ impl ConstraintProblem {
         }
 
         self.variables.retain(|v| {
-            prior_mines.binary_search(&v.id).is_err()
-                && prior_safe.binary_search(&v.id).is_err()
+            prior_mines.binary_search(&v.id).is_err() && prior_safe.binary_search(&v.id).is_err()
         });
 
         reduce_equations_inplace(&mut self.equations, prior_safe, prior_mines);

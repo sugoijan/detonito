@@ -1,38 +1,104 @@
 @use "../settings" as *;
 
 @mixin theme {
+  // pallete
+  $black: #040404;
+  $white: #eee;
+  $gray-light: #e1e5e7;
+  $gray-semilight: #adb5ba;
+  $gray: #b0b6ba;
+  $gray-semidark: #73787b;
+  $gray-dark: #383838;
+  $blue: #4e60f7;
+  $blue-shade: #171bee;
+  $red: #ff554d;
+  $red-shade: #e51308;
+  $red-shade2: #731611;
+  $green: #47ab3d;
+  $green-shade: #188f0d;
+  $yellow: #ffdb4f;
+  $yellow-shade: #f1b31c;
+  $pink: #f953d7;
+  $pink-shade: #e51cbc;
+  $purple: #5426a2;
+  $purple-shade: #320088;
+  $orange: #f4aa41;
+  $orange-shade: #e27022;
+  $brown: #ab6a43;
+  $brown-shade: #a0450e;
+  $cyan: #1b9bcd;
+  $cyan-shade: #017b97;
+
   // main colors
-  #{$css-var-prefix}body-background-color: #2d98b9;
-  #{$css-var-prefix}highlight: #ffffff;
-  #{$css-var-prefix}highlight-hover: #eeeeee;
-  #{$css-var-prefix}primary: #c0c0c0;
-  #{$css-var-prefix}primary-hover: #d5d5d5;
-  #{$css-var-prefix}shadow: #808080;
-  #{$css-var-prefix}background: #c0c0c0;
-  #{$css-var-prefix}background-hover: #d5d5d5;
-  #{$css-var-prefix}text: #252525;
-  #{$css-var-prefix}counter-text: #ff0000;
-  #{$css-var-prefix}counter-bg1: #000000;
-  #{$css-var-prefix}counter-bg2: #6b0000;
+  $hover: 5%;
+  #{$css-var-prefix}body-background-color: $cyan;
+  #{$css-var-prefix}highlight: $gray-light;
+  #{$css-var-prefix}highlight-hover: darken($gray-light, $hover);
+  #{$css-var-prefix}primary: $gray;
+  #{$css-var-prefix}primary-hover: darken($gray, $hover);
+  #{$css-var-prefix}shadow: $gray-semidark;
+  #{$css-var-prefix}shadow-hover: darken($gray-semidark, $hover);
+  #{$css-var-prefix}background: $gray-semilight;
+  #{$css-var-prefix}background-hover: darken($gray-semilight, $hover);
+  #{$css-var-prefix}text: $black;
+  #{$css-var-prefix}counter-text: $red-shade;
+  #{$css-var-prefix}counter-bg1: $black;
+  #{$css-var-prefix}counter-bg2: $red-shade2;
 
   // tile modifiers
-  #{$css-var-prefix}exploded: #ff0000;
+  #{$css-var-prefix}exploded: $red-shade;
   $slight-red: #ffa0a0;
   #{$css-var-prefix}incorrect: $slight-red;
   #{$css-var-prefix}incorrect-highlight: desaturate(lighten($slight-red, 13.5%), 12%);
   #{$css-var-prefix}incorrect-shadow: saturate(darken($slight-red, 16.666%), 21%);
 
   // number colors
+  // classic colors:
+  // #{$css-var-prefix}num0: transparent;
+  // #{$css-var-prefix}num1: #0000ff;
+  // #{$css-var-prefix}num2: #008000;
+  // #{$css-var-prefix}num3: #ee0000;
+  // #{$css-var-prefix}num4: #000080;
+  // #{$css-var-prefix}num5: #800000;
+  // #{$css-var-prefix}num6: #008080;
+  // #{$css-var-prefix}num7: #000000;
+  // #{$css-var-prefix}num8: #808080;
+  // #{$css-var-prefix}num9: #800080;
+  // palette colors:
   #{$css-var-prefix}num0: transparent;
-  #{$css-var-prefix}num1: #0000ff;
-  #{$css-var-prefix}num2: #008000;
-  #{$css-var-prefix}num3: #ee0000;
-  #{$css-var-prefix}num4: #000080;
-  #{$css-var-prefix}num5: #800000;
-  #{$css-var-prefix}num6: #008080;
-  #{$css-var-prefix}num7: #000000;
-  #{$css-var-prefix}num8: #808080;
-  #{$css-var-prefix}num9: #800080;
+  #{$css-var-prefix}num1: $blue-shade;
+  #{$css-var-prefix}num2: $green-shade;
+  #{$css-var-prefix}num3: $red-shade;
+  #{$css-var-prefix}num4: $purple-shade;
+  #{$css-var-prefix}num5: $brown-shade;
+  #{$css-var-prefix}num6: $cyan-shade;
+  #{$css-var-prefix}num7: $gray-dark;
+  #{$css-var-prefix}num8: $white;
+  #{$css-var-prefix}num9: $pink-shade;
+
+
+  // shared sprite palette
+  #{$css-var-prefix}sprite-blue: $blue;
+  #{$css-var-prefix}sprite-blue-shade: $blue-shade;
+  #{$css-var-prefix}sprite-red: $red;
+  #{$css-var-prefix}sprite-red-shade: $red-shade;
+  #{$css-var-prefix}sprite-green: $green;
+  #{$css-var-prefix}sprite-green-shade: $green-shade;
+  #{$css-var-prefix}sprite-yellow: $yellow;
+  #{$css-var-prefix}sprite-yellow-shade: $yellow-shade;
+  #{$css-var-prefix}sprite-white: $white;
+  #{$css-var-prefix}sprite-gray-light: $gray-light;
+  #{$css-var-prefix}sprite-gray: $gray;
+  #{$css-var-prefix}sprite-gray-dark: $gray-dark;
+  #{$css-var-prefix}sprite-ink: $black;
+  #{$css-var-prefix}sprite-pink: $pink;
+  #{$css-var-prefix}sprite-pink-shade: $pink-shade;
+  #{$css-var-prefix}sprite-purple: $purple;
+  #{$css-var-prefix}sprite-purple-shade: $purple-shade;
+  #{$css-var-prefix}sprite-orange: $orange;
+  #{$css-var-prefix}sprite-orange-shade: $orange-shade;
+  #{$css-var-prefix}sprite-brown: $brown;
+  #{$css-var-prefix}sprite-brown-shade: $brown-shade;
 
   // extras
   #{$css-var-prefix}drop-shadow: 2px 2px 15px rgba(0, 0, 0, .15);

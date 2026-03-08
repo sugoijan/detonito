@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "core",
     "web",
+    "xtask",
 ]
 
 [workspace.package]
@@ -13,6 +14,7 @@ edition = "2024"
 rust-version = "1.93"
 
 [workspace.dependencies]
+anyhow = "1"
 detonito-core = { path = "core" }
 bitflags = { version = "2", features = ["serde"] }
 chrono = { version = "0.4", default-features = false, features = ["serde"] }
@@ -37,9 +39,17 @@ web-time = "1"
 web-sys = { version = "0.3", features = [
     "Blob",
     "BlobPropertyBag",
+    "Document",
     "DedicatedWorkerGlobalScope",
+    "Element",
+    "Event",
+    "EventTarget",
+    "HtmlElement",
     "MessageEvent",
+    "MediaQueryList",
+    "Node",
     "Url",
+    "Window",
     "Worker",
     "WorkerOptions",
     "WorkerType",
@@ -48,6 +58,10 @@ yew = { version = "0.22", features = ["csr"] }
 criterion = { version = "0.8", features = ["html_reports"] }
 smallvec = { version = "1", features = ["union", "serde"] }
 hashbrown = "0.16"
+roxmltree = "0.20"
+toml = "0.8"
+ttf-parser = "0.25"
+xmlwriter = "0.1"
 
 [profile.release]
 # less code to include into binary
@@ -63,3 +77,13 @@ lto = true
 # XXX: mostly match the tuning from the release profile
 codegen-units = 1
 lto = true
+
+[profile.dev.package."*"]
+opt-level = 3
+
+# Profile for optimized dependencies in the web app for development
+[profile.web-dev]
+inherits = "dev"
+
+[profile.web-dev.package.detonito-core]
+opt-level = 3

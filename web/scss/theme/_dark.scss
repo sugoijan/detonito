@@ -1,22 +1,53 @@
 @use "../settings" as *;
 
 @mixin theme {
+  // pallete
+  $black: #040404;
+  $white: #cccdcd;
+  $gray-light: #aaabab;
+  $gray-semilight: #999a9a;
+  $gray: #5f5c5c;
+  $gray-semidark: #404142;
+  $gray-semidark2: #414143;
+  $gray-dark: #202121;
+  $blue: #5a94df;
+  $blue-shade: #171bee;
+  $red: #c35560;
+  $red-shade: #c72727;
+  $red-shade2: #540808;
+  $green: #47ab3d;
+  $green-shade: #188f0d;
+  $yellow: #ffd65a;
+  $yellow-shade: #b69d54;
+  $pink: #f953d7;
+  $pink-shade: #e51cbc;
+  $purple: #b074f9;
+  $purple-shade: #320088;
+  $orange: #f4aa41;
+  $orange-shade: #e27022;
+  $brown: #915c47;
+  $brown-shade: #a0450e;
+  $cyan: #2a84a7;
+  $cyan-shade: #09344a;
+
   // main colors
-  #{$css-var-prefix}body-background-color: #123d4a;
-  #{$css-var-prefix}highlight: #606060;
-  #{$css-var-prefix}highlight-hover: #707070;
-  #{$css-var-prefix}primary: #404040;
-  #{$css-var-prefix}primary-hover: #484848;
-  #{$css-var-prefix}shadow: #202020;
-  #{$css-var-prefix}background: #404040;
-  #{$css-var-prefix}background-hover: #484848;
-  #{$css-var-prefix}text: #d0cfce;
-  #{$css-var-prefix}counter-text: #aa0000;
-  #{$css-var-prefix}counter-bg1: #000000;
-  #{$css-var-prefix}counter-bg2: #400000;
+  $hover: 5%;
+  #{$css-var-prefix}body-background-color: $cyan-shade;
+  #{$css-var-prefix}highlight: $gray;
+  #{$css-var-prefix}highlight-hover: lighten($gray, $hover);
+  #{$css-var-prefix}primary: $gray-semidark;
+  #{$css-var-prefix}primary-hover: lighten($gray-semidark, $hover);
+  #{$css-var-prefix}shadow: $gray-dark;
+  #{$css-var-prefix}shadow-hover: lighten($gray-dark, $hover);
+  #{$css-var-prefix}background: $gray-semidark2;
+  #{$css-var-prefix}background-hover: lighten($gray-semidark2, $hover);
+  #{$css-var-prefix}text: $black;
+  #{$css-var-prefix}counter-text: $red-shade;
+  #{$css-var-prefix}counter-bg1: $black;
+  #{$css-var-prefix}counter-bg2: $red-shade2;
 
   // tile modifiers
-  #{$css-var-prefix}exploded: #cc6666;
+  #{$css-var-prefix}exploded: $red-shade;
   $slight-red: #883333;
   #{$css-var-prefix}incorrect: $slight-red;
   #{$css-var-prefix}incorrect-highlight: desaturate(lighten($slight-red, 13.5%), 12%);
@@ -24,16 +55,39 @@
 
   // number colors
   #{$css-var-prefix}num0: transparent;
-  #{$css-var-prefix}num1: #66a4dd;
-  #{$css-var-prefix}num2: #50a050;
-  #{$css-var-prefix}num3: #cc6677;
-  #{$css-var-prefix}num4: #bb77dd;
-  #{$css-var-prefix}num5: #aa9900;
-  #{$css-var-prefix}num6: #55aaaa;
-  #{$css-var-prefix}num7: #999999;
-  #{$css-var-prefix}num8: #cccccc;
-  #{$css-var-prefix}num9: #a859a8;
+  #{$css-var-prefix}num1: $blue;
+  #{$css-var-prefix}num2: $green;
+  #{$css-var-prefix}num3: $red;
+  #{$css-var-prefix}num4: $purple;
+  #{$css-var-prefix}num5: $yellow-shade;
+  #{$css-var-prefix}num6: $cyan;
+  #{$css-var-prefix}num7: $gray-dark;
+  #{$css-var-prefix}num8: $gray-light;
+  #{$css-var-prefix}num9: $pink;
+
+  // shared sprite palette
+  #{$css-var-prefix}sprite-blue: $blue;
+  #{$css-var-prefix}sprite-blue-shade: $blue-shade;
+  #{$css-var-prefix}sprite-red: $red;
+  #{$css-var-prefix}sprite-red-shade: $red-shade;
+  #{$css-var-prefix}sprite-green: $green;
+  #{$css-var-prefix}sprite-green-shade: $green-shade;
+  #{$css-var-prefix}sprite-yellow: $yellow;
+  #{$css-var-prefix}sprite-yellow-shade: $yellow-shade;
+  #{$css-var-prefix}sprite-white: $white;
+  #{$css-var-prefix}sprite-gray-light: $gray-light;
+  #{$css-var-prefix}sprite-gray: $gray;
+  #{$css-var-prefix}sprite-gray-dark: $gray-dark;
+  #{$css-var-prefix}sprite-ink: $black;
+  #{$css-var-prefix}sprite-pink: $pink;
+  #{$css-var-prefix}sprite-pink-shade: $pink-shade;
+  #{$css-var-prefix}sprite-purple: $purple;
+  #{$css-var-prefix}sprite-purple-shade: $purple-shade;
+  #{$css-var-prefix}sprite-orange: $orange;
+  #{$css-var-prefix}sprite-orange-shade: $orange-shade;
+  #{$css-var-prefix}sprite-brown: $brown;
+  #{$css-var-prefix}sprite-brown-shade: $brown-shade;
 
   // extras
-  #{$css-var-prefix}drop-shadow: 0 0 11px rgba(0, 219, 255, 0.11);
+  #{$css-var-prefix}drop-shadow: 0 0 11px rgba(0, 219, 255, 0.05);
 }

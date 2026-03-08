@@ -1,38 +1,8 @@
 @forward "settings";
 @use "settings" as *;
 
-$openmoji-base: "color/svg";
-$openmoji-ext: "svg";
-$states-openmoji: (
-  "not-started": "1F636",
-  "mid-open": "1F62E",
-  "in-progress": "1F642",
-  "win": "1F60E",
-  "lose": "1F635",
-  "instant-win": "E283",
-  "instant-loss": "1F480",
-);
-// alternative flags: 🚩⛳️ ⚑ ⚐
-$marks-openmoji: (
-  "flag": "1F6A9",
-  "mine": "1F4A3",
-  "question": "2754",
-  "theme-light": "1F31E",
-  "theme-dark": "1F31A",
-  "theme-auto": "1F317",
-  "diff-beginner": "1F476",
-  "diff-intermediate": "1F607",
-  "diff-expert": "1F913",
-  "diff-evil": "1F608",
-  "plus": "2795",
-  "minus": "2796",
-  "gamble": "1F3B0",
-  "random": "1F3B2",
-  "puzzle": "1F9E9",
-);
-
 $size-cell: 16px;
-$font-size-cell: 14px;
+$spinner-size: 10px;
 $padding-vert: 5px;
 $padding-hor: 6px;
 $border-thin: 1px;
@@ -59,11 +29,23 @@ $state-size: 24px;
   border-color: $light $dark $dark $light;
 }
 
+@mixin outset-border-hover {
+  $light: var(#{$css-var-prefix}highlight-hover);
+  $dark: var(#{$css-var-prefix}shadow-hover);
+  border-color: $light $dark $dark $light;
+}
+
 @mixin inset-border($width: 1px) {
   $light: var(#{$css-var-prefix}highlight);
   $dark: var(#{$css-var-prefix}shadow);
   border-style: solid;
   border-width: $width;
+  border-color: $dark $light $light $dark;
+}
+
+@mixin inset-border-hover {
+  $light: var(#{$css-var-prefix}highlight-hover);
+  $dark: var(#{$css-var-prefix}shadow-hover);
   border-color: $dark $light $light $dark;
 }
 
@@ -73,7 +55,24 @@ $state-size: 24px;
   border-color: var(#{$css-var-prefix}shadow);
 }
 
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+header {
+  display: none;
+}
+
+main {
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: minmax(0, 0.4fr) auto minmax(0, 1fr);
+  justify-items: center;
+}
+
 #game {
+  grid-row: 2;
   text-align: center;
 }
 
@@ -95,6 +94,78 @@ $state-size: 24px;
   @include outset-border($border-fat);
   background-color: var(#{$css-var-prefix}primary);
   padding: $padding-vert $padding-hor;
+
+  &.settings-open {
+    min-width: 0;
+    min-height: 0;
+  }
+
+  .dtn-icon,
+  .dtn-glyph {
+    display: block;
+    overflow: visible;
+    pointer-events: none;
+  }
+
+  .dtn-glyph-run {
+    display: inline-flex;
+    align-items: center;
+    gap: 0;
+    color: inherit;
+  }
+
+  .dtn-glyph-space {
+    display: inline-block;
+    flex: none;
+  }
+
+  .dtn-glyph-run.dtn-glyph-counter > .dtn-glyph {
+    height: 22.55px;
+  }
+
+  .dtn-glyph-run.dtn-glyph-counter > .dtn-glyph-space {
+    width: 1px;
+  }
+
+  .dtn-glyph-run.dtn-glyph-ui > .dtn-glyph {
+    height: 11px;
+  }
+
+  .dtn-glyph-run.dtn-glyph-ui > .dtn-glyph-space {
+    width: 4px;
+  }
+
+  .cell-glyph {
+    position: absolute;
+    inset: 0;
+    margin: auto;
+    height: 12.68px;
+    margin-top: 1px;
+  }
+
+  .cell-icon {
+    position: absolute;
+    inset: 0;
+    margin: auto;
+    width: 12px;
+    height: 12px;
+  }
+
+  .button-icon {
+    position: absolute;
+    inset: 0;
+    margin: auto;
+    width: 14px;
+    height: 14px;
+    transform: translate(0, 0.75px);
+  }
+
+  .state-icon {
+    width: 24px;
+    height: 24px;
+    margin: -0.6px -0.5px;
+    transform: translate(0, 0);
+  }
 
   > small {
     position: absolute;
@@ -126,18 +197,14 @@ $state-size: 24px;
 
     > aside {
       @include inset-border;
+      display: flex;
+      align-items: center;
+      justify-content: center;
       min-width: $counter-width;
       min-height: $counter-height;
       max-width: $counter-width;
       max-height: $counter-height;
       color: var(#{$css-var-prefix}counter-text);
-      // text styling:
-      font-size: 25px;
-      line-height: 24.5px;
-      text-align: center;
-      font-family: "Iosevka Custom Web";
-      font-stretch: condensed;
-      font-weight: 300;
       // background styling:
       background: repeating-linear-gradient(
         var(#{$css-var-prefix}counter-bg1),
@@ -163,23 +230,18 @@ $state-size: 24px;
         line-height: 20px;
         cursor: pointer;
         padding: 0;
-        // $size: $state-size + 2 * $border-mid;
-        $size: $state-size;
         background-color: var(#{$css-var-prefix}primary);
-        background-size: $size;
-        background-position: center;
-        background-repeat: no-repeat;
+        position: relative;
+        display: grid;
+        place-items: center;
 
         &:hover:active {
           @include pressed-border($border-mid);
           padding: 1px 0 0 1px;
           background-color: var(#{$css-var-prefix}background);
-        }
 
-
-        @each $state, $name in $states-openmoji {
-          &.#{$state} {
-            background-image: url("#{$openmoji-base}/#{$name}.#{$openmoji-ext}");
+          .state-icon {
+            transform: translate(0.75px, 0.75px);
           }
         }
       }
@@ -200,14 +262,14 @@ $state-size: 24px;
 
   @keyframes loading-spin {
     from {
-      transform: translate(-9px, -9px) rotate(0deg);
+      transform: rotate(0deg);
     }
     to {
-      transform: translate(-9px, -9px) rotate(360deg);
+      transform: rotate(360deg);
     }
   }
 
-  @keyframes loading-spinner-show {
+  @keyframes loading-show {
     from {
       opacity: 0;
     }
@@ -225,15 +287,25 @@ $state-size: 24px;
     &:active:hover:not(.locked) {
       background-color: var(#{$css-var-prefix}background-hover);
       @include pressed-border($border-thin);
+
+      .button-icon {
+        transform: translate(0.75px, 0.75px);
+      }
     }
 
     &:hover:not(.locked) {
       background-color: var(#{$css-var-prefix}primary-hover);
+      @include outset-border-hover;
     }
 
     &.pressed {
       background-color: var(#{$css-var-prefix}background);
       @include pressed-border($border-mid);
+
+      .button-icon {
+        transform: translate(0.75px, 0.75px);
+      }
+
       &:hover:not(.locked) {
         background-color: var(#{$css-var-prefix}background-hover);
       }
@@ -249,44 +321,45 @@ $state-size: 24px;
     width: $size-cell;
     min-width: $size-cell;
     max-width: $size-cell;
-    text-align: center;
-    vertical-align: middle;
-    font-family: "Iosevka Custom Web";
-    font-stretch: expanded;
-    font-weight: 900;
-    font-size: $font-size-cell;
-    line-height: 12px;
-    background-position: center;
-    background-repeat: no-repeat;
-    background-size: 12px;
     background-color: var(#{$css-var-prefix}primary);
     @include outset-border($border-mid);
+    position: relative;
+
+    &:hover:not(.locked) {
+      @include outset-border-hover;
+    }
 
     &.open {
       background-color: var(#{$css-var-prefix}background);
       @include pressed-border;
+      &:hover:not(.locked) {
+        @include inset-border-hover;
+      }
     }
 
     &.loading {
       position: relative;
 
       &::after {
+        $size: $spinner-size;
+        $shade1: var(#{$css-var-prefix}highlight);
+        $shade2: var(#{$css-var-prefix}highlight-hover);
+        $shade3: var(#{$css-var-prefix}primary-hover);
         content: "";
         position: absolute;
-        width: 10px;
-        height: 10px;
+        width: $size;
+        height: $size;
+        top: calc(($size-cell - $size - $border-thin) / 2);
+        left: calc(($size-cell - $size - $border-thin) / 2);
         box-sizing: border-box;
-        $light: var(#{$css-var-prefix}highlight);
-        $light2: var(#{$css-var-prefix}highlight-hover);
-        $dark: var(#{$css-var-prefix}primary-hover);
         border-width: $border-mid;
         border-style: solid;
-        border-color: $dark $light2 $light transparent;
+        border-color: $shade3 $shade2 $shade1 transparent;
         border-radius: 50%;
         opacity: 0;
         animation:
           loading-spin 0.8s linear infinite,
-          loading-spinner-show 0s linear 100ms forwards;
+          loading-show 0s linear 100ms forwards;
       }
     }
 
@@ -300,71 +373,100 @@ $state-size: 24px;
       background-color: var(#{$css-var-prefix}exploded);
     }
 
-    @each $mark, $name in $marks-openmoji {
-      &.#{$mark} {
-        $size: $size-cell - 2 * $border-thin;
-        background-image: url("#{$openmoji-base}/#{$name}.#{$openmoji-ext}");
-      }
-    }
-
     @for $i from 0 through 9 {
       &.num-#{$i} {
         color: var(#{$css-var-prefix}num#{$i});
-        &:after {
-          content: "#{$i}";
-        }
       }
     }
   }
 
   dialog {
-    $vert-space: 5px;
-    $hor-space: 5px;
-    position: absolute;
-    top: 0;
-    left: 0;
-    margin: $vert-space $hor-space;
+    position: static;
+    margin: 0;
     padding: 0;
-    display: block;
-    width: calc(100% - (2 * $hor-space));
-    height: calc(100% - (2 * $vert-space));
+    display: inline-block;
     border: 0;
-    background-color: var(#{$css-var-prefix}primary);
+    background-color: transparent;
     color: var(#{$css-var-prefix}text);
     text-align: left;
-    font-family: "Iosevka Custom Web";
-    font-stretch: condensed;
-    font-weight: 400;
-    font-size: 12px;
-    line-height: 17px;
 
     &:not([open]) {
       display: none;
     }
 
-    small {
-      display: inline-block;
+    .menu-grid {
+      margin: 0;
+      font-family: "Iosevka", "SFMono-Regular", "Cascadia Mono", "Segoe UI Mono", monospace;
 
-      button {
-        $size: $size-cell * 0.75;
-        height: $size;
-        min-height: $size;
-        max-height: $size;
-        width: $size;
-        min-width: $size;
-        max-width: $size;
-        background-size: cover;
+      td {
+        background-color: var(#{$css-var-prefix}background);
+        @include pressed-border;
+        color: var(#{$css-var-prefix}text);
+        cursor: default;
+
+        &:hover:not(.locked) {
+          border-color: var(#{$css-var-prefix}shadow);
+        }
+      }
+
+      .menu-button-slot {
+        background-color: transparent;
+        border: 0;
+        cursor: auto;
+
+        &:hover:not(.locked) {
+          border-color: transparent;
+        }
+
+        button {
+          display: block;
+        }
+      }
+
+      .menu-text,
+      .menu-detail,
+      .menu-heading {
+        padding: 0 6px;
+        font-family: inherit;
+        font-size: 9px;
+        line-height: 1.1;
+        vertical-align: middle;
+        white-space: nowrap;
+      }
+
+      .menu-text {
+        text-align: left;
+      }
+
+      .menu-detail {
+        text-align: center;
+      }
+
+      .menu-heading {
+        text-align: center;
+        letter-spacing: 0.04em;
       }
     }
 
-    table {
-      margin: 0 $hor-space 0 0;
-      float: left;
-    }
+    .dev-tools {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 3px;
+      margin-top: 5px;
+      font: 9px/1.2 "Tahoma", sans-serif;
 
-    hr {
-      @include outset-border;
-      margin: $vert-space (-$hor-space);
+      button {
+        width: auto;
+        min-width: 0;
+        max-width: none;
+        height: auto;
+        min-height: 0;
+        max-height: none;
+        padding: 1px 4px;
+        font: inherit;
+        line-height: inherit;
+      }
     }
   }
 }

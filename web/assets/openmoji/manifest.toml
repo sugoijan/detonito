@@ -1,0 +1,99 @@
+[icons.not-started]
+source = "upstream"
+upstream = "1F636.svg"
+
+[icons.mid-open]
+source = "upstream"
+upstream = "1F62E.svg"
+
+[icons.in-progress]
+source = "upstream"
+upstream = "1F642.svg"
+
+[icons.win]
+source = "upstream"
+upstream = "1F60E.svg"
+
+[icons.lose]
+source = "upstream"
+upstream = "1F635.svg"
+
+[icons.instant-win]
+source = "upstream"
+upstream = "E283.svg"
+
+[icons.instant-loss]
+source = "upstream"
+upstream = "1F480.svg"
+
+[icons.flag]
+source = "custom"
+custom = "E306.svg"
+
+[icons.mine]
+source = "custom"
+custom = "E307.svg"
+
+[icons.mine-exploded]
+source = "upstream"
+upstream = "1F4A5.svg"
+
+[icons.question]
+source = "upstream"
+upstream = "2754.svg"
+
+[icons.theme-light]
+source = "upstream"
+upstream = "1F31E.svg"
+
+[icons.theme-dark]
+source = "upstream"
+upstream = "1F31A.svg"
+
+[icons.theme-auto]
+source = "upstream"
+upstream = "1F317.svg"
+
+[icons.diff-beginner]
+source = "upstream"
+upstream = "1F476.svg"
+
+[icons.diff-intermediate]
+source = "upstream"
+upstream = "1F607.svg"
+
+[icons.diff-expert]
+source = "upstream"
+upstream = "1F913.svg"
+
+[icons.diff-evil]
+source = "upstream"
+upstream = "1F608.svg"
+
+[icons.plus]
+source = "upstream"
+upstream = "2795.svg"
+
+[icons.minus]
+source = "upstream"
+upstream = "2796.svg"
+
+[icons.ok]
+source = "upstream"
+upstream = "2714.svg"
+
+[icons.cancel]
+source = "upstream"
+upstream = "274C.svg"
+
+[icons.gamble]
+source = "upstream"
+upstream = "1F3B0.svg"
+
+[icons.random]
+source = "upstream"
+upstream = "1F3B2.svg"
+
+[icons.puzzle]
+source = "upstream"
+upstream = "1F9E9.svg"

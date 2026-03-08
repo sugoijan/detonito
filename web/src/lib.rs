@@ -4,6 +4,7 @@ use wasm_bindgen::prelude::*;
 mod game;
 mod no_guess_worker;
 mod settings;
+mod sprites;
 mod theme;
 mod utils;
 

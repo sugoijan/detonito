@@ -1,5 +1,6 @@
 use crate::no_guess_worker;
 use crate::settings;
+use crate::sprites::{Glyph, GlyphRun, GlyphSet, Icon, IconCrop, SpriteDefs};
 use crate::utils::*;
 use bitflags::bitflags;
 use chrono::prelude::*;
@@ -333,6 +334,23 @@ fn cell_component(props: &CellProps) -> Html {
         class.push("locked");
     }
 
+    let content = match cell_state {
+        Hidden => Html::default(),
+        Revealed(count) if count == 0 => Html::default(),
+        Revealed(count) => html! {
+            <Glyph
+                set={GlyphSet::Cell}
+                ch={char::from_digit(count.into(), 10).expect("Cell numbers fit in a single digit")}
+                class={classes!("cell-glyph")}
+            />
+        },
+        Flagged => html! { <Icon name="flag" class={classes!("cell-icon")}/> },
+        QuestionMarked => html! { <Icon name="question" class={classes!("cell-icon")}/> },
+        TriggeredMine => html! { <Icon name="mine-exploded" class={classes!("cell-icon")}/> },
+        Mine => html! { <Icon name="mine" class={classes!("cell-icon")}/> },
+        Misflagged => html! { <Icon name="flag" class={classes!("cell-icon")}/> },
+    };
+
     let onmousedown = {
         let callback = callback.clone();
         Callback::from(move |e: MouseEvent| {
@@ -382,7 +400,9 @@ fn cell_component(props: &CellProps) -> Html {
     };
 
     html! {
-        <td {class} {onmousedown} {onmouseup} {onmouseenter} {onmouseleave}/>
+        <td {class} {onmousedown} {onmouseup} {onmouseenter} {onmouseleave}>
+            {content}
+        </td>
     }
 }
 
@@ -601,15 +621,15 @@ impl GameView {
         )
     }
 
-    fn get_game_state_class(&self) -> Classes {
+    fn get_game_state_icon_name(&self) -> &'static str {
         if self.is_generating_layout {
-            return classes!("mid-open");
+            return "mid-open";
         }
 
         let mid_open = self.is_mid_open();
         let game_state = self.get_game_state();
 
-        classes!(match game_state {
+        match game_state {
             ViewGameState::Ready | ViewGameState::Active if mid_open => "mid-open",
             ViewGameState::Ready => "not-started",
             ViewGameState::Active => "in-progress",
@@ -617,7 +637,7 @@ impl GameView {
             ViewGameState::Lost => "lose",
             ViewGameState::WonOnFirstMove => "instant-win",
             ViewGameState::LostOnFirstMove => "instant-loss",
-        })
+        }
     }
 
     fn is_playable(&self) -> bool {
@@ -887,7 +907,8 @@ impl Component for GameView {
         use settings::SettingsView;
 
         let (cols, rows) = self.get_size();
-        let game_state_class = classes!(self.get_game_state_class());
+        let game_state_icon = self.get_game_state_icon_name();
+        let game_state_class = classes!(game_state_icon);
         let is_playable = self.is_playable();
         let is_generating_layout = self.is_generating_layout;
         let new_game_button_title = if is_generating_layout {
@@ -902,45 +923,72 @@ impl Component for GameView {
             e.stop_propagation();
             NewGame
         });
-        let cb_show_settings = ctx.link().callback(|_| ToggleSettings);
+        let cb_toggle_settings = ctx.link().callback(|_| ToggleSettings);
 
         html! {
-            <div class="detonito" oncontextmenu={Callback::from(move |e: MouseEvent| e.prevent_default())}>
-                <small onclick={cb_show_settings}>{"···"}</small>
-                <nav>
-                    <aside>{mines_left}</aside>
-                    <span><button class={game_state_class} title={new_game_button_title} onclick={cb_new_game}/></span>
-                    <aside>{elapsed_time}</aside>
-                </nav>
-                <table class={classes!(is_playable.then_some("playable"), is_generating_layout.then_some("loading"))}>
-                    {
-                        for (0..rows).map(|y| html! {
-                            <tr>
-                                {
-                                    for (0..cols).map(|x| {
-                                        let pos = (x, y);
-                                        let cell_state = self
-                                            .game
-                                            .as_ref()
-                                            .map_or(ViewCellState::Hidden, |game| game.cell_state_at(pos));
-                                        let loading_cell = self.is_generating_layout
-                                            && self.pending_first_action == Some(pos);
-                                        let locked = self
-                                            .game
-                                            .as_ref()
-                                            .map_or(false, |game| !game.can_interact_at(pos));
-                                        let pressed = loading_cell || self.is_pressed(pos, cell_state);
-                                        let callback = ctx.link().callback(Msg::CellEvent);
-                                        html! {
-                                            <CellView {x} {y} {cell_state} {callback} {pressed} loading={loading_cell} {locked}/>
-                                        }
-                                    })
-                                }
-                            </tr>
-                        })
+            <div
+                class={classes!("detonito", self.settings_open.then_some("settings-open"))}
+                oncontextmenu={Callback::from(move |e: MouseEvent| e.prevent_default())}
+            >
+                <SpriteDefs/>
+                <small onclick={cb_toggle_settings.clone()}>{"···"}</small>
+                {
+                    if self.settings_open {
+                        html! {
+                            <SettingsView open={true} on_apply={cb_toggle_settings.clone()}/>
+                        }
+                    } else {
+                        html! {
+                            <>
+                                <nav>
+                                    <aside>
+                                        <GlyphRun set={GlyphSet::Counter} text={mines_left} class={classes!("counter-glyphs")}/>
+                                    </aside>
+                                    <span>
+                                        <button class={game_state_class} title={new_game_button_title} onclick={cb_new_game}>
+                                            <Icon
+                                                name={game_state_icon}
+                                                crop={IconCrop::CenteredSquare64}
+                                                class={classes!("state-icon")}
+                                            />
+                                        </button>
+                                    </span>
+                                    <aside>
+                                        <GlyphRun set={GlyphSet::Counter} text={elapsed_time} class={classes!("counter-glyphs")}/>
+                                    </aside>
+                                </nav>
+                                <table class={classes!(is_playable.then_some("playable"), is_generating_layout.then_some("loading"))}>
+                                    {
+                                        for (0..rows).map(|y| html! {
+                                            <tr>
+                                                {
+                                                    for (0..cols).map(|x| {
+                                                        let pos = (x, y);
+                                                        let cell_state = self
+                                                            .game
+                                                            .as_ref()
+                                                            .map_or(ViewCellState::Hidden, |game| game.cell_state_at(pos));
+                                                        let loading_cell = self.is_generating_layout
+                                                            && self.pending_first_action == Some(pos);
+                                                        let locked = self
+                                                            .game
+                                                            .as_ref()
+                                                            .map_or(false, |game| !game.can_interact_at(pos));
+                                                        let pressed = loading_cell || self.is_pressed(pos, cell_state);
+                                                        let callback = ctx.link().callback(Msg::CellEvent);
+                                                        html! {
+                                                            <CellView {x} {y} {cell_state} {callback} {pressed} loading={loading_cell} {locked}/>
+                                                        }
+                                                    })
+                                                }
+                                            </tr>
+                                        })
+                                    }
+                                </table>
+                            </>
+                        }
                     }
-                </table>
-                <SettingsView open={self.settings_open}/>
+                }
             </div>
         }
     }
