@@ -214,12 +214,21 @@ main {
       );
     }
 
-    > span {
+    > .face-slot {
       display: flex;
       justify-content: center;
       align-items: center;
+      position: relative;
+      overflow: visible;
+      width: $state-size;
+      min-width: $state-size;
+      max-width: $state-size;
+      height: $state-size;
+      justify-self: center;
+      align-self: center;
+      isolation: isolate;
 
-      > button {
+      > button.face-button {
         @include outset-border($border-mid);
         min-height: $state-size;
         min-width: $state-size;
@@ -234,6 +243,7 @@ main {
         position: relative;
         display: grid;
         place-items: center;
+        z-index: 2;
 
         &:hover:active {
           @include pressed-border($border-mid);
@@ -243,6 +253,98 @@ main {
           .state-icon {
             transform: translate(0.75px, 0.75px);
           }
+        }
+      }
+
+      .face-prompt-rail {
+        position: absolute;
+        inset: 0;
+        z-index: 3;
+        pointer-events: none;
+      }
+
+      .face-prompt-bubble {
+        $bg-color: var(#{$css-var-prefix}highlight);
+        $border-color: var(#{$css-var-prefix}text);
+
+        position: absolute;
+        right: calc(100% + 3px);
+        top: 50%;
+        transform: translateY(-50%);
+        padding: 5px 7px;
+        min-height: 18px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        white-space: nowrap;
+        color: var(#{$css-var-prefix}text);
+        background-color: $bg-color;
+        font: 9px/1 "Iosevka", "SFMono-Regular", "Cascadia Mono", "Segoe UI Mono", monospace;
+        letter-spacing: 0.01em;
+        pointer-events: auto;
+        border: solid 1px $border-color;
+        border-radius: 3px;
+
+        &::before {
+          content: "";
+          position: absolute;
+          top: 50%;
+          right: -7px;
+          transform: translateY(-50%);
+          border-style: solid;
+          border-width: 5px 0 5px 7px;
+          border-color: transparent transparent transparent $border-color;
+        }
+
+        &::after {
+          content: "";
+          position: absolute;
+          top: 50%;
+          right: calc(-7px + sqrt(2) * 1px);
+          transform: translateY(-50%);
+          border-style: solid;
+          border-width: 4px 0 4px 6px;
+          border-color: transparent transparent transparent $bg-color;
+        }
+      }
+
+      .face-prompt-choices {
+        $bg-color: var(#{$css-var-prefix}primary);
+
+        position: absolute;
+        left: calc(100% + 1px);
+        top: 50%;
+        transform: translateY(-50%);
+        display: flex;
+        align-items: center;
+        gap: 3px;
+        pointer-events: auto;
+        background-color: $bg-color;
+        padding: 5px;
+      }
+
+      .face-prompt-choice {
+        @include outset-border($border-mid);
+        width: auto;
+        min-width: 0;
+        max-width: none;
+        height: 18px;
+        min-height: 18px;
+        max-height: 18px;
+        padding: 0 6px;
+        outline: solid 1px var(#{$css-var-prefix}shadow);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        white-space: nowrap;
+        color: var(#{$css-var-prefix}text);
+        background-color: var(#{$css-var-prefix}primary);
+        font: 9px/1 "Iosevka", "SFMono-Regular", "Cascadia Mono", "Segoe UI Mono", monospace;
+        letter-spacing: 0.01em;
+
+        &:active:hover:not(.locked) {
+          @include pressed-border($border-mid);
+          padding: 1px 5px 0 7px;
         }
       }
     }

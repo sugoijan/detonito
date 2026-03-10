@@ -278,10 +278,57 @@ pub(crate) enum Msg {
     CellEvent(CellMsg),
     UpdateTime,
     NewGame,
+    FaceButtonPress,
+    FacePromptSelected(FacePromptAction),
     ToggleSettings,
     UpdateSettings(settings::Settings),
     NoGuessGenerated(no_guess_worker::NoGuessGenResponse),
     NoGuessGenerationTimeout(u64),
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum FacePromptAction {
+    RestartGame,
+    DismissPrompt,
+    OpenSettings,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct FacePromptChoice {
+    label: AttrValue,
+    title: AttrValue,
+    action: FacePromptAction,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct FacePrompt {
+    message: AttrValue,
+    choices: Vec<FacePromptChoice>,
+}
+
+impl FacePrompt {
+    fn restart_confirmation() -> Self {
+        Self {
+            message: "Restart?".into(),
+            choices: vec![
+                FacePromptChoice {
+                    label: "Yes".into(),
+                    title: "Restart game".into(),
+                    action: FacePromptAction::RestartGame,
+                },
+                FacePromptChoice {
+                    label: "No".into(),
+                    title: "Keep current game".into(),
+                    action: FacePromptAction::DismissPrompt,
+                },
+                FacePromptChoice {
+                    label: "Menu".into(),
+                    title: "Open settings".into(),
+                    action: FacePromptAction::OpenSettings,
+                },
+            ],
+        }
+    }
 }
 
 #[derive(Properties, Clone, PartialEq)]
@@ -420,6 +467,7 @@ pub(crate) struct GameView {
     seed: u64,
     prev_time: u32,
     settings_open: bool,
+    face_prompt: Option<FacePrompt>,
     current_cell_state: Option<CellPointerState>,
     no_guess_worker: Option<no_guess_worker::NoGuessWorkerBridge>,
     pending_first_action: Option<game::Coord2>,
@@ -431,6 +479,49 @@ pub(crate) struct GameView {
 }
 
 impl GameView {
+    fn clear_face_prompt(&mut self) -> bool {
+        self.face_prompt.take().is_some()
+    }
+
+    fn show_face_prompt(&mut self, prompt: FacePrompt) -> bool {
+        if self.face_prompt.is_some() {
+            false
+        } else {
+            self.face_prompt = Some(prompt);
+            true
+        }
+    }
+
+    fn open_restart_prompt(&mut self) -> bool {
+        self.show_face_prompt(FacePrompt::restart_confirmation())
+    }
+
+    fn restart_game(&mut self) -> bool {
+        let prompt_cleared = self.clear_face_prompt();
+        let was_generating = self.cancel_pending_generation();
+        let pointer_cleared = self.current_cell_state.take().is_some();
+        self.seed = js_random_seed();
+        self.game.take().is_some() || was_generating || pointer_cleared || prompt_cleared
+    }
+
+    fn open_settings(&mut self) -> bool {
+        let prompt_cleared = self.clear_face_prompt();
+        if self.settings_open {
+            prompt_cleared
+        } else {
+            self.settings_open = true;
+            prompt_cleared || true
+        }
+    }
+
+    fn apply_face_prompt_action(&mut self, action: FacePromptAction) -> bool {
+        match action {
+            FacePromptAction::RestartGame => self.restart_game(),
+            FacePromptAction::DismissPrompt => self.clear_face_prompt(),
+            FacePromptAction::OpenSettings => self.open_settings(),
+        }
+    }
+
     fn get_or_create_game(&mut self, coords: game::Coord2) -> &mut GameSession {
         let Self {
             game,
@@ -483,6 +574,7 @@ impl GameView {
         self.generation_id = self.generation_id.wrapping_add(1);
         self.pending_first_action = Some(coords);
         self.is_generating_layout = true;
+        self.face_prompt = None;
         self.current_cell_state = None;
 
         let generation_id = self.generation_id;
@@ -765,6 +857,44 @@ impl GameView {
             _ => false,
         }
     }
+
+    fn face_button_title(&self) -> &'static str {
+        if self.is_generating_layout {
+            "Cancel generation"
+        } else if self.face_prompt.is_some() {
+            "Restart prompt open"
+        } else {
+            "New game"
+        }
+    }
+
+    fn view_face_prompt(&self, ctx: &Context<Self>) -> Html {
+        let Some(prompt) = self.face_prompt.as_ref() else {
+            return Html::default();
+        };
+
+        html! {
+            <div class="face-prompt-rail" aria-live="polite">
+                <div class="face-prompt-bubble">{prompt.message.clone()}</div>
+                <div class="face-prompt-choices">
+                    {
+                        for prompt.choices.iter().map(|choice| {
+                            let label = choice.label.clone();
+                            let title = choice.title.clone();
+                            let action = choice.action;
+                            let onclick = ctx.link().callback(move |e: MouseEvent| {
+                                e.stop_propagation();
+                                Msg::FacePromptSelected(action)
+                            });
+                            html! {
+                                <button class="face-prompt-choice" {title} {onclick}>{label}</button>
+                            }
+                        })
+                    }
+                </div>
+            </div>
+        }
+    }
 }
 
 impl Component for GameView {
@@ -778,6 +908,7 @@ impl Component for GameView {
             seed: js_random_seed(),
             prev_time: 0,
             settings_open: false,
+            face_prompt: None,
             current_cell_state: None,
             no_guess_worker: None,
             pending_first_action: None,
@@ -862,13 +993,19 @@ impl Component for GameView {
                     false
                 }
             }
-            NewGame => {
-                let was_generating = self.cancel_pending_generation();
-                self.seed = js_random_seed();
-                self.current_cell_state = None;
-                self.game.take().is_some() || was_generating
+            NewGame => self.restart_game(),
+            FaceButtonPress => {
+                if self.is_generating_layout {
+                    self.restart_game()
+                } else if self.face_prompt.is_some() {
+                    false
+                } else {
+                    self.open_restart_prompt()
+                }
             }
+            FacePromptSelected(action) => self.apply_face_prompt_action(action),
             ToggleSettings => {
+                self.clear_face_prompt();
                 self.settings_open = !self.settings_open;
                 if !self.settings_open {
                     self.settings = LocalOrDefault::local_or_default();
@@ -878,6 +1015,7 @@ impl Component for GameView {
             UpdateSettings(settings) => {
                 if self.settings != settings {
                     self.settings = settings;
+                    self.clear_face_prompt();
                     self.cancel_pending_generation();
                     true
                 } else {
@@ -908,20 +1046,16 @@ impl Component for GameView {
 
         let (cols, rows) = self.get_size();
         let game_state_icon = self.get_game_state_icon_name();
-        let game_state_class = classes!(game_state_icon);
+        let game_state_class = classes!("face-button", game_state_icon);
         let is_playable = self.is_playable();
         let is_generating_layout = self.is_generating_layout;
-        let new_game_button_title = if is_generating_layout {
-            "Cancel generation"
-        } else {
-            "New game"
-        };
+        let new_game_button_title = self.face_button_title();
         let mines_left = format_for_counter(self.get_mines_left());
         let elapsed_time = format_for_counter(self.get_time() as i32);
 
-        let cb_new_game = ctx.link().callback(|e: MouseEvent| {
+        let cb_face_button = ctx.link().callback(|e: MouseEvent| {
             e.stop_propagation();
-            NewGame
+            FaceButtonPress
         });
         let cb_toggle_settings = ctx.link().callback(|_| ToggleSettings);
 
@@ -944,8 +1078,9 @@ impl Component for GameView {
                                     <aside>
                                         <GlyphRun set={GlyphSet::Counter} text={mines_left} class={classes!("counter-glyphs")}/>
                                     </aside>
-                                    <span>
-                                        <button class={game_state_class} title={new_game_button_title} onclick={cb_new_game}>
+                                    <span class={classes!("face-slot", self.face_prompt.is_some().then_some("prompt-open"))}>
+                                        {self.view_face_prompt(ctx)}
+                                        <button class={game_state_class} title={new_game_button_title} onclick={cb_face_button}>
                                             <Icon
                                                 name={game_state_icon}
                                                 crop={IconCrop::CenteredSquare64}
@@ -1084,5 +1219,25 @@ mod tests {
     #[test]
     fn storage_key_uses_new_versioned_namespace() {
         assert_eq!(<GameSession as StorageKey>::KEY, "detonito:game:v2");
+    }
+
+    #[test]
+    fn restart_confirmation_prompt_has_expected_message_and_choices() {
+        let prompt = FacePrompt::restart_confirmation();
+        let labels_and_actions = prompt
+            .choices
+            .iter()
+            .map(|choice| (choice.label.as_ref(), choice.action))
+            .collect::<Vec<_>>();
+
+        assert_eq!(prompt.message.as_ref(), "Restart?");
+        assert_eq!(
+            labels_and_actions,
+            vec![
+                ("Yes", FacePromptAction::RestartGame),
+                ("No", FacePromptAction::DismissPrompt),
+                ("Menu", FacePromptAction::OpenSettings),
+            ]
+        );
     }
 }
