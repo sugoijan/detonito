@@ -58,7 +58,7 @@ yew = { version = "0.22", features = ["csr"] }
 criterion = { version = "0.8", features = ["html_reports"] }
 smallvec = { version = "1", features = ["union", "serde"] }
 hashbrown = "0.16"
-roxmltree = "0.20"
+roxmltree = "0.21"
 toml = "0.8"
 ttf-parser = "0.25"
 xmlwriter = "0.1"
