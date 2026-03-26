@@ -293,6 +293,14 @@ pub(crate) enum FacePromptAction {
     OpenSettings,
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+enum FacePromptInteractionMode {
+    Ignorable,
+    AutoDismiss,
+    Mandatory,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct FacePromptChoice {
     label: AttrValue,
@@ -303,13 +311,22 @@ struct FacePromptChoice {
 #[derive(Clone, Debug, PartialEq)]
 struct FacePrompt {
     message: AttrValue,
+    interaction_mode: FacePromptInteractionMode,
     choices: Vec<FacePromptChoice>,
 }
 
+const RESTART_PROMPT_INTERACTION_MODE: FacePromptInteractionMode =
+    FacePromptInteractionMode::AutoDismiss;
+
 impl FacePrompt {
     fn restart_confirmation() -> Self {
+        Self::restart_confirmation_with_mode(RESTART_PROMPT_INTERACTION_MODE)
+    }
+
+    fn restart_confirmation_with_mode(interaction_mode: FacePromptInteractionMode) -> Self {
         Self {
             message: "Restart?".into(),
+            interaction_mode,
             choices: vec![
                 FacePromptChoice {
                     label: "Yes".into(),
@@ -479,6 +496,12 @@ pub(crate) struct GameView {
 }
 
 impl GameView {
+    fn face_prompt_interaction_mode(&self) -> Option<FacePromptInteractionMode> {
+        self.face_prompt
+            .as_ref()
+            .map(|prompt| prompt.interaction_mode)
+    }
+
     fn clear_face_prompt(&mut self) -> bool {
         self.face_prompt.take().is_some()
     }
@@ -487,6 +510,7 @@ impl GameView {
         if self.face_prompt.is_some() {
             false
         } else {
+            self.current_cell_state = None;
             self.face_prompt = Some(prompt);
             true
         }
@@ -510,7 +534,7 @@ impl GameView {
             prompt_cleared
         } else {
             self.settings_open = true;
-            prompt_cleared || true
+            true
         }
     }
 
@@ -895,6 +919,23 @@ impl GameView {
             </div>
         }
     }
+
+    fn board_interaction_locked_by_prompt(&self) -> bool {
+        matches!(
+            self.face_prompt_interaction_mode(),
+            Some(FacePromptInteractionMode::Mandatory)
+        )
+    }
+
+    fn should_auto_dismiss_prompt_for_cell_event(&self, msg: CellMsg) -> bool {
+        matches!(
+            (self.face_prompt_interaction_mode(), msg),
+            (
+                Some(FacePromptInteractionMode::AutoDismiss),
+                CellMsg::Update(CellPointerState { buttons, .. })
+            ) if !buttons.is_empty()
+        )
+    }
 }
 
 impl Component for GameView {
@@ -926,7 +967,8 @@ impl Component for GameView {
 
         let updated = match msg {
             CellEvent(Leave) => {
-                if self.is_generating_layout {
+                if self.is_generating_layout || self.board_interaction_locked_by_prompt() {
+                    self.current_cell_state = None;
                     false
                 } else {
                     log::trace!("cell leave");
@@ -934,12 +976,15 @@ impl Component for GameView {
                 }
             }
             CellEvent(Update(cell_state)) => {
-                if self.is_generating_layout {
+                if self.is_generating_layout || self.board_interaction_locked_by_prompt() {
                     self.current_cell_state = None;
                     false
                 } else {
+                    let prompt_cleared = self
+                        .should_auto_dismiss_prompt_for_cell_event(CellMsg::Update(cell_state))
+                        && self.clear_face_prompt();
                     log::trace!("cell update: {:?}", cell_state);
-                    if cell_state.buttons.is_empty() {
+                    let board_updated = if cell_state.buttons.is_empty() {
                         match self.current_cell_state.take() {
                             None => false,
                             Some(CellPointerState { pos, buttons }) => match buttons {
@@ -981,7 +1026,8 @@ impl Component for GameView {
                                         != (cell_state.buttons & MouseButtons::LEFT))
                             }
                         }
-                    }
+                    };
+                    prompt_cleared || board_updated
                 }
             }
             UpdateTime => {
@@ -1046,8 +1092,14 @@ impl Component for GameView {
 
         let (cols, rows) = self.get_size();
         let game_state_icon = self.get_game_state_icon_name();
-        let game_state_class = classes!("face-button", game_state_icon);
+        let face_button_locked = self.face_prompt.is_some();
+        let game_state_class = classes!(
+            "face-button",
+            game_state_icon,
+            face_button_locked.then_some("locked")
+        );
         let is_playable = self.is_playable();
+        let board_locked_by_prompt = self.board_interaction_locked_by_prompt();
         let is_generating_layout = self.is_generating_layout;
         let new_game_button_title = self.face_button_title();
         let mines_left = format_for_counter(self.get_mines_left());
@@ -1080,7 +1132,12 @@ impl Component for GameView {
                                     </aside>
                                     <span class={classes!("face-slot", self.face_prompt.is_some().then_some("prompt-open"))}>
                                         {self.view_face_prompt(ctx)}
-                                        <button class={game_state_class} title={new_game_button_title} onclick={cb_face_button}>
+                                        <button
+                                            class={game_state_class}
+                                            title={new_game_button_title}
+                                            onclick={cb_face_button}
+                                            disabled={face_button_locked}
+                                        >
                                             <Icon
                                                 name={game_state_icon}
                                                 crop={IconCrop::CenteredSquare64}
@@ -1092,34 +1149,43 @@ impl Component for GameView {
                                         <GlyphRun set={GlyphSet::Counter} text={elapsed_time} class={classes!("counter-glyphs")}/>
                                     </aside>
                                 </nav>
-                                <table class={classes!(is_playable.then_some("playable"), is_generating_layout.then_some("loading"))}>
+                                <div class="board-shell">
+                                    <table class={classes!((is_playable && !board_locked_by_prompt).then_some("playable"), is_generating_layout.then_some("loading"), board_locked_by_prompt.then_some("prompt-locked"))}>
+                                        {
+                                            for (0..rows).map(|y| html! {
+                                                <tr>
+                                                    {
+                                                        for (0..cols).map(|x| {
+                                                            let pos = (x, y);
+                                                            let cell_state = self
+                                                                .game
+                                                                .as_ref()
+                                                                .map_or(ViewCellState::Hidden, |game| game.cell_state_at(pos));
+                                                            let loading_cell = self.is_generating_layout
+                                                                && self.pending_first_action == Some(pos);
+                                                            let locked = board_locked_by_prompt || self
+                                                                .game
+                                                                .as_ref()
+                                                                .map_or(false, |game| !game.can_interact_at(pos));
+                                                            let pressed = loading_cell || self.is_pressed(pos, cell_state);
+                                                            let callback = ctx.link().callback(Msg::CellEvent);
+                                                            html! {
+                                                                <CellView {x} {y} {cell_state} {callback} {pressed} loading={loading_cell} {locked}/>
+                                                            }
+                                                        })
+                                                    }
+                                                </tr>
+                                            })
+                                        }
+                                    </table>
                                     {
-                                        for (0..rows).map(|y| html! {
-                                            <tr>
-                                                {
-                                                    for (0..cols).map(|x| {
-                                                        let pos = (x, y);
-                                                        let cell_state = self
-                                                            .game
-                                                            .as_ref()
-                                                            .map_or(ViewCellState::Hidden, |game| game.cell_state_at(pos));
-                                                        let loading_cell = self.is_generating_layout
-                                                            && self.pending_first_action == Some(pos);
-                                                        let locked = self
-                                                            .game
-                                                            .as_ref()
-                                                            .map_or(false, |game| !game.can_interact_at(pos));
-                                                        let pressed = loading_cell || self.is_pressed(pos, cell_state);
-                                                        let callback = ctx.link().callback(Msg::CellEvent);
-                                                        html! {
-                                                            <CellView {x} {y} {cell_state} {callback} {pressed} loading={loading_cell} {locked}/>
-                                                        }
-                                                    })
-                                                }
-                                            </tr>
-                                        })
+                                        if board_locked_by_prompt {
+                                            html! { <div class="board-prompt-overlay" aria-hidden="true"/> }
+                                        } else {
+                                            Html::default()
+                                        }
                                     }
-                                </table>
+                                </div>
                             </>
                         }
                     }
@@ -1232,6 +1298,10 @@ mod tests {
 
         assert_eq!(prompt.message.as_ref(), "Restart?");
         assert_eq!(
+            prompt.interaction_mode,
+            FacePromptInteractionMode::AutoDismiss
+        );
+        assert_eq!(
             labels_and_actions,
             vec![
                 ("Yes", FacePromptAction::RestartGame),
@@ -1239,5 +1309,17 @@ mod tests {
                 ("Menu", FacePromptAction::OpenSettings),
             ]
         );
+    }
+
+    #[test]
+    fn restart_confirmation_can_be_built_with_any_supported_interaction_mode() {
+        for interaction_mode in [
+            FacePromptInteractionMode::Ignorable,
+            FacePromptInteractionMode::AutoDismiss,
+            FacePromptInteractionMode::Mandatory,
+        ] {
+            let prompt = FacePrompt::restart_confirmation_with_mode(interaction_mode);
+            assert_eq!(prompt.interaction_mode, interaction_mode);
+        }
     }
 }

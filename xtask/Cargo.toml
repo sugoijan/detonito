@@ -15,5 +15,6 @@ anyhow.workspace = true
 clap.workspace = true
 roxmltree.workspace = true
 toml.workspace = true
+toml_edit.workspace = true
 ttf-parser.workspace = true
 xmlwriter.workspace = true

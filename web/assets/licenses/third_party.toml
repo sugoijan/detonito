@@ -1,0 +1,107 @@
+schema_version = 2
+
+# Hand-curated credits for the future About page.
+# Keep this file short and user-facing.
+# Generated Rust dependency notices should come from a separate build step.
+
+[[entries]]
+id = "detonito"
+name = "detonito"
+kind = "license"
+license = "MIT OR Apache-2.0"
+relation = "This project"
+files = [
+  "web",
+  "core",
+  "xtask",
+]
+text = "Original source code and app-specific assets by すごいジャン."
+details = "Choose either of the licenses linked below."
+
+[[entries.links]]
+label = "Project"
+url = "https://github.com/sugoijan/detonito"
+
+[[entries.links]]
+label = "MIT"
+url = "https://opensource.org/licenses/MIT"
+
+[[entries.links]]
+label = "Apache-2.0"
+url = "https://www.apache.org/licenses/LICENSE-2.0"
+
+[[entries]]
+id = "openmoji"
+name = "OpenMoji"
+kind = "license"
+license = "CC-BY-SA-4.0"
+relation = "Icon artwork"
+files = [
+  "web/assets/openmoji/upstream",
+  "web/generated/openmoji-symbols.svg",
+]
+text = "OpenMoji artwork is used for bundled UI icons."
+details = "The bundled icons are normalized and recolored for the app sprite."
+
+[[entries.links]]
+label = "Project"
+url = "https://openmoji.org/"
+
+[[entries.links]]
+label = "CC BY-SA 4.0"
+url = "https://creativecommons.org/licenses/by-sa/4.0/"
+
+[[entries]]
+id = "openmoji-derived-icons"
+parent = "detonito"
+name = "Custom icons"
+kind = "license"
+license = "CC-BY-SA-4.0"
+relation = "Custom icons"
+files = [
+  "web/assets/openmoji/custom/E306.svg",
+  "web/assets/openmoji/custom/E307.svg",
+  "web/generated/openmoji-symbols.svg",
+]
+text = "Flag and mine icons derived from OpenMoji artwork are included in the app."
+details = "Current derived icons: flag and mine."
+
+[[entries.links]]
+label = "Project"
+url = "https://openmoji.org/"
+
+[[entries.links]]
+label = "CC BY-SA 4.0"
+url = "https://creativecommons.org/licenses/by-sa/4.0/"
+
+[[entries]]
+id = "iosevka"
+name = "Iosevka"
+kind = "license"
+license = "OFL-1.1"
+relation = "Glyph source"
+files = [
+  "web/generated/iosevka-glyphs.svg",
+  "web/generated/sprite.svg",
+]
+text = "Glyph outlines from a custom Iosevka build are used for counters, board digits, and UI symbols."
+
+[[entries.links]]
+label = "Project"
+url = "https://typeof.net/Iosevka/"
+
+[[entries.links]]
+label = "OFL-1.1"
+url = "https://openfontlicense.org/"
+
+[[entries]]
+id = "windows98-inspiration"
+name = "Win98 Minesweeper"
+kind = "note"
+relation = "Inspiration"
+files = [
+  "web/scss/_game.scss",
+  "web/index.html",
+]
+text = "This app is inspired by classic Minesweeper and Windows 98-era UI conventions."
+details = "It is not affiliated with or endorsed by Microsoft."

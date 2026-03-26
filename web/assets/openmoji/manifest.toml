@@ -1,3 +1,13 @@
+[upstream]
+project = "OpenMoji"
+repository = "https://github.com/hfg-gmuend/openmoji"
+license = "CC-BY-SA-4.0"
+source_checkout = "../openmoji"
+release = "16.0.0"
+describe = "16.0.0-115-g4630b28fe"
+commit = "4630b28fef77f665e910680ad2f44deea2e7f8dd"
+dirty = false
+
 [icons.not-started]
 source = "upstream"
 upstream = "1F636.svg"
@@ -29,10 +39,16 @@ upstream = "1F480.svg"
 [icons.flag]
 source = "custom"
 custom = "E306.svg"
+source_project = "OpenMoji"
+derived_from = []
+changes = "TODO: document the exact upstream icon source(s) and modification summary."
 
 [icons.mine]
 source = "custom"
 custom = "E307.svg"
+source_project = "OpenMoji"
+derived_from = []
+changes = "TODO: document the exact upstream icon source(s) and modification summary."
 
 [icons.mine-exploded]
 source = "upstream"
@@ -97,3 +113,11 @@ upstream = "1F3B2.svg"
 [icons.puzzle]
 source = "upstream"
 upstream = "1F9E9.svg"
+
+[icons.details]
+source = "upstream"
+upstream = "E259.svg"
+
+[icons.home]
+source = "upstream"
+upstream = "E25E.svg"

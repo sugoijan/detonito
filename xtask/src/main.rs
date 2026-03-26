@@ -7,6 +7,7 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use roxmltree::{Document, Node};
+use toml_edit::{DocumentMut, value};
 use ttf_parser::{Face, OutlineBuilder};
 use xmlwriter::{Indent, Options, XmlWriter};
 
@@ -198,6 +199,7 @@ fn sync_openmoji(paths: &AssetPaths, openmoji_dir: PathBuf) -> Result<()> {
         );
     }
 
+    refresh_openmoji_provenance(paths, &openmoji_dir)?;
     let manifest = load_openmoji_manifest(paths)?;
     fs::create_dir_all(&paths.openmoji_upstream_dir)
         .with_context(|| format!("failed to create {}", paths.openmoji_upstream_dir.display()))?;
@@ -253,6 +255,59 @@ fn regen_sprite(paths: &AssetPaths) -> Result<()> {
     let manifest = load_openmoji_manifest(paths)?;
     write_openmoji_symbols(paths, &manifest)?;
     write_combined_sprite(paths)
+}
+
+fn refresh_openmoji_provenance(paths: &AssetPaths, openmoji_dir: &std::path::Path) -> Result<()> {
+    let manifest_text = fs::read_to_string(&paths.openmoji_manifest)
+        .with_context(|| format!("failed to read {}", paths.openmoji_manifest.display()))?;
+    let mut document = manifest_text
+        .parse::<DocumentMut>()
+        .with_context(|| format!("failed to parse {}", paths.openmoji_manifest.display()))?;
+
+    let repo_url = normalize_git_remote_url(&run_capture(
+        Command::new("git")
+            .args(["remote", "get-url", "origin"])
+            .current_dir(openmoji_dir),
+    )?);
+    let commit = run_capture(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(openmoji_dir),
+    )?;
+    let release = run_capture_optional(
+        Command::new("git")
+            .args(["describe", "--tags", "--abbrev=0"])
+            .current_dir(openmoji_dir),
+    )?;
+    let describe = run_capture(
+        Command::new("git")
+            .args(["describe", "--tags", "--always", "--dirty"])
+            .current_dir(openmoji_dir),
+    )?;
+    let dirty = !run_capture(
+        Command::new("git")
+            .args(["status", "--porcelain", "--untracked-files=no"])
+            .current_dir(openmoji_dir),
+    )?
+    .is_empty();
+
+    if !document["upstream"].is_table() {
+        document["upstream"] = toml_edit::table();
+    }
+    document["upstream"]["project"] = value("OpenMoji");
+    document["upstream"]["repository"] = value(repo_url);
+    document["upstream"]["license"] = value("CC-BY-SA-4.0");
+    document["upstream"]["source_checkout"] = value(openmoji_dir.display().to_string());
+    if let Some(release) = release {
+        document["upstream"]["release"] = value(release);
+    }
+    document["upstream"]["describe"] = value(describe);
+    document["upstream"]["commit"] = value(commit);
+    document["upstream"]["dirty"] = value(dirty);
+
+    fs::write(&paths.openmoji_manifest, document.to_string())
+        .with_context(|| format!("failed to write {}", paths.openmoji_manifest.display()))?;
+    Ok(())
 }
 
 fn regen_fonts(paths: &AssetPaths) -> Result<()> {
@@ -803,6 +858,55 @@ fn run_allow_failure(command: &mut Command) -> Result<std::process::ExitStatus> 
         .status()
         .with_context(|| format!("failed to spawn {:?}", command))?;
     Ok(status)
+}
+
+fn run_capture(command: &mut Command) -> Result<String> {
+    let output = run_capture_allow_failure(command)?;
+    if !output.status.success() {
+        bail!(
+            "command {:?} exited with {}: {}",
+            command,
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn run_capture_optional(command: &mut Command) -> Result<Option<String>> {
+    let output = run_capture_allow_failure(command)?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    Ok(Some(
+        String::from_utf8_lossy(&output.stdout).trim().to_string(),
+    ))
+}
+
+fn run_capture_allow_failure(command: &mut Command) -> Result<std::process::Output> {
+    let output = command
+        .output()
+        .with_context(|| format!("failed to spawn {:?}", command))?;
+    Ok(output)
+}
+
+fn normalize_git_remote_url(url: &str) -> String {
+    let url = url.trim();
+
+    if let Some(rest) = url.strip_prefix("git@github.com:") {
+        return format!("https://github.com/{}", rest.trim_end_matches(".git"));
+    }
+    if let Some(rest) = url.strip_prefix("ssh://git@github.com/") {
+        return format!("https://github.com/{}", rest.trim_end_matches(".git"));
+    }
+    if let Some(rest) = url.strip_prefix("https://github.com/") {
+        return format!("https://github.com/{}", rest.trim_end_matches(".git"));
+    }
+    if let Some(rest) = url.strip_prefix("http://github.com/") {
+        return format!("https://github.com/{}", rest.trim_end_matches(".git"));
+    }
+
+    url.trim_end_matches(".git").to_string()
 }
 
 #[derive(Clone, Copy, Debug)]

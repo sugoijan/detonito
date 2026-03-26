@@ -60,6 +60,7 @@ smallvec = { version = "1", features = ["union", "serde"] }
 hashbrown = "0.16"
 roxmltree = "0.20"
 toml = "0.8"
+toml_edit = "0.22"
 ttf-parser = "0.25"
 xmlwriter = "0.1"
 

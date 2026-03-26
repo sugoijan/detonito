@@ -4,6 +4,7 @@ use crate::utils::*;
 use detonito_core as game;
 use serde::{Deserialize, Serialize};
 use std::rc::Rc;
+use std::sync::LazyLock;
 use yew::prelude::*;
 
 pub const BEGINNER: game::GameConfig = game::GameConfig::new_unchecked((9, 9), 10);
@@ -130,6 +131,7 @@ enum SettingsMenuPage {
     Custom,
     Generation,
     Appearance,
+    About,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -144,7 +146,54 @@ enum DifficultyChoice {
     Custom,
 }
 
-const MENU_COLUMNS: usize = 13;
+const MENU_COLUMNS: usize = 14;
+const MENU_CHAR_PADDING: usize = 2;
+const MENU_CHARS_PER_FIVE_COLS: usize = 12;
+const MENU_MARQUEE_EXTRA_SHIFT: usize = 2;
+const ABOUT_INDEX_LABEL_COLSPAN: usize = 5;
+const DETAIL_LINK_LABEL_COLSPAN: usize = 4;
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct CreditsManifest {
+    entries: Vec<CreditEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct CreditEntry {
+    id: String,
+    #[serde(default)]
+    parent: Option<String>,
+    name: String,
+    kind: CreditEntryKind,
+    relation: String,
+    #[serde(default)]
+    license: Option<String>,
+    #[serde(default)]
+    files: Vec<String>,
+    text: String,
+    #[serde(default)]
+    details: Option<String>,
+    #[serde(default)]
+    links: Vec<CreditLink>,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum CreditEntryKind {
+    License,
+    Note,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct CreditLink {
+    label: String,
+    url: String,
+}
+
+static CREDITS_MANIFEST: LazyLock<CreditsManifest> = LazyLock::new(|| {
+    toml::from_str(include_str!("../assets/licenses/third_party.toml"))
+        .expect("credits manifest should parse")
+});
 
 fn difficulty_choice(settings: &Settings) -> DifficultyChoice {
     match (settings.generator, settings.game_config) {
@@ -219,39 +268,200 @@ fn menu_icon_button(
     }
 }
 
-fn menu_title_row(title: &'static str) -> Html {
+fn menu_title_row(title: impl Into<AttrValue>) -> Html {
     html! {
         <tr>
             <td class="menu-pad"/>
-            <td class="menu-heading" colspan="11">{title}</td>
+            <td class="menu-heading" colspan="12">{title.into()}</td>
             <td class="menu-pad"/>
         </tr>
     }
 }
 
-fn menu_entry_row(label: &'static str, detail: impl Into<AttrValue>, button: Html) -> Html {
+fn approximate_menu_char_capacity(colspan: usize) -> usize {
+    (((MENU_CHARS_PER_FIVE_COLS + MENU_CHAR_PADDING) * colspan) + 2)
+        .div_euclid(5)
+        .saturating_sub(MENU_CHAR_PADDING)
+}
+
+fn maybe_marquee_label(label: String, colspan: usize) -> Html {
+    let overflow = label
+        .chars()
+        .count()
+        .saturating_sub(approximate_menu_char_capacity(colspan));
+    if overflow == 0 {
+        return html! { <>{label}</> };
+    }
+
+    let shift = overflow + MENU_MARQUEE_EXTRA_SHIFT;
+    let duration = 3.0 + shift as f32 * 0.35;
+    html! {
+        <span class="menu-marquee-window">
+            <span
+                class="menu-marquee-text"
+                style={format!(
+                    "--menu-marquee-shift: {shift}ch; --menu-marquee-duration: {duration:.2}s;"
+                )}
+            >
+                {label}
+            </span>
+        </span>
+    }
+}
+
+fn menu_entry_row(
+    label: impl Into<AttrValue>,
+    detail: impl Into<AttrValue>,
+    button: Html,
+) -> Html {
     html! {
         <tr>
             <td class="menu-pad"/>
             <td class="menu-button-slot">{button}</td>
-            <td class="menu-text" colspan="5">{label}</td>
-            <td class="menu-detail" colspan="5">{detail.into()}</td>
+            <td class="menu-text" colspan="5">{label.into()}</td>
+            <td class="menu-detail" colspan="6">{detail.into()}</td>
             <td class="menu-pad"/>
         </tr>
     }
 }
 
-fn menu_header_row(title: &'static str, on_back: Callback<MouseEvent>) -> Html {
+fn menu_about_index_row(label: String, detail: impl Into<AttrValue>, button: Html) -> Html {
+    html! {
+        <tr>
+            <td class="menu-pad"/>
+            <td class="menu-button-slot">{button}</td>
+            <td class="menu-text" colspan="5">{maybe_marquee_label(label, ABOUT_INDEX_LABEL_COLSPAN)}</td>
+            <td class="menu-detail" colspan="6">{detail.into()}</td>
+            <td class="menu-pad"/>
+        </tr>
+    }
+}
+
+fn menu_header_row(title: impl Into<AttrValue>, on_back: Callback<MouseEvent>) -> Html {
     html! {
         <tr>
             <td class="menu-pad"/>
             <td class="menu-button-slot">
-                {menu_icon_button("minus", format!("Back from {}", title), false, on_back)}
+                {menu_icon_button("minus", "Go back", false, on_back)}
             </td>
-            <td class="menu-heading" colspan="10">{title}</td>
+            <td class="menu-heading" colspan="11">{title.into()}</td>
             <td class="menu-pad"/>
         </tr>
     }
+}
+
+fn menu_info_row(label: impl Into<AttrValue>, detail: impl Into<AttrValue>) -> Html {
+    html! {
+        <tr>
+            <td class="menu-pad"/>
+            <td class="menu-text" colspan="5">{label.into()}</td>
+            <td class="menu-detail" colspan="7">{detail.into()}</td>
+            <td class="menu-pad"/>
+        </tr>
+    }
+}
+
+fn menu_link_row(label: String, detail: impl Into<AttrValue>, button: Html) -> Html {
+    html! {
+        <tr>
+            <td class="menu-pad"/>
+            <td class="menu-button-slot">{button}</td>
+            <td class="menu-text" colspan="4">{maybe_marquee_label(label, DETAIL_LINK_LABEL_COLSPAN)}</td>
+            <td class={classes!("menu-detail", "menu-link-detail")} colspan="7">{detail.into()}</td>
+            <td class="menu-pad"/>
+        </tr>
+    }
+}
+
+fn menu_copy_row(text: impl Into<AttrValue>) -> Html {
+    html! {
+        <tr>
+            <td class="menu-pad"/>
+            <td class="menu-about-copy" colspan="12">{text.into()}</td>
+            <td class="menu-pad"/>
+        </tr>
+    }
+}
+
+fn link_summary(url: &str) -> String {
+    url.split("://")
+        .nth(1)
+        .unwrap_or(url)
+        .split('/')
+        .next()
+        .unwrap_or(url)
+        .to_string()
+}
+
+fn open_external_link(url: String) -> Callback<MouseEvent> {
+    Callback::from(move |_| {
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+        if let Err(err) = window.open_with_url_and_target(&url, "_blank") {
+            log::error!("failed to open external link {url}: {:?}", err);
+        }
+    })
+}
+
+fn credit_link_row(link: &CreditLink) -> Html {
+    let icon = if link.label == "Project" {
+        "home"
+    } else {
+        "details"
+    };
+    menu_link_row(
+        link.label.clone(),
+        link_summary(&link.url),
+        menu_icon_button(
+            icon,
+            format!("Open {}", link.label),
+            false,
+            open_external_link(link.url.clone()),
+        ),
+    )
+}
+
+fn credit_index_row(
+    entry: &CreditEntry,
+    on_open: Callback<MouseEvent>,
+) -> Html {
+    menu_about_index_row(
+        entry.name.clone(),
+        entry.relation.clone(),
+        menu_icon_button("plus", format!("Open {}", entry.name), false, on_open),
+    )
+}
+
+fn credit_detail_rows(entry: &CreditEntry) -> Vec<Html> {
+    let mut rows = Vec::new();
+    if let Some(license) = entry.license.as_deref() {
+        rows.push(menu_info_row("License", license.to_string()));
+    }
+    rows.push(menu_copy_row(entry.text.clone()));
+    if let Some(details) = entry.details.as_deref() {
+        rows.push(menu_copy_row(details.to_string()));
+    }
+    if !entry.links.is_empty() {
+        rows.push(menu_blank_row());
+        rows.extend(entry.links.iter().map(credit_link_row));
+    }
+    rows
+}
+
+fn child_credit_rows(entry: &CreditEntry) -> Vec<Html> {
+    let mut rows = Vec::new();
+    rows.push(menu_blank_row());
+    rows.push(menu_title_row(entry.name.clone()));
+    if let Some(license) = entry.license.as_deref() {
+        rows.push(menu_info_row("License", license.to_string()));
+    }
+    rows.push(menu_copy_row(entry.text.clone()));
+    if let Some(details) = entry.details.as_deref() {
+        rows.push(menu_copy_row(details.to_string()));
+    }
+    rows.extend(entry.links.iter().map(credit_link_row));
+    rows
 }
 
 fn menu_adjust_row(
@@ -267,7 +477,7 @@ fn menu_adjust_row(
             <td class="menu-button-slot">
                 {menu_icon_button("minus", format!("Decrease {}", label), false, on_decrease)}
             </td>
-            <td class="menu-detail" colspan="4">{value.into()}</td>
+            <td class="menu-detail" colspan="5">{value.into()}</td>
             <td class="menu-button-slot">
                 {menu_icon_button("plus", format!("Increase {}", label), false, on_increase)}
             </td>
@@ -287,7 +497,7 @@ fn menu_dual_action_row(
             <td class="menu-pad"/>
             <td class="menu-button-slot">{left_button}</td>
             <td class="menu-text" colspan="4">{left_label}</td>
-            <td class="menu-pad"/>
+            <td class="menu-pad" colspan="2"/>
             <td class="menu-button-slot">{right_button}</td>
             <td class="menu-text" colspan="4">{right_label}</td>
             <td class="menu-pad"/>
@@ -302,6 +512,7 @@ pub(crate) fn SettingsView(props: &SettingsProps) -> Html {
     let original_settings = use_state_eq(|| (*settings).clone());
     let original_theme = use_state_eq(|| *theme);
     let page = use_state_eq(|| SettingsMenuPage::Root);
+    let selected_credit = use_state_eq(|| None::<usize>);
 
     let set_theme_light = {
         let theme = theme.clone();
@@ -461,9 +672,23 @@ pub(crate) fn SettingsView(props: &SettingsProps) -> Html {
         Callback::from(move |_| page.set(SettingsMenuPage::Appearance))
     };
 
+    let open_about = {
+        let page = page.clone();
+        let selected_credit = selected_credit.clone();
+        Callback::from(move |_| {
+            selected_credit.set(None);
+            page.set(SettingsMenuPage::About);
+        })
+    };
+
     let back_to_root = {
         let page = page.clone();
         Callback::from(move |_| page.set(SettingsMenuPage::Root))
+    };
+
+    let back_to_about = {
+        let selected_credit = selected_credit.clone();
+        Callback::from(move |_| selected_credit.set(None))
     };
 
     let back_to_difficulty = {
@@ -531,6 +756,11 @@ pub(crate) fn SettingsView(props: &SettingsProps) -> Html {
                     "Appearance",
                     current_theme_label,
                     menu_icon_button("plus", "Open appearance menu", false, open_appearance),
+                )}
+                {menu_entry_row(
+                    "About",
+                    "Credits",
+                    menu_icon_button("plus", "Open about page", false, open_about),
                 )}
                 {menu_blank_row()}
             </>
@@ -759,6 +989,43 @@ pub(crate) fn SettingsView(props: &SettingsProps) -> Html {
                 {menu_blank_row()}
             </>
         },
+        SettingsMenuPage::About => {
+            if let Some(index) = *selected_credit {
+                let entry = &CREDITS_MANIFEST.entries[index];
+                let children: Vec<&CreditEntry> = CREDITS_MANIFEST
+                    .entries
+                    .iter()
+                    .filter(|candidate| candidate.parent.as_deref() == Some(entry.id.as_str()))
+                    .collect();
+                html! {
+                    <>
+                        {menu_blank_row()}
+                        {menu_header_row(entry.name.clone(), back_to_about)}
+                        {menu_blank_row()}
+                        {for credit_detail_rows(entry)}
+                        {for children.into_iter().flat_map(child_credit_rows)}
+                        {menu_blank_row()}
+                    </>
+                }
+            } else {
+                html! {
+                    <>
+                        {menu_blank_row()}
+                        {menu_header_row("About", back_to_root)}
+                        {menu_blank_row()}
+                        {for CREDITS_MANIFEST.entries.iter().enumerate().filter_map(|(index, entry)| {
+                            if entry.parent.is_some() {
+                                return None;
+                            }
+                            let selected_credit = selected_credit.clone();
+                            let on_open = Callback::from(move |_| selected_credit.set(Some(index)));
+                            Some(credit_index_row(entry, on_open))
+                        })}
+                        {menu_blank_row()}
+                    </>
+                }
+            }
+        }
     };
 
     html! {

@@ -1,10 +1,12 @@
 <div align="center">
-  <h1><a href="https://sugoijan.dev/detonito/"<code>detonito - Minesweeper</code></a></h1>
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/dark-mode-image.png">
-    <img alt="Screenshot" src="docs/screenshot-light.png">
-  </picture>
-  <strong>a lively minimal minesweeper clone</strong>
+  <a href="https://sugoijan.dev/detonito/">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="docs/screenshot-dark.png">
+      <img alt="Screenshot" src="docs/screenshot-light.png" height="561">
+    </picture>
+  </a>
+  <br>
+  <strong>a minimal minesweeper clone</strong>
 </div>
 
 ## Build it yourself
@@ -17,8 +19,8 @@ Use `just web` for local testing. For actual builds see [what the CI does](.gith
 
 Licensed under either of
 
-* Apache License, Version 2.0, ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
-* MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+* Apache License, Version 2.0, ([LICENSE_APACHE](LICENSE_APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
+* MIT license ([LICENSE_MIT](LICENSE_MIT) or http://opensource.org/licenses/MIT)
 
 at your option.
 

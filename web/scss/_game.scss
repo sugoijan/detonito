@@ -245,7 +245,12 @@ main {
         place-items: center;
         z-index: 2;
 
-        &:hover:active {
+        &.locked,
+        &:disabled {
+          cursor: default;
+        }
+
+        &:hover:active:not(.locked):not(:disabled) {
           @include pressed-border($border-mid);
           padding: 1px 0 0 1px;
           background-color: var(#{$css-var-prefix}background);
@@ -350,6 +355,18 @@ main {
     }
   }
 
+  .board-shell {
+    position: relative;
+  }
+
+  .board-prompt-overlay {
+    position: absolute;
+    inset: 0;
+    background-color: rgba(128, 128, 128, 0.5);
+    pointer-events: auto;
+    cursor: not-allowed;
+  }
+
   table {
     border-spacing: 0;
     margin: auto;
@@ -359,6 +376,10 @@ main {
       td {
         cursor: wait;
       }
+    }
+
+    &.prompt-locked {
+      pointer-events: none;
     }
   }
 
@@ -377,6 +398,22 @@ main {
     }
     to {
       opacity: 1;
+    }
+  }
+
+  @keyframes menu-marquee {
+    0%,
+    18% {
+      transform: translateX(0);
+    }
+    50%,
+    68% {
+      transform: translateX(
+        calc((-1 * var(--menu-marquee-shift)) - var(--menu-marquee-end-nudge, 0.75ch))
+      );
+    }
+    100% {
+      transform: translateX(0);
     }
   }
 
@@ -429,6 +466,10 @@ main {
 
     &:hover:not(.locked) {
       @include outset-border-hover;
+    }
+
+    &.locked {
+      cursor: default;
     }
 
     &.open {
@@ -486,7 +527,7 @@ main {
     position: static;
     margin: 0;
     padding: 0;
-    display: inline-block;
+    //display: inline-block;
     border: 0;
     background-color: transparent;
     color: var(#{$css-var-prefix}text);
@@ -527,7 +568,8 @@ main {
 
       .menu-text,
       .menu-detail,
-      .menu-heading {
+      .menu-heading,
+      .menu-about-copy {
         padding: 0 6px;
         font-family: inherit;
         font-size: 9px;
@@ -544,9 +586,39 @@ main {
         text-align: center;
       }
 
+      .menu-link-detail {
+        text-align: left;
+      }
+
       .menu-heading {
         text-align: center;
         letter-spacing: 0.04em;
+      }
+
+      .menu-marquee-window {
+        display: block;
+        width: 100%;
+        overflow: hidden;
+      }
+
+      .menu-marquee-text {
+        display: block;
+        width: max-content;
+        padding-inline-end: 1ch;
+        will-change: transform;
+        animation: menu-marquee var(--menu-marquee-duration) ease-in-out infinite;
+      }
+
+      .menu-about-copy {
+        height: auto;
+        min-height: 0;
+        max-height: none;
+        width: auto;
+        min-width: 0;
+        max-width: none;
+        padding: 5px 6px;
+        white-space: normal;
+        vertical-align: top;
       }
     }
 
