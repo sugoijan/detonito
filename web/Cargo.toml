@@ -10,10 +10,14 @@ rust-version.workspace = true
 crate-type = ["cdylib"]
 
 [features]
-default = ["console_error_panic_hook"]
+default = ["web-default"]
+web-default = ["console_error_panic_hook", "afk-runtime"]
+web-static = ["console_error_panic_hook"]
+afk-runtime = ["dep:detonito-protocol", "dep:wasm-bindgen-futures"]
 
 [dependencies]
 detonito-core.workspace = true
+detonito-protocol = { workspace = true, optional = true }
 bitflags.workspace = true
 chrono.workspace = true
 clap.workspace = true
@@ -27,7 +31,7 @@ serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 wasm-bindgen.workspace = true
-wasm-bindgen-futures.workspace = true
+wasm-bindgen-futures = { workspace = true, optional = true }
 web-sys.workspace = true
 yew.workspace = true
 

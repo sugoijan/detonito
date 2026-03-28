@@ -1,8 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::env;
 use std::fmt::Write as _;
 use std::fs;
-use std::path::PathBuf;
-use std::process::Command;
+use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
@@ -12,6 +17,14 @@ use ttf_parser::{Face, OutlineBuilder};
 use xmlwriter::{Indent, Options, XmlWriter};
 
 const SVG_NS: &str = "http://www.w3.org/2000/svg";
+const DEV_HOST: &str = "127.0.0.1";
+const TRUNK_PORT: &str = "4361";
+const CADDY_PORT: &str = "4365";
+const WORKER_PORT: &str = "4377";
+const WORKER_INSPECTOR_PORT: &str = "4388";
+const GENERATED_CADDYFILE: &str = "dist/dev/Caddyfile.dev.generated";
+const GENERATED_WRANGLER_CONFIG: &str = "wrangler.generated.toml";
+const DEFAULT_BASE_PATH: &str = "/detonito";
 const OPENMOJI_LAYER_IDS: &[&str] = &[
     "color",
     "color-foreground",
@@ -80,6 +93,30 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Run the local Trunk, Wrangler, and Caddy stack together behind one front door.
+    #[command(name = "dev")]
+    Dev,
+    /// Print the local development ports and the preferred browser URL.
+    #[command(name = "ports")]
+    Ports,
+    /// Run the standalone Trunk dev server without AFK mode.
+    #[command(name = "web")]
+    Web,
+    /// Run the local Worker through Wrangler using the generated dev config.
+    #[command(name = "worker", alias = "worker-dev")]
+    WorkerDev,
+    /// Build the Worker frontend bundle into its staged asset directory.
+    #[command(name = "stage-assets")]
+    StageAssets(StageAssetsArgs),
+    /// Build the Worker release shim after staging the Worker frontend assets.
+    #[command(name = "worker-build")]
+    WorkerBuild,
+    /// Deploy the Worker using the generated release config.
+    #[command(name = "worker-deploy")]
+    WorkerDeploy,
+    /// Run the local Caddy front door.
+    #[command(name = "caddy")]
+    Caddy,
     /// Copy curated upstream OpenMoji SVGs from a local checkout and rebuild the sprite.
     #[command(name = "sync-openmoji")]
     SyncOpenmoji(SyncOpenmojiArgs),
@@ -96,6 +133,19 @@ struct SyncOpenmojiArgs {
     /// Path to a local OpenMoji checkout. Defaults to ../openmoji.
     #[arg(long)]
     openmoji_dir: Option<PathBuf>,
+}
+
+#[derive(Args)]
+struct StageAssetsArgs {
+    /// Build the release asset bundle instead of the local dev bundle.
+    #[arg(long)]
+    release: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BuildProfile {
+    Dev,
+    Release,
 }
 
 #[derive(Clone, Debug)]
@@ -157,8 +207,44 @@ const GLYPH_SPECS: &[GlyphSpec] = &[
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let paths = workspace_paths()?;
+    let root = paths.repo_root.clone();
 
     match cli.command {
+        Commands::Dev => dev(&root),
+        Commands::Ports => print_ports(&root),
+        Commands::Web => spawn_web(&root, false)?
+            .wait()
+            .map(|_| ())
+            .context("failed to wait for trunk"),
+        Commands::WorkerDev => {
+            ensure_dev_vars(&root)?;
+            prepare_worker_runtime(&root, BuildProfile::Dev)?;
+            let (mut worker, _) = spawn_worker_process(&root)?;
+            worker
+                .wait()
+                .map(|_| ())
+                .context("failed to wait for wrangler")
+        }
+        Commands::StageAssets(args) => stage_worker_assets(
+            &root,
+            if args.release {
+                BuildProfile::Release
+            } else {
+                BuildProfile::Dev
+            },
+        ),
+        Commands::WorkerBuild => {
+            stage_worker_assets(&root, BuildProfile::Release)?;
+            run_worker_build(&root, BuildProfile::Release)
+        }
+        Commands::WorkerDeploy => {
+            stage_worker_assets(&root, BuildProfile::Release)?;
+            run_wrangler(&root, "deploy", BuildProfile::Release)
+        }
+        Commands::Caddy => spawn_caddy(&root)?
+            .wait()
+            .map(|_| ())
+            .context("failed to wait for caddy"),
         Commands::SyncOpenmoji(args) => sync_openmoji(
             &paths,
             args.openmoji_dir
@@ -189,6 +275,499 @@ fn workspace_paths() -> Result<AssetPaths> {
         sprite: generated_dir.join("sprite.svg"),
         local_iosevka_repo: repo_root.parent().unwrap().join("Iosevka"),
     })
+}
+
+fn dev(root: &Path) -> Result<()> {
+    ensure_dev_vars(root)?;
+    prepare_worker_runtime(root, BuildProfile::Dev)?;
+
+    let public_url = local_public_url(root)?;
+    eprintln!("[xtask] Open {public_url}");
+    eprintln!(
+        "[xtask] Use the Caddy front door for manual QA. The raw Trunk and Wrangler ports are internal-only."
+    );
+
+    let (worker, worker_ready) = spawn_worker_process(root)?;
+    let web = spawn_web(root, true)?;
+    wait_for_worker_ready(worker_ready)?;
+    let caddy = spawn_caddy(root)?;
+
+    let mut children = vec![("worker", worker), ("web", web), ("caddy", caddy)];
+    let code = wait_first_exit(&mut children);
+    kill_all(&mut children);
+    for (_, child) in &mut children {
+        let _ = child.wait();
+    }
+    std::process::exit(code);
+}
+
+fn print_ports(root: &Path) -> Result<()> {
+    let base_path = configured_base_path(root)?;
+    println!("caddy:      http://localhost:{CADDY_PORT}");
+    println!(
+        "app:        http://localhost:{CADDY_PORT}{}  (use this)",
+        trunk_public_url(&base_path)
+    );
+    println!("trunk:      http://{DEV_HOST}:{TRUNK_PORT}     (internal only)");
+    println!("worker:     http://{DEV_HOST}:{WORKER_PORT}     (internal only)");
+    println!("inspector:  http://{DEV_HOST}:{WORKER_INSPECTOR_PORT}");
+    Ok(())
+}
+
+fn ensure_dev_vars(root: &Path) -> Result<()> {
+    let target = worker_dir(root).join(".dev.vars");
+    if target.exists() {
+        return Ok(());
+    }
+
+    let example = worker_dir(root).join(".dev.vars.example");
+    if example.exists() {
+        fs::copy(&example, &target).with_context(|| {
+            format!(
+                "failed to initialize {} from {}",
+                target.display(),
+                example.display()
+            )
+        })?;
+    } else {
+        fs::write(
+            &target,
+            "AUTH_SIGNING_SECRET=detonito-local-dev-secret\nTWITCH_CLIENT_SECRET=replace-me\n",
+        )
+        .with_context(|| format!("failed to write {}", target.display()))?;
+    }
+
+    Ok(())
+}
+
+fn prepare_worker_runtime(root: &Path, profile: BuildProfile) -> Result<()> {
+    stage_worker_assets(root, profile)?;
+    write_generated_wrangler_config(root, profile)?;
+    Ok(())
+}
+
+fn stage_worker_assets(root: &Path, profile: BuildProfile) -> Result<()> {
+    let base_path = configured_base_path(root)?;
+    let dist_dir = worker_assets_dir(root, profile);
+
+    if dist_dir.exists() {
+        fs::remove_dir_all(&dist_dir)
+            .with_context(|| format!("failed to remove {}", dist_dir.display()))?;
+    }
+    if let Some(parent) = dist_dir.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+
+    let mut command = Command::new("trunk");
+    command.arg("build");
+    if profile == BuildProfile::Release {
+        command.arg("--release");
+    } else {
+        command.args(["--cargo-profile", "web-dev"]);
+    }
+    command
+        .args([
+            "--dist",
+            dist_dir
+                .to_str()
+                .context("invalid worker asset dist path")?,
+            "--public-url",
+            &trunk_public_url(&base_path),
+        ])
+        .env_remove("NO_COLOR")
+        .current_dir(web_dir(root));
+    run(&mut command)
+}
+
+fn run_worker_build(root: &Path, profile: BuildProfile) -> Result<()> {
+    let mut command = Command::new("worker-build");
+    command.arg(match profile {
+        BuildProfile::Dev => "--dev",
+        BuildProfile::Release => "--release",
+    });
+    command.arg(".").current_dir(worker_dir(root));
+    run(&mut command)
+}
+
+fn write_generated_wrangler_config(root: &Path, profile: BuildProfile) -> Result<PathBuf> {
+    let template_path = worker_dir(root).join("wrangler.toml");
+    let template = fs::read_to_string(&template_path)
+        .with_context(|| format!("failed to read {}", template_path.display()))?;
+    let mut document = template
+        .parse::<DocumentMut>()
+        .with_context(|| format!("failed to parse {}", template_path.display()))?;
+
+    let build_command = match profile {
+        BuildProfile::Dev => "worker-build --dev .",
+        BuildProfile::Release => "worker-build --release .",
+    };
+    document["build"]["command"] = value(build_command);
+    document["assets"]["directory"] = value(match profile {
+        BuildProfile::Dev => "../dist/dev/worker",
+        BuildProfile::Release => "../dist/worker",
+    });
+    let base_path = configured_base_path(root)?;
+    document["vars"]["BASE_PATH"] = value(base_path.clone());
+    if profile == BuildProfile::Dev {
+        document["vars"]["PUBLIC_URL"] = value(local_public_url(root)?);
+    }
+    if profile == BuildProfile::Release {
+        if let Ok(host) = env::var("WORKER_ROUTE_HOST") {
+            let mut routes = toml_edit::Array::default();
+            for pattern in worker_route_patterns(&host, &base_path) {
+                routes.push(pattern);
+            }
+            document["routes"] = value(routes);
+        }
+    }
+
+    let output_path = worker_dir(root).join(GENERATED_WRANGLER_CONFIG);
+    fs::write(&output_path, document.to_string())
+        .with_context(|| format!("failed to write {}", output_path.display()))?;
+    Ok(output_path)
+}
+
+fn run_wrangler(root: &Path, subcommand: &str, profile: BuildProfile) -> Result<()> {
+    let config_path = write_generated_wrangler_config(root, profile)?;
+    let mut command = wrangler_command(root)?;
+    command.args([
+        subcommand,
+        "--config",
+        config_path
+            .file_name()
+            .and_then(|file_name| file_name.to_str())
+            .context("invalid generated wrangler config path")?,
+    ]);
+    run(&mut command)
+}
+
+fn spawn_worker_process(root: &Path) -> Result<(Child, mpsc::Receiver<()>)> {
+    let config_path = write_generated_wrangler_config(root, BuildProfile::Dev)?;
+    let mut command = wrangler_command(root)?;
+    command
+        .args([
+            "dev",
+            "--config",
+            config_path
+                .file_name()
+                .and_then(|file_name| file_name.to_str())
+                .context("invalid generated wrangler config path")?,
+            "--ip",
+            DEV_HOST,
+            "--port",
+            WORKER_PORT,
+            "--inspector-port",
+            WORKER_INSPECTOR_PORT,
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().context("failed to start wrangler dev")?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .context("worker stdout was not captured")?;
+    let stderr = child
+        .stderr
+        .take()
+        .context("worker stderr was not captured")?;
+    let (ready_tx, ready_rx) = mpsc::channel::<()>();
+
+    relay_process_output(stdout, ready_tx.clone());
+    relay_process_output(stderr, ready_tx);
+
+    Ok((child, ready_rx))
+}
+
+fn spawn_web(root: &Path, afk_enabled: bool) -> Result<Child> {
+    let base_path = configured_base_path(root)?;
+    let mut command = Command::new("trunk");
+    command.args([
+        "serve",
+        "--address",
+        DEV_HOST,
+        "--port",
+        TRUNK_PORT,
+        "--cargo-profile",
+        "web-dev",
+        "--public-url",
+        &trunk_public_url(&base_path),
+        "--serve-base",
+        &trunk_public_url(&base_path),
+    ]);
+    if !afk_enabled {
+        command.args(["--no-default-features", "--features", "web-static"]);
+    }
+    command
+        .env_remove("NO_COLOR")
+        .current_dir(web_dir(root))
+        .spawn()
+        .context("failed to start trunk serve")
+}
+
+fn wait_for_worker_ready(rx: mpsc::Receiver<()>) -> Result<()> {
+    rx.recv_timeout(Duration::from_secs(30))
+        .map_err(|_| anyhow::anyhow!("timed out waiting for worker to become ready"))
+}
+
+fn relay_process_output<R>(stream: R, ready_tx: mpsc::Sender<()>)
+where
+    R: std::io::Read + Send + 'static,
+{
+    thread::spawn(move || {
+        let reader = BufReader::new(stream);
+        let mut sent_ready = false;
+        for line in reader.lines() {
+            let Ok(line) = line else {
+                break;
+            };
+            eprintln!("{line}");
+            if !sent_ready && line.contains("Ready on http://") {
+                let _ = ready_tx.send(());
+                sent_ready = true;
+            }
+        }
+    });
+}
+
+fn write_generated_caddyfile(root: &Path) -> Result<PathBuf> {
+    let base_path = configured_base_path(root)?;
+    let app_public_url = trunk_public_url(&base_path);
+    let worker_paths = [
+        join_base_path(&base_path, "/healthz"),
+        join_base_path(&base_path, "/ws/*"),
+        join_base_path(&base_path, "/api/*"),
+        join_base_path(&base_path, "/auth/*"),
+    ]
+    .join(" ");
+
+    let mut content = format!(
+        "{{\n\tservers 127.0.0.1:{CADDY_PORT} {{\n\t\tprotocols h1 h2c\n\t}}\n\tservers [::1]:{CADDY_PORT} {{\n\t\tprotocols h1 h2c\n\t}}\n\tauto_https off\n\tadmin off\n}}\n\n"
+    );
+    content.push_str(&format!(":{CADDY_PORT} {{\n\tbind 127.0.0.1 ::1\n"));
+    if base_path != "/" {
+        content.push_str(&format!("\tredir / {app_public_url} 302\n"));
+    }
+    content.push_str(&format!("\t@worker path {worker_paths}\n"));
+    content.push_str(&format!(
+        "\thandle @worker {{\n\t\treverse_proxy {DEV_HOST}:{WORKER_PORT}\n\t}}\n"
+    ));
+    if base_path == "/" {
+        content.push_str(&format!(
+            "\thandle {{\n\t\treverse_proxy {DEV_HOST}:{TRUNK_PORT}\n\t}}\n"
+        ));
+    } else {
+        content.push_str(&format!(
+            "\t@app path {} {} {}\n",
+            base_path,
+            join_base_path(&base_path, "/"),
+            join_base_path(&base_path, "/*")
+        ));
+        content.push_str(&format!(
+            "\thandle @app {{\n\t\treverse_proxy {DEV_HOST}:{TRUNK_PORT}\n\t}}\n\thandle {{\n\t\trespond \"not found\" 404\n\t}}\n"
+        ));
+    }
+    content.push_str("}\n");
+
+    let output_path = root.join(GENERATED_CADDYFILE);
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&output_path, content)
+        .with_context(|| format!("failed to write {}", output_path.display()))?;
+    Ok(output_path)
+}
+
+fn spawn_caddy(root: &Path) -> Result<Child> {
+    let config_path = write_generated_caddyfile(root)?;
+    Command::new("caddy")
+        .args([
+            "run",
+            "--config",
+            config_path
+                .to_str()
+                .context("invalid generated caddy config path")?,
+            "--adapter",
+            "caddyfile",
+        ])
+        .current_dir(root)
+        .spawn()
+        .context("failed to start caddy")
+}
+
+fn wait_first_exit(children: &mut Vec<(&str, Child)>) -> i32 {
+    loop {
+        for (name, child) in children.iter_mut() {
+            if let Ok(Some(status)) = child.try_wait() {
+                let code = status.code().unwrap_or(1);
+                eprintln!("[xtask] '{name}' exited with status {status}");
+                return code;
+            }
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+}
+
+fn kill_all(children: &mut Vec<(&str, Child)>) {
+    for (_, child) in children.iter_mut() {
+        let _ = child.kill();
+    }
+}
+
+fn configured_base_path(root: &Path) -> Result<String> {
+    let template_path = worker_dir(root).join("wrangler.toml");
+    let template = fs::read_to_string(&template_path)
+        .with_context(|| format!("failed to read {}", template_path.display()))?;
+    let document = template
+        .parse::<DocumentMut>()
+        .with_context(|| format!("failed to parse {}", template_path.display()))?;
+    Ok(normalize_base_path(
+        document["vars"]["BASE_PATH"]
+            .as_str()
+            .unwrap_or(DEFAULT_BASE_PATH),
+    ))
+}
+
+fn local_public_origin() -> String {
+    format!("http://localhost:{CADDY_PORT}")
+}
+
+fn local_public_url(root: &Path) -> Result<String> {
+    Ok(prefixed_public_url(
+        &configured_base_path(root)?,
+        &local_public_origin(),
+    ))
+}
+
+fn prefixed_public_url(base_path: &str, origin: &str) -> String {
+    let origin = origin.trim_end_matches('/');
+    if base_path == "/" {
+        origin.to_string()
+    } else {
+        format!("{origin}{base_path}")
+    }
+}
+
+fn trunk_public_url(base_path: &str) -> String {
+    if base_path == "/" {
+        "/".to_string()
+    } else {
+        format!("{base_path}/")
+    }
+}
+
+fn normalize_base_path(path: &str) -> String {
+    let trimmed = path.trim();
+    if trimmed.is_empty() || trimmed == "/" {
+        return "/".to_string();
+    }
+    let normalized = trimmed.trim_end_matches('/');
+    if normalized.starts_with('/') {
+        normalized.to_string()
+    } else {
+        format!("/{normalized}")
+    }
+}
+
+fn worker_route_patterns(host: &str, base_path: &str) -> Vec<String> {
+    let host = host.trim().trim_end_matches('/');
+    if base_path == "/" {
+        vec![format!("{host}/*")]
+    } else {
+        vec![format!("{host}{base_path}"), format!("{host}{base_path}/*")]
+    }
+}
+
+fn join_base_path(base_path: &str, path: &str) -> String {
+    let base_path = normalize_base_path(base_path);
+    let path = if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{path}")
+    };
+
+    if base_path == "/" {
+        path
+    } else if path == "/" {
+        format!("{base_path}/")
+    } else {
+        format!("{base_path}{path}")
+    }
+}
+
+fn web_dir(root: &Path) -> PathBuf {
+    root.join("web")
+}
+
+fn worker_dir(root: &Path) -> PathBuf {
+    root.join("worker")
+}
+
+fn worker_assets_dir(root: &Path, profile: BuildProfile) -> PathBuf {
+    match profile {
+        BuildProfile::Dev => root.join("dist/dev/worker"),
+        BuildProfile::Release => root.join("dist/worker"),
+    }
+}
+
+fn wrangler_command(root: &Path) -> Result<Command> {
+    if command_exists("wrangler") {
+        let mut command = Command::new("wrangler");
+        command.current_dir(worker_dir(root));
+        return Ok(command);
+    }
+
+    if let Some(local) = local_wrangler_binary(root) {
+        let mut command = Command::new(local);
+        command.current_dir(worker_dir(root));
+        return Ok(command);
+    }
+
+    if command_exists("pnpm") && worker_dir(root).join("package.json").exists() {
+        let mut command = Command::new("pnpm");
+        command
+            .args(["exec", "wrangler"])
+            .current_dir(worker_dir(root));
+        return Ok(command);
+    }
+
+    if command_exists("npm") && worker_dir(root).join("package.json").exists() {
+        let mut command = Command::new("npm");
+        command
+            .args(["exec", "--", "wrangler"])
+            .current_dir(worker_dir(root));
+        return Ok(command);
+    }
+
+    if command_exists("npx") {
+        let mut command = Command::new("npx");
+        command.args(["wrangler"]).current_dir(worker_dir(root));
+        return Ok(command);
+    }
+
+    bail!(
+        "Wrangler CLI was not found. Install it globally or run `cd worker && pnpm install` (or `npm install`) to install the local dev dependency."
+    );
+}
+
+fn local_wrangler_binary(root: &Path) -> Option<PathBuf> {
+    let bin_dir = worker_dir(root).join("node_modules/.bin");
+    [bin_dir.join("wrangler"), bin_dir.join("wrangler.cmd")]
+        .into_iter()
+        .find(|path| path.is_file())
+}
+
+fn command_exists(command: &str) -> bool {
+    Command::new(command)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok()
 }
 
 fn sync_openmoji(paths: &AssetPaths, openmoji_dir: PathBuf) -> Result<()> {

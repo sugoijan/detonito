@@ -11,9 +11,16 @@
 
 ## Build it yourself
 
-For normal development builds you'll need Rust, trunk, Sass and just.
+For normal development builds you'll need Rust, trunk, Sass, Wrangler, Caddy, and just.
 
-Use `just web` for local testing. For actual builds see [what the CI does](.github/workflows/pages.yml).
+Use `just dev` for local Worker-backed development. It starts:
+
+- Caddy on `http://localhost:4365`
+- Trunk on `http://127.0.0.1:4361`
+- Wrangler on `http://127.0.0.1:4377`
+- Wrangler inspector on `http://127.0.0.1:4388`
+
+Alternatively use `just web` for a simpler workflow that only runs Trunk and skips the AFK mode stuff.
 
 ## License
 
@@ -24,7 +31,7 @@ Licensed under either of
 
 at your option.
 
-### Contribution
+## Contributing
 
 Unless you explicitly state otherwise, any contribution intentionally
 submitted for inclusion in the work by you, as defined in the Apache-2.0

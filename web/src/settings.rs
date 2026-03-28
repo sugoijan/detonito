@@ -2,10 +2,13 @@ use crate::sprites::{Icon, IconCrop};
 use crate::theme::Theme;
 use crate::utils::*;
 use detonito_core as game;
+use gloo::timers::callback::{Interval, Timeout};
 use serde::{Deserialize, Serialize};
 use std::rc::Rc;
 use std::sync::LazyLock;
-use yew::prelude::*;
+use wasm_bindgen::JsCast;
+use web_sys::{FocusEvent, HtmlElement, HtmlInputElement, InputEvent, KeyboardEvent, PointerEvent};
+use yew::{TargetCast, prelude::*};
 
 pub const BEGINNER: game::GameConfig = game::GameConfig::new_unchecked((9, 9), 10);
 pub const INTERMEDIATE: game::GameConfig = game::GameConfig::new_unchecked((16, 16), 40);
@@ -30,10 +33,58 @@ pub(crate) struct Settings {
     pub enable_question_mark: bool,
     pub enable_flag_chord: bool,
     pub enable_auto_trivial: bool,
+    #[serde(default = "Settings::default_zoom_percent")]
+    pub zoom_percent: u16,
 }
 
 impl Settings {
     const MAX_SIZE: game::Coord = 99;
+    const DEFAULT_ZOOM_PERCENT: u16 = 175;
+    const MIN_ZOOM_PERCENT: u16 = 50;
+    const MAX_ZOOM_PERCENT: u16 = 500;
+    const ZOOM_STEP_PERCENT: u16 = 5;
+    const ZOOM_CSS_VAR_NAME: &'static str = "--detonito-zoom";
+
+    const fn default_zoom_percent() -> u16 {
+        Self::DEFAULT_ZOOM_PERCENT
+    }
+
+    pub(crate) fn normalize_zoom_percent(value: u16) -> u16 {
+        value.clamp(Self::MIN_ZOOM_PERCENT, Self::MAX_ZOOM_PERCENT)
+    }
+
+    pub(crate) fn zoom_percent(&self) -> u16 {
+        Self::normalize_zoom_percent(self.zoom_percent)
+    }
+
+    fn zoom_css_value(&self) -> String {
+        format!("{}%", self.zoom_percent())
+    }
+
+    fn update_html_zoom(zoom: &str) {
+        use gloo::utils::document;
+
+        let Some(html) = document().document_element() else {
+            return;
+        };
+
+        let Ok(html) = html.dyn_into::<HtmlElement>() else {
+            return;
+        };
+
+        if let Err(err) = html.style().set_property(Self::ZOOM_CSS_VAR_NAME, zoom) {
+            log::error!("failed to set zoom css variable: {:?}", err);
+        }
+    }
+
+    pub(crate) fn init() {
+        let settings = Self::local_or_default();
+        settings.apply_display();
+    }
+
+    pub(crate) fn apply_display(&self) {
+        Self::update_html_zoom(&self.zoom_css_value());
+    }
 }
 
 impl Default for Settings {
@@ -44,6 +95,7 @@ impl Default for Settings {
             enable_question_mark: false,
             enable_flag_chord: true,
             enable_auto_trivial: true,
+            zoom_percent: Self::DEFAULT_ZOOM_PERCENT,
         }
     }
 }
@@ -56,12 +108,18 @@ impl StorageKey for Settings {
 pub(crate) enum SettingsAction {
     SetGameConfig(game::GameConfig),
     SetGenerator(Generator),
+    SetSizeX(u16),
+    SetSizeY(u16),
+    SetMines(u16),
+    SetZoom(u16),
     IncreaseSizeX,
     DecreaseSizeX,
     IncreaseSizeY,
     DecreaseSizeY,
     IncreaseMines,
     DecreaseMines,
+    IncreaseZoom,
+    DecreaseZoom,
 }
 
 impl Reducible for Settings {
@@ -77,39 +135,84 @@ impl Reducible for Settings {
             SetGenerator(generator) => {
                 settings.generator = generator;
             }
-            IncreaseSizeX => {
+            SetSizeX(value) => {
                 settings.game_config.size.0 =
-                    (settings.game_config.size.0 + 1).clamp(1, Settings::MAX_SIZE);
+                    value.clamp(1, Settings::MAX_SIZE.into()) as game::Coord;
+                settings.game_config.mines = settings
+                    .game_config
+                    .mines
+                    .clamp(1, settings.game_config.total_cells());
+            }
+            SetSizeY(value) => {
+                settings.game_config.size.1 =
+                    value.clamp(1, Settings::MAX_SIZE.into()) as game::Coord;
+                settings.game_config.mines = settings
+                    .game_config
+                    .mines
+                    .clamp(1, settings.game_config.total_cells());
+            }
+            SetMines(value) => {
+                settings.game_config.mines = value.clamp(1, settings.game_config.total_cells());
+            }
+            SetZoom(value) => {
+                settings.zoom_percent = Settings::normalize_zoom_percent(value);
+            }
+            IncreaseSizeX => {
+                settings.game_config.size.0 = settings.game_config.size.0.saturating_add(1);
+                settings.game_config.size.0 =
+                    settings.game_config.size.0.clamp(1, Settings::MAX_SIZE);
             }
             DecreaseSizeX => {
+                settings.game_config.size.0 = settings.game_config.size.0.saturating_sub(1);
                 settings.game_config.size.0 =
-                    (settings.game_config.size.0 - 1).clamp(1, Settings::MAX_SIZE);
+                    settings.game_config.size.0.clamp(1, Settings::MAX_SIZE);
                 settings.game_config.mines = settings
                     .game_config
                     .mines
                     .clamp(1, settings.game_config.total_cells());
             }
             IncreaseSizeY => {
+                settings.game_config.size.1 = settings.game_config.size.1.saturating_add(1);
                 settings.game_config.size.1 =
-                    (settings.game_config.size.1 + 1).clamp(1, Settings::MAX_SIZE);
+                    settings.game_config.size.1.clamp(1, Settings::MAX_SIZE);
             }
             DecreaseSizeY => {
+                settings.game_config.size.1 = settings.game_config.size.1.saturating_sub(1);
                 settings.game_config.size.1 =
-                    (settings.game_config.size.1 - 1).clamp(1, Settings::MAX_SIZE);
+                    settings.game_config.size.1.clamp(1, Settings::MAX_SIZE);
                 settings.game_config.mines = settings
                     .game_config
                     .mines
                     .clamp(1, settings.game_config.total_cells());
             }
             IncreaseMines => {
-                settings.game_config.mines =
-                    (settings.game_config.mines + 1).clamp(1, settings.game_config.total_cells());
+                settings.game_config.mines = settings.game_config.mines.saturating_add(1);
+                settings.game_config.mines = settings
+                    .game_config
+                    .mines
+                    .clamp(1, settings.game_config.total_cells());
             }
             DecreaseMines => {
-                settings.game_config.mines =
-                    (settings.game_config.mines - 1).clamp(1, settings.game_config.total_cells());
+                settings.game_config.mines = settings.game_config.mines.saturating_sub(1);
+                settings.game_config.mines = settings
+                    .game_config
+                    .mines
+                    .clamp(1, settings.game_config.total_cells());
+            }
+            IncreaseZoom => {
+                settings.zoom_percent = settings
+                    .zoom_percent()
+                    .saturating_add(Settings::ZOOM_STEP_PERCENT);
+                settings.zoom_percent = Settings::normalize_zoom_percent(settings.zoom_percent);
+            }
+            DecreaseZoom => {
+                settings.zoom_percent = settings
+                    .zoom_percent()
+                    .saturating_sub(Settings::ZOOM_STEP_PERCENT);
+                settings.zoom_percent = Settings::normalize_zoom_percent(settings.zoom_percent);
             }
         }
+        settings.apply_display();
         settings.local_save();
         settings.into()
     }
@@ -120,6 +223,16 @@ pub(crate) struct SettingsProps {
     #[prop_or_default]
     pub open: bool,
     pub on_apply: Callback<MouseEvent>,
+    #[prop_or_default]
+    pub on_back: Option<Callback<MouseEvent>>,
+    #[prop_or(SettingsEntryPoint::Root)]
+    pub initial_page: SettingsEntryPoint,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub(crate) enum SettingsEntryPoint {
+    #[default]
+    Root,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -130,8 +243,7 @@ enum SettingsMenuPage {
     ModernNg,
     Custom,
     Generation,
-    Appearance,
-    About,
+    Theme,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -152,6 +264,16 @@ const MENU_CHARS_PER_FIVE_COLS: usize = 12;
 const MENU_MARQUEE_EXTRA_SHIFT: usize = 2;
 const ABOUT_INDEX_LABEL_COLSPAN: usize = 5;
 const DETAIL_LINK_LABEL_COLSPAN: usize = 4;
+const HOLD_REPEAT_DELAY_MS: u32 = 350;
+const HOLD_REPEAT_INTERVAL_MS: u32 = 75;
+const HOLD_CLICK_SUPPRESSION_CLEAR_MS: u32 = 250;
+
+#[derive(Properties, PartialEq)]
+pub(crate) struct AboutProps {
+    #[prop_or_default]
+    pub open: bool,
+    pub on_back: Callback<MouseEvent>,
+}
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct CreditsManifest {
@@ -245,6 +367,10 @@ fn theme_label(theme: Option<Theme>) -> &'static str {
     }
 }
 
+fn zoom_label(zoom_percent: u16) -> String {
+    format!("{}%", zoom_percent)
+}
+
 fn menu_blank_cells(count: usize) -> Html {
     Html::from_iter((0..count).map(|_| html! { <td class="menu-pad"/> }))
 }
@@ -309,11 +435,7 @@ fn maybe_marquee_label(label: String, colspan: usize) -> Html {
     }
 }
 
-fn menu_entry_row(
-    label: impl Into<AttrValue>,
-    detail: impl Into<AttrValue>,
-    button: Html,
-) -> Html {
+fn menu_entry_row(label: impl Into<AttrValue>, detail: impl Into<AttrValue>, button: Html) -> Html {
     html! {
         <tr>
             <td class="menu-pad"/>
@@ -383,6 +505,277 @@ fn menu_copy_row(text: impl Into<AttrValue>) -> Html {
     }
 }
 
+fn menu_adjust_row(
+    label: &'static str,
+    value: u16,
+    min: u16,
+    max: u16,
+    on_decrease: Callback<()>,
+    on_set: Callback<u16>,
+    on_increase: Callback<()>,
+) -> Html {
+    html! {
+        <tr>
+            <td class="menu-pad"/>
+            <td class="menu-text" colspan="5">{label}</td>
+            <td class="menu-button-slot">
+                <RepeatIconButton
+                    icon="minus"
+                    title={format!("Decrease {}", label)}
+                    on_activate={on_decrease}
+                />
+            </td>
+            <td class={classes!("menu-detail", "menu-number-detail")} colspan="5">
+                <MenuNumberField
+                    label={label}
+                    value={value}
+                    min={min}
+                    max={max}
+                    on_set={on_set}
+                />
+            </td>
+            <td class="menu-button-slot">
+                <RepeatIconButton
+                    icon="plus"
+                    title={format!("Increase {}", label)}
+                    on_activate={on_increase}
+                />
+            </td>
+            <td class="menu-pad"/>
+        </tr>
+    }
+}
+
+#[derive(Properties, PartialEq)]
+struct RepeatIconButtonProps {
+    icon: &'static str,
+    title: AttrValue,
+    on_activate: Callback<()>,
+}
+
+#[function_component]
+fn RepeatIconButton(props: &RepeatIconButtonProps) -> Html {
+    let is_pressed = use_state_eq(|| false);
+    let repeat_timeout = use_mut_ref(|| None::<Timeout>);
+    let repeat_interval = use_mut_ref(|| None::<Interval>);
+    let suppress_click = use_mut_ref(|| false);
+    let suppress_clear_timeout = use_mut_ref(|| None::<Timeout>);
+
+    let stop_repeat = {
+        let is_pressed = is_pressed.clone();
+        let repeat_timeout = repeat_timeout.clone();
+        let repeat_interval = repeat_interval.clone();
+        let suppress_click = suppress_click.clone();
+        let suppress_clear_timeout = suppress_clear_timeout.clone();
+        Rc::new(move || {
+            is_pressed.set(false);
+            repeat_timeout.borrow_mut().take();
+            repeat_interval.borrow_mut().take();
+            suppress_clear_timeout.borrow_mut().take();
+            if *suppress_click.borrow() {
+                let suppress_click = suppress_click.clone();
+                *suppress_clear_timeout.borrow_mut() =
+                    Some(Timeout::new(HOLD_CLICK_SUPPRESSION_CLEAR_MS, move || {
+                        *suppress_click.borrow_mut() = false;
+                    }));
+            }
+        })
+    };
+
+    let onpointerdown = {
+        let is_pressed = is_pressed.clone();
+        let repeat_timeout = repeat_timeout.clone();
+        let repeat_interval = repeat_interval.clone();
+        let suppress_click = suppress_click.clone();
+        let suppress_clear_timeout = suppress_clear_timeout.clone();
+        let on_activate = props.on_activate.clone();
+        Callback::from(move |event: PointerEvent| {
+            if !event.is_primary() || event.button() != 0 {
+                return;
+            }
+
+            is_pressed.set(true);
+            *suppress_click.borrow_mut() = true;
+            suppress_clear_timeout.borrow_mut().take();
+            repeat_timeout.borrow_mut().take();
+            repeat_interval.borrow_mut().take();
+
+            on_activate.emit(());
+
+            let on_activate = on_activate.clone();
+            let repeat_interval = repeat_interval.clone();
+            *repeat_timeout.borrow_mut() = Some(Timeout::new(HOLD_REPEAT_DELAY_MS, move || {
+                on_activate.emit(());
+
+                let on_activate = on_activate.clone();
+                *repeat_interval.borrow_mut() =
+                    Some(Interval::new(HOLD_REPEAT_INTERVAL_MS, move || {
+                        on_activate.emit(());
+                    }));
+            }));
+        })
+    };
+
+    let onclick = {
+        let suppress_click = suppress_click.clone();
+        let suppress_clear_timeout = suppress_clear_timeout.clone();
+        let on_activate = props.on_activate.clone();
+        Callback::from(move |_event: MouseEvent| {
+            let was_suppressed = *suppress_click.borrow();
+            if was_suppressed {
+                *suppress_click.borrow_mut() = false;
+                suppress_clear_timeout.borrow_mut().take();
+                return;
+            }
+            on_activate.emit(());
+        })
+    };
+
+    let onpointerup = {
+        let stop_repeat = stop_repeat.clone();
+        Callback::from(move |_event: PointerEvent| stop_repeat())
+    };
+
+    let onpointerleave = {
+        let stop_repeat = stop_repeat.clone();
+        Callback::from(move |_event: PointerEvent| stop_repeat())
+    };
+
+    let onpointercancel = {
+        let stop_repeat = stop_repeat.clone();
+        Callback::from(move |_event: PointerEvent| stop_repeat())
+    };
+
+    let onblur = {
+        let stop_repeat = stop_repeat.clone();
+        Callback::from(move |_event: FocusEvent| stop_repeat())
+    };
+
+    html! {
+        <button
+            class={classes!((*is_pressed).then_some("pressed"))}
+            type="button"
+            title={props.title.clone()}
+            {onclick}
+            {onblur}
+            {onpointerdown}
+            {onpointerup}
+            {onpointerleave}
+            {onpointercancel}
+        >
+            <Icon name={props.icon} crop={IconCrop::CenteredSquare64} class={classes!("button-icon")}/>
+        </button>
+    }
+}
+
+#[derive(Properties, PartialEq)]
+struct MenuNumberFieldProps {
+    label: &'static str,
+    value: u16,
+    min: u16,
+    max: u16,
+    on_set: Callback<u16>,
+}
+
+#[function_component]
+fn MenuNumberField(props: &MenuNumberFieldProps) -> Html {
+    let input_ref = use_node_ref();
+    let is_editing = use_state_eq(|| false);
+    let draft = use_state_eq(|| props.value.to_string());
+
+    let commit = {
+        let draft = draft.clone();
+        let is_editing = is_editing.clone();
+        let on_set = props.on_set.clone();
+        Rc::new(move || {
+            if let Ok(parsed) = draft.trim().parse::<u16>() {
+                on_set.emit(parsed);
+            }
+            is_editing.set(false);
+        })
+    };
+
+    let cancel = {
+        let is_editing = is_editing.clone();
+        Rc::new(move || is_editing.set(false))
+    };
+
+    let onfocus = {
+        let draft = draft.clone();
+        let input_ref = input_ref.clone();
+        let is_editing = is_editing.clone();
+        let value = props.value;
+        Callback::from(move |_event: FocusEvent| {
+            is_editing.set(true);
+            draft.set(value.to_string());
+            if let Some(input) = input_ref.cast::<HtmlInputElement>() {
+                let _ = input.select();
+            }
+        })
+    };
+
+    let oninput = {
+        let draft = draft.clone();
+        Callback::from(move |event: InputEvent| {
+            let input: HtmlInputElement = event.target_unchecked_into();
+            draft.set(input.value());
+        })
+    };
+
+    let onblur = {
+        let commit = commit.clone();
+        Callback::from(move |_event: FocusEvent| commit())
+    };
+
+    let onkeydown = {
+        let commit = commit.clone();
+        let cancel = cancel.clone();
+        let input_ref = input_ref.clone();
+        Callback::from(move |event: KeyboardEvent| match event.key().as_str() {
+            "Enter" => {
+                event.prevent_default();
+                commit();
+                if let Some(input) = input_ref.cast::<HtmlInputElement>() {
+                    let _ = input.blur();
+                }
+            }
+            "Escape" => {
+                event.prevent_default();
+                cancel();
+                if let Some(input) = input_ref.cast::<HtmlInputElement>() {
+                    let _ = input.blur();
+                }
+            }
+            _ => {}
+        })
+    };
+
+    let value = if *is_editing {
+        (*draft).clone()
+    } else {
+        props.value.to_string()
+    };
+
+    html! {
+        <input
+            ref={input_ref}
+            class="menu-number-input"
+            type="number"
+            inputmode="numeric"
+            title={format!("Set {}", props.label)}
+            aria-label={format!("Set {}", props.label)}
+            min={props.min.to_string()}
+            max={props.max.to_string()}
+            step="1"
+            value={value}
+            {onfocus}
+            {oninput}
+            {onblur}
+            {onkeydown}
+        />
+    }
+}
+
 fn link_summary(url: &str) -> String {
     url.split("://")
         .nth(1)
@@ -422,10 +815,7 @@ fn credit_link_row(link: &CreditLink) -> Html {
     )
 }
 
-fn credit_index_row(
-    entry: &CreditEntry,
-    on_open: Callback<MouseEvent>,
-) -> Html {
+fn credit_index_row(entry: &CreditEntry, on_open: Callback<MouseEvent>) -> Html {
     menu_about_index_row(
         entry.name.clone(),
         entry.relation.clone(),
@@ -464,28 +854,6 @@ fn child_credit_rows(entry: &CreditEntry) -> Vec<Html> {
     rows
 }
 
-fn menu_adjust_row(
-    label: &'static str,
-    value: impl Into<AttrValue>,
-    on_decrease: Callback<MouseEvent>,
-    on_increase: Callback<MouseEvent>,
-) -> Html {
-    html! {
-        <tr>
-            <td class="menu-pad"/>
-            <td class="menu-text" colspan="5">{label}</td>
-            <td class="menu-button-slot">
-                {menu_icon_button("minus", format!("Decrease {}", label), false, on_decrease)}
-            </td>
-            <td class="menu-detail" colspan="5">{value.into()}</td>
-            <td class="menu-button-slot">
-                {menu_icon_button("plus", format!("Increase {}", label), false, on_increase)}
-            </td>
-            <td class="menu-pad"/>
-        </tr>
-    }
-}
-
 fn menu_dual_action_row(
     left_button: Html,
     left_label: &'static str,
@@ -511,8 +879,12 @@ pub(crate) fn SettingsView(props: &SettingsProps) -> Html {
     let theme: UseStateHandle<Option<Theme>> = use_state_eq(LocalOrDefault::local_or_default);
     let original_settings = use_state_eq(|| (*settings).clone());
     let original_theme = use_state_eq(|| *theme);
-    let page = use_state_eq(|| SettingsMenuPage::Root);
-    let selected_credit = use_state_eq(|| None::<usize>);
+    let page = {
+        let initial_page = props.initial_page;
+        use_state_eq(move || match initial_page {
+            SettingsEntryPoint::Root => SettingsMenuPage::Root,
+        })
+    };
 
     let set_theme_light = {
         let theme = theme.clone();
@@ -558,32 +930,62 @@ pub(crate) fn SettingsView(props: &SettingsProps) -> Html {
 
     let inc_mines = {
         let settings = settings.clone();
-        move |_| settings.dispatch(SettingsAction::IncreaseMines)
+        Callback::from(move |()| settings.dispatch(SettingsAction::IncreaseMines))
     };
 
     let dec_mines = {
         let settings = settings.clone();
-        move |_| settings.dispatch(SettingsAction::DecreaseMines)
+        Callback::from(move |()| settings.dispatch(SettingsAction::DecreaseMines))
+    };
+
+    let set_mines = {
+        let settings = settings.clone();
+        Callback::from(move |value: u16| settings.dispatch(SettingsAction::SetMines(value)))
+    };
+
+    let inc_zoom = {
+        let settings = settings.clone();
+        Callback::from(move |()| settings.dispatch(SettingsAction::IncreaseZoom))
+    };
+
+    let dec_zoom = {
+        let settings = settings.clone();
+        Callback::from(move |()| settings.dispatch(SettingsAction::DecreaseZoom))
+    };
+
+    let set_zoom = {
+        let settings = settings.clone();
+        Callback::from(move |value: u16| settings.dispatch(SettingsAction::SetZoom(value)))
     };
 
     let inc_size_x = {
         let settings = settings.clone();
-        move |_| settings.dispatch(SettingsAction::IncreaseSizeX)
+        Callback::from(move |()| settings.dispatch(SettingsAction::IncreaseSizeX))
     };
 
     let dec_size_x = {
         let settings = settings.clone();
-        move |_| settings.dispatch(SettingsAction::DecreaseSizeX)
+        Callback::from(move |()| settings.dispatch(SettingsAction::DecreaseSizeX))
+    };
+
+    let set_size_x = {
+        let settings = settings.clone();
+        Callback::from(move |value: u16| settings.dispatch(SettingsAction::SetSizeX(value)))
     };
 
     let inc_size_y = {
         let settings = settings.clone();
-        move |_| settings.dispatch(SettingsAction::IncreaseSizeY)
+        Callback::from(move |()| settings.dispatch(SettingsAction::IncreaseSizeY))
     };
 
     let dec_size_y = {
         let settings = settings.clone();
-        move |_| settings.dispatch(SettingsAction::DecreaseSizeY)
+        Callback::from(move |()| settings.dispatch(SettingsAction::DecreaseSizeY))
+    };
+
+    let set_size_y = {
+        let settings = settings.clone();
+        Callback::from(move |value: u16| settings.dispatch(SettingsAction::SetSizeY(value)))
     };
 
     let set_classic_beginner = {
@@ -667,28 +1069,14 @@ pub(crate) fn SettingsView(props: &SettingsProps) -> Html {
         Callback::from(move |_| page.set(SettingsMenuPage::Custom))
     };
 
-    let open_appearance = {
+    let open_theme = {
         let page = page.clone();
-        Callback::from(move |_| page.set(SettingsMenuPage::Appearance))
-    };
-
-    let open_about = {
-        let page = page.clone();
-        let selected_credit = selected_credit.clone();
-        Callback::from(move |_| {
-            selected_credit.set(None);
-            page.set(SettingsMenuPage::About);
-        })
+        Callback::from(move |_| page.set(SettingsMenuPage::Theme))
     };
 
     let back_to_root = {
         let page = page.clone();
         Callback::from(move |_| page.set(SettingsMenuPage::Root))
-    };
-
-    let back_to_about = {
-        let selected_credit = selected_credit.clone();
-        Callback::from(move |_| selected_credit.set(None))
     };
 
     let back_to_difficulty = {
@@ -709,6 +1097,7 @@ pub(crate) fn SettingsView(props: &SettingsProps) -> Html {
         Callback::from(move |event: MouseEvent| {
             let settings_snapshot = (*original_settings).clone();
             let theme_snapshot = *original_theme;
+            settings_snapshot.apply_display();
             settings_snapshot.local_save();
             theme.set(theme_snapshot);
             Theme::apply(theme_snapshot);
@@ -719,8 +1108,10 @@ pub(crate) fn SettingsView(props: &SettingsProps) -> Html {
     let current_choice = difficulty_choice(&settings);
     let current_difficulty_label = difficulty_label(current_choice);
     let current_theme_label = theme_label(*theme);
+    let current_zoom_label = zoom_label(settings.zoom_percent());
     let current_generator_label = generator_label(settings.generator);
     let custom_summary = game_config_summary(&settings.game_config);
+    let theme_detail = format!("{current_theme_label} / {current_zoom_label}");
     let classic_detail = match current_choice {
         DifficultyChoice::ClassicBeginner => "Beginner",
         DifficultyChoice::ClassicIntermediate => "Intermediate",
@@ -744,7 +1135,13 @@ pub(crate) fn SettingsView(props: &SettingsProps) -> Html {
         SettingsMenuPage::Root => html! {
             <>
                 {menu_blank_row()}
-                {menu_title_row("Settings")}
+                {
+                    if let Some(on_back) = props.on_back.clone() {
+                        menu_header_row("Settings", on_back)
+                    } else {
+                        menu_title_row("Settings")
+                    }
+                }
                 {menu_blank_row()}
                 {menu_entry_row(
                     "Difficulty",
@@ -753,14 +1150,9 @@ pub(crate) fn SettingsView(props: &SettingsProps) -> Html {
                 )}
                 {menu_blank_row()}
                 {menu_entry_row(
-                    "Appearance",
-                    current_theme_label,
-                    menu_icon_button("plus", "Open appearance menu", false, open_appearance),
-                )}
-                {menu_entry_row(
-                    "About",
-                    "Credits",
-                    menu_icon_button("plus", "Open about page", false, open_about),
+                    "Theme",
+                    theme_detail,
+                    menu_icon_button("plus", "Open theme menu", false, open_theme),
                 )}
                 {menu_blank_row()}
             </>
@@ -932,29 +1324,38 @@ pub(crate) fn SettingsView(props: &SettingsProps) -> Html {
                 {menu_blank_row()}
                 {menu_adjust_row(
                     "Width",
-                    settings.game_config.size.0.to_string(),
-                    Callback::from(dec_size_x),
-                    Callback::from(inc_size_x),
+                    settings.game_config.size.0.into(),
+                    1,
+                    Settings::MAX_SIZE.into(),
+                    dec_size_x,
+                    set_size_x,
+                    inc_size_x,
                 )}
                 {menu_adjust_row(
                     "Height",
-                    settings.game_config.size.1.to_string(),
-                    Callback::from(dec_size_y),
-                    Callback::from(inc_size_y),
+                    settings.game_config.size.1.into(),
+                    1,
+                    Settings::MAX_SIZE.into(),
+                    dec_size_y,
+                    set_size_y,
+                    inc_size_y,
                 )}
                 {menu_adjust_row(
                     "Mines",
-                    settings.game_config.mines.to_string(),
-                    Callback::from(dec_mines),
-                    Callback::from(inc_mines),
+                    settings.game_config.mines,
+                    1,
+                    settings.game_config.total_cells(),
+                    dec_mines,
+                    set_mines,
+                    inc_mines,
                 )}
                 {menu_blank_row()}
             </>
         },
-        SettingsMenuPage::Appearance => html! {
+        SettingsMenuPage::Theme => html! {
             <>
                 {menu_blank_row()}
-                {menu_header_row("Appearance", back_to_root)}
+                {menu_header_row("Theme", back_to_root)}
                 {menu_blank_row()}
                 {menu_entry_row(
                     "Dark",
@@ -987,44 +1388,73 @@ pub(crate) fn SettingsView(props: &SettingsProps) -> Html {
                     ),
                 )}
                 {menu_blank_row()}
+                {menu_adjust_row(
+                    "Zoom",
+                    settings.zoom_percent(),
+                    Settings::MIN_ZOOM_PERCENT,
+                    Settings::MAX_ZOOM_PERCENT,
+                    dec_zoom,
+                    set_zoom,
+                    inc_zoom,
+                )}
+                {menu_blank_row()}
             </>
         },
-        SettingsMenuPage::About => {
-            if let Some(index) = *selected_credit {
-                let entry = &CREDITS_MANIFEST.entries[index];
-                let children: Vec<&CreditEntry> = CREDITS_MANIFEST
-                    .entries
-                    .iter()
-                    .filter(|candidate| candidate.parent.as_deref() == Some(entry.id.as_str()))
-                    .collect();
-                html! {
-                    <>
-                        {menu_blank_row()}
-                        {menu_header_row(entry.name.clone(), back_to_about)}
-                        {menu_blank_row()}
-                        {for credit_detail_rows(entry)}
-                        {for children.into_iter().flat_map(child_credit_rows)}
-                        {menu_blank_row()}
-                    </>
-                }
-            } else {
-                html! {
-                    <>
-                        {menu_blank_row()}
-                        {menu_header_row("About", back_to_root)}
-                        {menu_blank_row()}
-                        {for CREDITS_MANIFEST.entries.iter().enumerate().filter_map(|(index, entry)| {
-                            if entry.parent.is_some() {
-                                return None;
-                            }
-                            let selected_credit = selected_credit.clone();
-                            let on_open = Callback::from(move |_| selected_credit.set(Some(index)));
-                            Some(credit_index_row(entry, on_open))
-                        })}
-                        {menu_blank_row()}
-                    </>
-                }
-            }
+    };
+
+    html! {
+        <dialog open={props.open}>
+            <table class="menu-grid">
+                <tbody>
+                    {menu_body}
+                </tbody>
+            </table>
+        </dialog>
+    }
+}
+
+#[function_component]
+pub(crate) fn AboutView(props: &AboutProps) -> Html {
+    let selected_credit = use_state_eq(|| None::<usize>);
+
+    let back_to_index = {
+        let selected_credit = selected_credit.clone();
+        Callback::from(move |_| selected_credit.set(None))
+    };
+
+    let menu_body = if let Some(index) = *selected_credit {
+        let entry = &CREDITS_MANIFEST.entries[index];
+        let children: Vec<&CreditEntry> = CREDITS_MANIFEST
+            .entries
+            .iter()
+            .filter(|candidate| candidate.parent.as_deref() == Some(entry.id.as_str()))
+            .collect();
+        html! {
+            <>
+                {menu_blank_row()}
+                {menu_header_row(entry.name.clone(), back_to_index)}
+                {menu_blank_row()}
+                {for credit_detail_rows(entry)}
+                {for children.into_iter().flat_map(child_credit_rows)}
+                {menu_blank_row()}
+            </>
+        }
+    } else {
+        html! {
+            <>
+                {menu_blank_row()}
+                {menu_header_row("About", props.on_back.clone())}
+                {menu_blank_row()}
+                {for CREDITS_MANIFEST.entries.iter().enumerate().filter_map(|(index, entry)| {
+                    if entry.parent.is_some() {
+                        return None;
+                    }
+                    let selected_credit = selected_credit.clone();
+                    let on_open = Callback::from(move |_| selected_credit.set(Some(index)));
+                    Some(credit_index_row(entry, on_open))
+                })}
+                {menu_blank_row()}
+            </>
         }
     };
 
@@ -1036,5 +1466,39 @@ pub(crate) fn SettingsView(props: &SettingsProps) -> Html {
                 </tbody>
             </table>
         </dialog>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BEGINNER, Settings};
+    use serde_json::json;
+
+    #[test]
+    fn settings_deserialization_defaults_zoom_percent() {
+        let settings: Settings = serde_json::from_value(json!({
+            "game_config": {
+                "size": [BEGINNER.size.0, BEGINNER.size.1],
+                "mines": BEGINNER.mines
+            },
+            "generator": "NoGuess",
+            "enable_question_mark": false,
+            "enable_flag_chord": true,
+            "enable_auto_trivial": true
+        }))
+        .expect("settings should deserialize");
+
+        assert_eq!(settings.zoom_percent(), Settings::DEFAULT_ZOOM_PERCENT);
+    }
+
+    #[test]
+    fn zoom_percent_is_clamped_to_supported_range() {
+        let mut settings = Settings::default();
+
+        settings.zoom_percent = 0;
+        assert_eq!(settings.zoom_percent(), Settings::MIN_ZOOM_PERCENT);
+
+        settings.zoom_percent = 999;
+        assert_eq!(settings.zoom_percent(), Settings::MAX_ZOOM_PERCENT);
     }
 }

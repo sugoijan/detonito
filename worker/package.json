@@ -1,0 +1,12 @@
+{
+  "name": "detonito-worker",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "cargo run -p xtask -- worker",
+    "deploy": "cargo run -p xtask -- worker-deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4"
+  }
+}
