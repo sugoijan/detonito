@@ -32,6 +32,10 @@ upstream = "1F635.svg"
 source = "upstream"
 upstream = "1F634.svg"
 
+[icons.dejected]
+source = "upstream"
+upstream = "E282.svg"
+
 [icons.instant-win]
 source = "upstream"
 upstream = "E283.svg"

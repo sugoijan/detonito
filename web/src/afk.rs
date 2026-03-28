@@ -1,7 +1,11 @@
+use std::rc::Rc;
+
 use detonito_protocol::{
-    AfkActionKind, AfkActionRequest, AfkCellSnapshot, AfkChatConnectionState, AfkClientMessage,
-    AfkLossReason, AfkRoundPhase, AfkServerMessage, AfkSessionSnapshot, AfkStatusResponse,
+    AfkActionKind, AfkActionRequest, AfkActivityKind, AfkActivityRow, AfkCellSnapshot,
+    AfkChatConnectionState, AfkClientMessage, AfkLossReason, AfkRoundPhase, AfkServerMessage,
+    AfkSessionSnapshot, AfkStatusResponse,
 };
+use gloo::timers::callback::Timeout;
 use js_sys::encode_uri_component;
 use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 use wasm_bindgen_futures::{JsFuture, spawn_local};
@@ -64,6 +68,14 @@ struct AfkFacePrompt {
     message: AttrValue,
     choices: Vec<AfkFaceChoice>,
 }
+
+#[derive(Clone, Debug, PartialEq)]
+struct AfkFaceNotification {
+    id: u64,
+    message: AttrValue,
+}
+
+const AFK_FACE_NOTIFICATION_MS: u32 = 5_000;
 
 fn current_level_status_text(session: Option<&AfkSessionSnapshot>) -> Option<AttrValue> {
     session.map(|session| format!("Level {}", session.current_level).into())
@@ -219,10 +231,51 @@ fn loss_continue_prompt(secs: i32) -> AfkFacePrompt {
     }
 }
 
+fn automatic_face_prompt(session: &AfkSessionSnapshot) -> Option<AfkFacePrompt> {
+    match session.phase {
+        AfkRoundPhase::Won => Some(win_continue_prompt(
+            session.phase_countdown_secs.unwrap_or_default(),
+        )),
+        AfkRoundPhase::TimedOut => Some(loss_continue_prompt(
+            session.phase_countdown_secs.unwrap_or_default(),
+        )),
+        _ => None,
+    }
+}
+
+fn has_active_face_prompt(
+    screen: AfkScreen,
+    status: &LoadState<AfkStatusResponse>,
+    manual_prompt: &Option<AfkFacePrompt>,
+) -> bool {
+    if !matches!(screen, AfkScreen::Board) {
+        return false;
+    }
+    if manual_prompt.is_some() {
+        return true;
+    }
+    matches!(
+        status,
+        LoadState::Ready(status)
+            if status
+                .session
+                .as_ref()
+                .is_some_and(|session| automatic_face_prompt(session).is_some())
+    )
+}
+
+fn face_notification_message(row: &AfkActivityRow) -> Option<AttrValue> {
+    (row.kind == AfkActivityKind::MineHit)
+        .then_some(row.actor.as_ref())
+        .flatten()
+        .map(|actor| format!("{} found a mine! o7", actor.display_name).into())
+}
+
 fn active_face_overlay(
     screen: AfkScreen,
     status: &LoadState<AfkStatusResponse>,
     manual_prompt: &Option<AfkFacePrompt>,
+    notification: &Option<AfkFaceNotification>,
 ) -> Option<AfkFaceOverlay> {
     if matches!(screen, AfkScreen::Board) {
         if let Some(prompt) = manual_prompt.clone() {
@@ -231,6 +284,9 @@ fn active_face_overlay(
         if let LoadState::Ready(status) = status {
             if let Some(session) = &status.session {
                 let level_status = current_level_status_text(Some(session));
+                if let Some(prompt) = automatic_face_prompt(session) {
+                    return Some(AfkFaceOverlay::Prompt(prompt));
+                }
                 return match session.phase {
                     AfkRoundPhase::Countdown => Some(AfkFaceOverlay::Message {
                         message: format!(
@@ -240,13 +296,13 @@ fn active_face_overlay(
                         .into(),
                         status: level_status,
                     }),
-                    AfkRoundPhase::Won => Some(AfkFaceOverlay::Prompt(win_continue_prompt(
-                        session.phase_countdown_secs.unwrap_or_default(),
-                    ))),
-                    AfkRoundPhase::TimedOut => Some(AfkFaceOverlay::Prompt(loss_continue_prompt(
-                        session.phase_countdown_secs.unwrap_or_default(),
-                    ))),
-                    _ => level_status.map(AfkFaceOverlay::Status),
+                    _ => notification
+                        .as_ref()
+                        .map(|notification| AfkFaceOverlay::Message {
+                            message: notification.message.clone(),
+                            status: level_status.clone(),
+                        })
+                        .or_else(|| level_status.map(AfkFaceOverlay::Status)),
                 };
             }
         }
@@ -256,7 +312,13 @@ fn active_face_overlay(
     None
 }
 
-fn afk_face_icon(status: &LoadState<AfkStatusResponse>) -> &'static str {
+fn afk_face_icon(
+    status: &LoadState<AfkStatusResponse>,
+    notification: Option<&AfkFaceNotification>,
+) -> &'static str {
+    if notification.is_some() {
+        return "dejected";
+    }
     match status {
         LoadState::Loading => "mid-open",
         LoadState::Ready(status) => match status.session.as_ref().map(|session| session.phase) {
@@ -569,10 +631,55 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
     let status = use_state_eq(|| LoadState::<AfkStatusResponse>::Idle);
     let screen = use_state_eq(|| AfkScreen::Menu);
     let manual_face_prompt = use_state_eq(|| None::<AfkFacePrompt>);
+    let face_notification = use_state_eq(|| None::<AfkFaceNotification>);
+    let face_notification_timeout = use_mut_ref(|| None::<Timeout>);
+    let next_face_notification_id = use_mut_ref(|| 0_u64);
     let last_error = use_state_eq(|| None::<String>);
     let socket_path = match &*status {
         LoadState::Ready(status) if status.auth.identity.is_some() => status.websocket_path.clone(),
         _ => None,
+    };
+
+    let clear_face_notification = {
+        let face_notification = face_notification.clone();
+        let face_notification_timeout = face_notification_timeout.clone();
+        Rc::new(move || {
+            face_notification_timeout.borrow_mut().take();
+            face_notification.set(None);
+        })
+    };
+
+    let show_face_notification = {
+        let face_notification = face_notification.clone();
+        let face_notification_timeout = face_notification_timeout.clone();
+        let next_face_notification_id = next_face_notification_id.clone();
+        Rc::new(move |message: AttrValue| {
+            let notification_id = {
+                let mut next_id = next_face_notification_id.borrow_mut();
+                *next_id += 1;
+                *next_id
+            };
+            face_notification_timeout.borrow_mut().take();
+            face_notification.set(Some(AfkFaceNotification {
+                id: notification_id,
+                message,
+            }));
+
+            let face_notification = face_notification.clone();
+            let face_notification_timeout_for_store = face_notification_timeout.clone();
+            let face_notification_timeout_for_callback = face_notification_timeout.clone();
+            *face_notification_timeout_for_store.borrow_mut() =
+                Some(Timeout::new(AFK_FACE_NOTIFICATION_MS, move || {
+                    let still_active = matches!(
+                        &*face_notification,
+                        Some(notification) if notification.id == notification_id
+                    );
+                    if still_active {
+                        face_notification.set(None);
+                    }
+                    face_notification_timeout_for_callback.borrow_mut().take();
+                }));
+        })
     };
 
     {
@@ -597,6 +704,8 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
     {
         let status = status.clone();
         let last_error = last_error.clone();
+        let screen = screen.clone();
+        let show_face_notification = show_face_notification.clone();
         use_effect_with(socket_path.clone(), move |socket_path| {
             let mut socket = None::<WebSocket>;
             let mut onmessage = None::<Closure<dyn FnMut(MessageEvent)>>;
@@ -610,6 +719,8 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                         let status_state = status.clone();
                         let last_error_for_message = last_error.clone();
                         let last_error_for_socket = last_error.clone();
+                        let screen_for_message = screen.clone();
+                        let show_face_notification = show_face_notification.clone();
 
                         let message_handler =
                             Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {
@@ -629,7 +740,13 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                                             status_state.set(LoadState::Ready(next));
                                         }
                                     }
-                                    Ok(AfkServerMessage::Activity { .. }) => {}
+                                    Ok(AfkServerMessage::Activity { row }) => {
+                                        if matches!(*screen_for_message, AfkScreen::Board)
+                                            && let Some(message) = face_notification_message(&row)
+                                        {
+                                            show_face_notification(message);
+                                        }
+                                    }
                                     Ok(AfkServerMessage::Error { message }) => {
                                         last_error_for_message.set(Some(message));
                                     }
@@ -689,6 +806,7 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
     {
         let screen = screen.clone();
         let manual_face_prompt = manual_face_prompt.clone();
+        let clear_face_notification = clear_face_notification.clone();
         let last_error = last_error.clone();
         use_effect_with(status.clone(), move |status| {
             if matches!(*screen, AfkScreen::Board) {
@@ -698,10 +816,12 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                 };
                 let has_session = ready_status.is_some_and(|status| status.session.is_some());
                 if !has_session {
+                    clear_face_notification();
                     manual_face_prompt.set(None);
                     screen.set(AfkScreen::Menu);
                 } else if let Some(status) = ready_status {
                     if has_critical_chat_failure(status) {
+                        clear_face_notification();
                         manual_face_prompt.set(None);
                         last_error.set(
                             status_chat_error(status)
@@ -715,10 +835,45 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
         });
     }
 
+    {
+        let clear_face_notification = clear_face_notification.clone();
+        let notification_id = (*face_notification)
+            .as_ref()
+            .map(|notification| notification.id);
+        use_effect_with(
+            (*screen, notification_id),
+            move |(screen, notification_id)| {
+                if matches!(*screen, AfkScreen::Menu) && notification_id.is_some() {
+                    clear_face_notification();
+                }
+                || ()
+            },
+        );
+    }
+
+    {
+        let clear_face_notification = clear_face_notification.clone();
+        let prompt_active = has_active_face_prompt(*screen, &status, &manual_face_prompt);
+        let notification_id = (*face_notification)
+            .as_ref()
+            .map(|notification| notification.id);
+        use_effect_with(
+            (prompt_active, notification_id),
+            move |(prompt_active, notification_id)| {
+                if *prompt_active && notification_id.is_some() {
+                    clear_face_notification();
+                }
+                || ()
+            },
+        );
+    }
+
     let go_to_main_menu = {
         let manual_face_prompt = manual_face_prompt.clone();
+        let clear_face_notification = clear_face_notification.clone();
         let on_menu = props.on_menu.clone();
         Callback::from(move |_: MouseEvent| {
+            clear_face_notification();
             manual_face_prompt.set(None);
             on_menu.emit(());
         })
@@ -862,17 +1017,20 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
         })
     };
 
-    let current_overlay = active_face_overlay(*screen, &status, &manual_face_prompt);
+    let current_overlay =
+        active_face_overlay(*screen, &status, &manual_face_prompt, &face_notification);
     let face_button_locked = current_overlay
         .as_ref()
         .is_some_and(|overlay| matches!(overlay, AfkFaceOverlay::Prompt(_)));
 
     let on_face_button = {
         let manual_face_prompt = manual_face_prompt.clone();
+        let clear_face_notification = clear_face_notification.clone();
         let face_button_locked = face_button_locked;
         Callback::from(move |e: MouseEvent| {
             e.stop_propagation();
             if !face_button_locked {
+                clear_face_notification();
                 manual_face_prompt.set(Some(board_menu_prompt()));
             }
         })
@@ -1136,7 +1294,14 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
             };
             let mines_left = mines_counter_text(session);
             let timer = board_counter_text(session);
-            let game_state_icon = afk_face_icon(&status);
+            let game_state_icon = afk_face_icon(
+                &status,
+                if face_button_locked {
+                    None
+                } else {
+                    (*face_notification).as_ref()
+                },
+            );
             let face_button_title = if face_button_locked {
                 "AFK prompt open"
             } else {
@@ -1290,8 +1455,8 @@ fn js_error(error: impl core::fmt::Debug) -> String {
 mod tests {
     use super::*;
     use detonito_protocol::{
-        AfkBoardSnapshot, AfkChatConnectionState, AfkLossReason, AfkTimerProfileSnapshot,
-        FrontendRuntimeConfig, StreamerAuthStatus,
+        AfkActivityKind, AfkBoardSnapshot, AfkChatConnectionState, AfkIdentity, AfkLossReason,
+        AfkTimerProfileSnapshot, FrontendRuntimeConfig, StreamerAuthStatus,
     };
 
     #[test]
@@ -1336,7 +1501,36 @@ mod tests {
             }),
         });
 
-        assert_eq!(afk_face_icon(&status), "sleeping");
+        assert_eq!(afk_face_icon(&status, None), "sleeping");
+    }
+
+    #[test]
+    fn face_icon_uses_dejected_face_for_notifications() {
+        assert_eq!(
+            afk_face_icon(
+                &LoadState::<AfkStatusResponse>::Idle,
+                Some(&AfkFaceNotification {
+                    id: 1,
+                    message: "Jan found a mine! o7".into(),
+                })
+            ),
+            "dejected"
+        );
+    }
+
+    #[test]
+    fn mine_hit_activity_formats_face_notification() {
+        let row = AfkActivityRow {
+            at_ms: 1_234,
+            text: "Jan hit a mine at 1A".into(),
+            kind: AfkActivityKind::MineHit,
+            actor: Some(AfkIdentity::new("1", "jan", "Jan")),
+        };
+
+        assert_eq!(
+            face_notification_message(&row),
+            Some(AttrValue::from("Jan found a mine! o7"))
+        );
     }
 
     #[test]
@@ -1383,8 +1577,124 @@ mod tests {
                 }),
             }),
             &None,
+            &None,
         );
 
         assert_eq!(overlay, Some(AfkFaceOverlay::Status("Level 3".into())));
+    }
+
+    #[test]
+    fn active_board_overlay_shows_notification_until_a_prompt_replaces_it() {
+        let overlay = active_face_overlay(
+            AfkScreen::Board,
+            &LoadState::Ready(AfkStatusResponse {
+                runtime: FrontendRuntimeConfig { afk_enabled: true },
+                auth: StreamerAuthStatus::default(),
+                chat_connection: AfkChatConnectionState::Idle,
+                chat_error: None,
+                timeout_supported: true,
+                timeout_enabled: true,
+                connect_url: None,
+                websocket_path: None,
+                session: Some(AfkSessionSnapshot {
+                    streamer: None,
+                    phase: AfkRoundPhase::Active,
+                    paused: false,
+                    board: AfkBoardSnapshot {
+                        width: 0,
+                        height: 0,
+                        cells: Vec::new(),
+                    },
+                    timer_profile: AfkTimerProfileSnapshot {
+                        start_secs: 120,
+                        safe_reveal_bonus_secs: 1,
+                        mine_penalty_secs: 15,
+                        start_delay_secs: 5,
+                        win_continue_delay_secs: 30,
+                        loss_continue_delay_secs: 60,
+                    },
+                    timer_remaining_secs: 120,
+                    phase_countdown_secs: None,
+                    current_level: 3,
+                    live_mines_left: 50,
+                    crater_count: 0,
+                    loss_reason: None,
+                    timeout_enabled: true,
+                    ignored_users: Vec::new(),
+                    recent_penalties: Vec::new(),
+                    activity: Vec::new(),
+                    last_action: None,
+                }),
+            }),
+            &None,
+            &Some(AfkFaceNotification {
+                id: 7,
+                message: "Jan found a mine! o7".into(),
+            }),
+        );
+
+        assert_eq!(
+            overlay,
+            Some(AfkFaceOverlay::Message {
+                message: "Jan found a mine! o7".into(),
+                status: Some("Level 3".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn active_board_prompt_replaces_notification() {
+        let overlay = active_face_overlay(
+            AfkScreen::Board,
+            &LoadState::Ready(AfkStatusResponse {
+                runtime: FrontendRuntimeConfig { afk_enabled: true },
+                auth: StreamerAuthStatus::default(),
+                chat_connection: AfkChatConnectionState::Idle,
+                chat_error: None,
+                timeout_supported: true,
+                timeout_enabled: true,
+                connect_url: None,
+                websocket_path: None,
+                session: Some(AfkSessionSnapshot {
+                    streamer: None,
+                    phase: AfkRoundPhase::TimedOut,
+                    paused: false,
+                    board: AfkBoardSnapshot {
+                        width: 0,
+                        height: 0,
+                        cells: Vec::new(),
+                    },
+                    timer_profile: AfkTimerProfileSnapshot {
+                        start_secs: 120,
+                        safe_reveal_bonus_secs: 1,
+                        mine_penalty_secs: 15,
+                        start_delay_secs: 5,
+                        win_continue_delay_secs: 30,
+                        loss_continue_delay_secs: 60,
+                    },
+                    timer_remaining_secs: 0,
+                    phase_countdown_secs: Some(60),
+                    current_level: 1,
+                    live_mines_left: 0,
+                    crater_count: 0,
+                    loss_reason: Some(AfkLossReason::Mine),
+                    timeout_enabled: true,
+                    ignored_users: Vec::new(),
+                    recent_penalties: Vec::new(),
+                    activity: Vec::new(),
+                    last_action: None,
+                }),
+            }),
+            &None,
+            &Some(AfkFaceNotification {
+                id: 7,
+                message: "Jan found a mine! o7".into(),
+            }),
+        );
+
+        assert_eq!(
+            overlay,
+            Some(AfkFaceOverlay::Prompt(loss_continue_prompt(60)))
+        );
     }
 }

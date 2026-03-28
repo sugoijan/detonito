@@ -104,10 +104,22 @@ pub struct AfkPenaltySnapshot {
     pub timeout_succeeded: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AfkActivityKind {
+    #[default]
+    Generic,
+    MineHit,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AfkActivityRow {
     pub at_ms: i64,
     pub text: String,
+    #[serde(default)]
+    pub kind: AfkActivityKind,
+    #[serde(default)]
+    pub actor: Option<AfkIdentity>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

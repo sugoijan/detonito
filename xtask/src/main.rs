@@ -111,6 +111,9 @@ enum Commands {
     /// Build the Worker release shim after staging the Worker frontend assets.
     #[command(name = "worker-build")]
     WorkerBuild,
+    /// Build the Worker artifacts and generated Wrangler config for CI/CD deploys.
+    #[command(name = "worker-prepare-deploy")]
+    WorkerPrepareDeploy,
     /// Deploy the Worker using the generated release config.
     #[command(name = "worker-deploy")]
     WorkerDeploy,
@@ -237,6 +240,7 @@ fn main() -> Result<()> {
             stage_worker_assets(&root, BuildProfile::Release)?;
             run_worker_build(&root, BuildProfile::Release)
         }
+        Commands::WorkerPrepareDeploy => prepare_worker_deploy(&root, BuildProfile::Release),
         Commands::WorkerDeploy => {
             stage_worker_assets(&root, BuildProfile::Release)?;
             run_wrangler(&root, "deploy", BuildProfile::Release)
@@ -403,6 +407,13 @@ fn run_worker_build(root: &Path, profile: BuildProfile) -> Result<()> {
     run(&mut command)
 }
 
+fn prepare_worker_deploy(root: &Path, profile: BuildProfile) -> Result<()> {
+    stage_worker_assets(root, profile)?;
+    run_worker_build(root, profile)?;
+    write_generated_wrangler_config(root, profile)?;
+    Ok(())
+}
+
 fn write_generated_wrangler_config(root: &Path, profile: BuildProfile) -> Result<PathBuf> {
     let template_path = worker_dir(root).join("wrangler.toml");
     let template = fs::read_to_string(&template_path)
@@ -411,12 +422,15 @@ fn write_generated_wrangler_config(root: &Path, profile: BuildProfile) -> Result
         .parse::<DocumentMut>()
         .with_context(|| format!("failed to parse {}", template_path.display()))?;
 
-    let build_command = match profile {
-        BuildProfile::Dev => "worker-build --dev .",
-        BuildProfile::Release => "worker-build --release .",
-    };
     let base_path = configured_base_path(root)?;
-    document["build"]["command"] = value(build_command);
+    match profile {
+        BuildProfile::Dev => {
+            document["build"]["command"] = value("worker-build --dev .");
+        }
+        BuildProfile::Release => {
+            document.remove("build");
+        }
+    }
     document["assets"]["directory"] = value("./build/assets");
     document["assets"]["binding"] = value("ASSETS");
     document["assets"]["not_found_handling"] = value("single-page-application");
@@ -430,7 +444,7 @@ fn write_generated_wrangler_config(root: &Path, profile: BuildProfile) -> Result
         document["vars"]["PUBLIC_URL"] = value(local_public_url(root)?);
     }
     if profile == BuildProfile::Release {
-        if let Ok(host) = env::var("WORKER_ROUTE_HOST") {
+        if let Some(host) = release_route_host(&document) {
             let mut routes = toml_edit::Array::default();
             for pattern in worker_route_patterns(&host, &base_path) {
                 routes.push(pattern);
@@ -443,6 +457,38 @@ fn write_generated_wrangler_config(root: &Path, profile: BuildProfile) -> Result
     fs::write(&output_path, document.to_string())
         .with_context(|| format!("failed to write {}", output_path.display()))?;
     Ok(output_path)
+}
+
+fn release_route_host(document: &DocumentMut) -> Option<String> {
+    env::var("WORKER_ROUTE_HOST")
+        .ok()
+        .map(|host| host.trim().trim_end_matches('/').to_string())
+        .filter(|host| !host.is_empty())
+        .or_else(|| public_url_host(document["vars"]["PUBLIC_URL"].as_str().unwrap_or_default()))
+}
+
+fn public_url_host(public_url: &str) -> Option<String> {
+    let trimmed = public_url.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let without_scheme = trimmed
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(trimmed);
+    let host = without_scheme
+        .split('/')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .trim_end_matches('/');
+
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_string())
+    }
 }
 
 fn run_wrangler(root: &Path, subcommand: &str, profile: BuildProfile) -> Result<()> {

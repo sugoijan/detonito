@@ -27,9 +27,9 @@ use detonito_core::{
     AfkPreset, AfkRoundPhase as CoreAfkRoundPhase,
 };
 use detonito_protocol::{
-    AfkActionKind, AfkActionRequest, AfkActivityRow, AfkBoardSnapshot, AfkCellSnapshot,
-    AfkChatConnectionState, AfkClientMessage, AfkIdentity, AfkLossReason, AfkPenaltySnapshot,
-    AfkRoundPhase, AfkServerMessage, AfkSessionSnapshot, AfkStatusResponse,
+    AfkActionKind, AfkActionRequest, AfkActivityKind, AfkActivityRow, AfkBoardSnapshot,
+    AfkCellSnapshot, AfkChatConnectionState, AfkClientMessage, AfkIdentity, AfkLossReason,
+    AfkPenaltySnapshot, AfkRoundPhase, AfkServerMessage, AfkSessionSnapshot, AfkStatusResponse,
     AfkTimerProfileSnapshot, FrontendRuntimeConfig, StreamerAuthStatus,
 };
 use futures_channel::mpsc::{UnboundedReceiver, unbounded};
@@ -147,9 +147,21 @@ impl PersistedAfkSession {
     }
 
     fn push_activity(&mut self, text: impl Into<String>, now_ms: i64) -> AfkActivityRow {
+        self.push_activity_with_details(text, now_ms, AfkActivityKind::Generic, None)
+    }
+
+    fn push_activity_with_details(
+        &mut self,
+        text: impl Into<String>,
+        now_ms: i64,
+        kind: AfkActivityKind,
+        actor: Option<AfkIdentity>,
+    ) -> AfkActivityRow {
         let row = AfkActivityRow {
             at_ms: now_ms,
             text: text.into(),
+            kind,
+            actor,
         };
         self.activity.push(row.clone());
         if self.activity.len() > MAX_ACTIVITY_ROWS {
@@ -1030,7 +1042,17 @@ impl AfkSessionDO {
                 AfkAction::ChordFlag(_) => "chord-flagged",
             };
             let row = if outcome.mine_triggered {
-                session.push_activity(format!("{actor_label} hit a mine at {coord_label}"), now)
+                let actor = AfkIdentity::new(
+                    chat.chatter_user_id.clone(),
+                    chat.chatter_user_login.clone(),
+                    actor_label.to_string(),
+                );
+                session.push_activity_with_details(
+                    format!("{actor_label} hit a mine at {coord_label}"),
+                    now,
+                    AfkActivityKind::MineHit,
+                    Some(actor),
+                )
             } else if outcome.won {
                 session.push_activity(format!("{actor_label} cleared {coord_label}"), now)
             } else {
@@ -1038,11 +1060,10 @@ impl AfkSessionDO {
             };
 
             let (timed_out_identity, should_request_timeout) = if outcome.mine_triggered {
-                let identity = AfkIdentity::new(
-                    chat.chatter_user_id.clone(),
-                    chat.chatter_user_login.clone(),
-                    actor_label.to_string(),
-                );
+                let identity = row
+                    .actor
+                    .clone()
+                    .expect("mine-hit activity rows must include an actor");
                 session.ignored_users.push(identity.clone());
                 if session.ignored_users.len() > MAX_IGNORED_USERS {
                     let overflow = session.ignored_users.len() - MAX_IGNORED_USERS;
@@ -1258,9 +1279,11 @@ impl AfkSessionDO {
             session
                 .engine
                 .force_timed_out(CoreAfkLossReason::Mine, now_ms());
-            session.push_activity(
+            session.push_activity_with_details(
                 format!("{actor_label} hit a mine at {coord_label}"),
                 now_ms(),
+                AfkActivityKind::MineHit,
+                Some(streamer.clone()),
             )
         } else if outcome.won {
             session.push_activity(format!("{actor_label} cleared {coord_label}"), now_ms())
@@ -2786,9 +2809,7 @@ mod tests {
             eventsub: PersistedEventSubState {
                 connection_status: Some("connected".into()),
                 websocket_session_id: Some("session-id-placeholder-value".into()),
-                reconnect_url: Some(
-                    "wss://eventsub.wss.twitch.tv/ws?reconnect=true".into(),
-                ),
+                reconnect_url: Some("wss://eventsub.wss.twitch.tv/ws?reconnect=true".into()),
                 reconnect_due_at_ms: Some(9_999_999_999),
                 subscription_id: Some("subscription-id-placeholder".into()),
                 last_message_id: Some("last-message-id-placeholder".into()),

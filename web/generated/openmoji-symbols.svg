@@ -11,6 +11,17 @@
         <path class="dtn-openmoji-layer dtn-openmoji-layer-line dtn-palette-stroke-ink" d="m58.14 21.78-7.76-8.013-14.29 14.22-14.22-14.22-8.013 8.013 14.35 14.22-14.35 14.22 8.014 8.013 14.22-14.22 14.29 14.22 7.76-8.013-14.22-14.22z" fill="none" stroke="var(--dtn-sprite-ink)" stroke-linecap="round" stroke-linejoin="round" stroke-miterlimit="10" stroke-width="2"/>
       </g>
     </symbol>
+    <symbol id="dtn-icon-dejected" viewBox="0 0 72 72">
+      <g class="dtn-openmoji-layer dtn-openmoji-layer-color">
+        <path class="dtn-openmoji-layer dtn-openmoji-layer-color dtn-palette-fill-yellow" d="m36.2 13.32c-12.57 0-22.8 10.23-22.8 22.8 0 12.57 10.23 22.8 22.8 22.8 12.57 0 22.8-10.23 22.8-22.8 0-12.57-10.23-22.8-22.8-22.8z" fill="var(--dtn-sprite-yellow)"/>
+      </g>
+      <g class="dtn-openmoji-layer dtn-openmoji-layer-line">
+        <circle class="dtn-openmoji-layer dtn-openmoji-layer-line dtn-palette-stroke-ink" cx="36" cy="36" fill="none" r="23" stroke="var(--dtn-sprite-ink)" stroke-miterlimit="10" stroke-width="2"/>
+        <line class="dtn-openmoji-layer dtn-openmoji-layer-line dtn-palette-stroke-ink" fill="none" stroke="var(--dtn-sprite-ink)" stroke-linecap="round" stroke-linejoin="round" stroke-miterlimit="10" stroke-width="2" x1="28.99" x2="43.01" y1="51" y2="51"/>
+        <path class="dtn-openmoji-layer dtn-openmoji-layer-line dtn-palette-fill-ink" d="m29.2 42c0 1.657-1.345 3-3 3-1.655 0-3-1.343-3-3 0-1.655 1.345-3 3-3 1.655 0 3 1.345 3 3" fill="var(--dtn-sprite-ink)"/>
+        <path class="dtn-openmoji-layer dtn-openmoji-layer-line dtn-palette-fill-ink" d="m48.8 42c0 1.657-1.345 3-3 3s-3-1.343-3-3c0-1.655 1.345-3 3-3s3 1.345 3 3" fill="var(--dtn-sprite-ink)"/>
+      </g>
+    </symbol>
     <symbol id="dtn-icon-details" viewBox="0 0 72 72">
       <g class="dtn-openmoji-layer dtn-openmoji-layer-color">
         <polyline class="dtn-openmoji-layer dtn-openmoji-layer-color dtn-palette-fill-white" fill="var(--dtn-sprite-white)" points="51.0651,43.9165 51.0651,10.9792 18.9369,10.9792 18.9369,60.7391 34.9995,60.7391"/>

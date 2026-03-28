@@ -4,7 +4,10 @@
   "private": true,
   "scripts": {
     "dev": "cargo run -p xtask -- worker",
-    "deploy": "cargo run -p xtask -- worker-deploy"
+    "deploy": "cargo run -p xtask -- worker-deploy",
+    "cf:build": "bash ./scripts/cloudflare-build.sh",
+    "cf:deploy": "wrangler deploy --config wrangler.generated.toml",
+    "cf:preview": "wrangler versions upload --config wrangler.generated.toml"
   },
   "devDependencies": {
     "wrangler": "^4"
