@@ -47,15 +47,11 @@ jobs:
         id: pages
         uses: actions/configure-pages@v5
 
-      - name: Install Trunk
-        # Install trunk to build the project
-        run: cargo install trunk
+      - name: Install Build Tools
+        run: cargo install trunk just
 
-      - name: Build with Trunk
-        # Build for release into ./_site (default is ./dist) and consider the public url
-        run: |
-          cd web
-          trunk build --release --minify --dist ../_site --public-url "${{ steps.pages.outputs.base_path }}"
+      - name: Build with Just
+        run: just pages-build ../_site "${{ steps.pages.outputs.base_path }}"
 
       - name: Upload artifact
         # Automatically uploads an artifact from the './_site' directory by default

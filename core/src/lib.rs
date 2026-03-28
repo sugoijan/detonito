@@ -4,6 +4,7 @@ use core::ops::{BitOr, Index, IndexMut};
 use ndarray::Array2;
 use serde::{Deserialize, Serialize};
 
+pub use afk::*;
 pub use analysis::*;
 pub use benchmark_corpus::*;
 pub use engine::*;
@@ -13,6 +14,7 @@ pub use solver::*;
 pub use tile::*;
 pub use types::*;
 
+mod afk;
 mod analysis;
 mod benchmark_corpus;
 mod engine;

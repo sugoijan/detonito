@@ -46,6 +46,13 @@ impl ViewGameState {
     }
 }
 
+fn should_auto_open_restart_prompt(
+    previous_state: ViewGameState,
+    next_state: ViewGameState,
+) -> bool {
+    !previous_state.is_finished() && next_state.is_finished()
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct GameSession {
     pub engine: game::PlayEngine,
@@ -280,7 +287,6 @@ pub(crate) enum Msg {
     NewGame,
     FaceButtonPress,
     FacePromptSelected(FacePromptAction),
-    ToggleSettings,
     UpdateSettings(settings::Settings),
     NoGuessGenerated(no_guess_worker::NoGuessGenResponse),
     NoGuessGenerationTimeout(u64),
@@ -290,7 +296,7 @@ pub(crate) enum Msg {
 pub(crate) enum FacePromptAction {
     RestartGame,
     DismissPrompt,
-    OpenSettings,
+    OpenMenu,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -340,8 +346,8 @@ impl FacePrompt {
                 },
                 FacePromptChoice {
                     label: "Menu".into(),
-                    title: "Open settings".into(),
-                    action: FacePromptAction::OpenSettings,
+                    title: "Open menu".into(),
+                    action: FacePromptAction::OpenMenu,
                 },
             ],
         }
@@ -470,11 +476,18 @@ fn cell_component(props: &CellProps) -> Html {
     }
 }
 
-#[derive(Args, Properties, Debug, Clone, PartialEq)]
-pub(crate) struct GameProps {
+#[derive(Args, Debug, Clone, PartialEq)]
+pub(crate) struct GameInitArgs {
     /// Force a seed instead of random
     #[arg(short, long)]
-    seed: Option<String>,
+    pub seed: Option<String>,
+}
+
+#[derive(Properties, Debug, Clone, PartialEq)]
+pub(crate) struct GameProps {
+    pub init: GameInitArgs,
+    #[prop_or_default]
+    pub on_menu: Callback<()>,
 }
 
 #[derive(Debug)]
@@ -483,7 +496,6 @@ pub(crate) struct GameView {
     game: Option<GameSession>,
     seed: u64,
     prev_time: u32,
-    settings_open: bool,
     face_prompt: Option<FacePrompt>,
     current_cell_state: Option<CellPointerState>,
     no_guess_worker: Option<no_guess_worker::NoGuessWorkerBridge>,
@@ -492,10 +504,21 @@ pub(crate) struct GameView {
     is_generating_layout: bool,
     generation_timeout: Option<Timeout>,
     _timer_interval: Interval,
-    _init_settings: GameProps,
+    _init_settings: GameInitArgs,
 }
 
 impl GameView {
+    fn initial_seed(init: &GameInitArgs) -> u64 {
+        init.seed
+            .as_deref()
+            .and_then(|seed| {
+                seed.parse::<u64>()
+                    .ok()
+                    .or_else(|| u64::from_str_radix(seed, 16).ok())
+            })
+            .unwrap_or_else(js_random_seed)
+    }
+
     fn face_prompt_interaction_mode(&self) -> Option<FacePromptInteractionMode> {
         self.face_prompt
             .as_ref()
@@ -528,21 +551,17 @@ impl GameView {
         self.game.take().is_some() || was_generating || pointer_cleared || prompt_cleared
     }
 
-    fn open_settings(&mut self) -> bool {
+    fn open_menu(&mut self, ctx: &Context<Self>) -> bool {
         let prompt_cleared = self.clear_face_prompt();
-        if self.settings_open {
-            prompt_cleared
-        } else {
-            self.settings_open = true;
-            true
-        }
+        ctx.props().on_menu.emit(());
+        prompt_cleared
     }
 
-    fn apply_face_prompt_action(&mut self, action: FacePromptAction) -> bool {
+    fn apply_face_prompt_action(&mut self, ctx: &Context<Self>, action: FacePromptAction) -> bool {
         match action {
             FacePromptAction::RestartGame => self.restart_game(),
             FacePromptAction::DismissPrompt => self.clear_face_prompt(),
-            FacePromptAction::OpenSettings => self.open_settings(),
+            FacePromptAction::OpenMenu => self.open_menu(ctx),
         }
     }
 
@@ -774,23 +793,32 @@ impl GameView {
 
         use ViewCellState::*;
 
+        let previous_state = self.get_game_state();
         let now = utc_now();
-        let game = self.get_or_create_game(coords);
+        let updated = {
+            let game = self.get_or_create_game(coords);
 
-        let updated = match game.cell_state_at(coords) {
-            Hidden => game.engine.reveal(coords).has_update(),
-            Revealed(_) if game.can_chord_reveal_at(coords) => {
-                game.engine.chord_reveal(coords).has_update()
+            let updated = match game.cell_state_at(coords) {
+                Hidden => game.engine.reveal(coords).has_update(),
+                Revealed(_) if game.can_chord_reveal_at(coords) => {
+                    game.engine.chord_reveal(coords).has_update()
+                }
+                _ => false,
+            };
+
+            if updated {
+                game.sync_question_marks_with_engine();
+                game.on_successful_move(now);
             }
-            _ => false,
+
+            updated
         };
 
-        if updated {
-            game.sync_question_marks_with_engine();
-            game.on_successful_move(now);
-        }
+        let prompt_opened = updated
+            && should_auto_open_restart_prompt(previous_state, self.get_game_state())
+            && self.open_restart_prompt();
 
-        updated
+        updated || prompt_opened
     }
 
     fn mark_cell(&mut self, coords: game::Coord2) -> bool {
@@ -800,46 +828,55 @@ impl GameView {
 
         use ViewCellState::*;
 
+        let previous_state = self.get_game_state();
         let enable_question_mark = self.settings.enable_question_mark;
         let enable_flag_chord = self.settings.enable_flag_chord;
         let now = utc_now();
-        let game = self.get_or_create_game(coords);
+        let updated = {
+            let game = self.get_or_create_game(coords);
 
-        let updated = match game.cell_state_at(coords) {
-            Flagged if enable_question_mark => {
-                let updated = game.engine.toggle_flag(coords).has_update();
-                if updated {
-                    game.question_marks[coords.to_nd_index()] = true;
-                }
-                updated
-            }
-            Hidden | Flagged | QuestionMarked
-                if matches!(game.engine.state(), game::EngineState::Active) =>
-            {
-                match game.cell_state_at(coords) {
-                    QuestionMarked => {
-                        game.clear_question_mark(coords);
-                        true
+            let updated = match game.cell_state_at(coords) {
+                Flagged if enable_question_mark => {
+                    let updated = game.engine.toggle_flag(coords).has_update();
+                    if updated {
+                        game.question_marks[coords.to_nd_index()] = true;
                     }
-                    _ => {
-                        let updated = game.engine.toggle_flag(coords).has_update();
-                        if updated {
+                    updated
+                }
+                Hidden | Flagged | QuestionMarked
+                    if matches!(game.engine.state(), game::EngineState::Active) =>
+                {
+                    match game.cell_state_at(coords) {
+                        QuestionMarked => {
                             game.clear_question_mark(coords);
+                            true
                         }
-                        updated
+                        _ => {
+                            let updated = game.engine.toggle_flag(coords).has_update();
+                            if updated {
+                                game.clear_question_mark(coords);
+                            }
+                            updated
+                        }
                     }
                 }
+                Revealed(_) if enable_flag_chord => game.engine.chord_flag(coords).has_update(),
+                _ => false,
+            };
+
+            if updated {
+                game.sync_question_marks_with_engine();
+                game.on_successful_move(now);
             }
-            Revealed(_) if enable_flag_chord => game.engine.chord_flag(coords).has_update(),
-            _ => false,
+
+            updated
         };
 
-        if updated {
-            game.sync_question_marks_with_engine();
-            game.on_successful_move(now);
-        }
+        let prompt_opened = updated
+            && should_auto_open_restart_prompt(previous_state, self.get_game_state())
+            && self.open_restart_prompt();
 
-        updated
+        updated || prompt_opened
     }
 
     fn create_timer(ctx: &Context<Self>) -> Interval {
@@ -946,9 +983,8 @@ impl Component for GameView {
         Self {
             settings: LocalOrDefault::local_or_default(),
             game: LocalOrDefault::local_or_default(),
-            seed: js_random_seed(),
+            seed: Self::initial_seed(&ctx.props().init),
             prev_time: 0,
-            settings_open: false,
             face_prompt: None,
             current_cell_state: None,
             no_guess_worker: None,
@@ -957,7 +993,7 @@ impl Component for GameView {
             is_generating_layout: false,
             generation_timeout: None,
             _timer_interval: GameView::create_timer(ctx),
-            _init_settings: ctx.props().clone(),
+            _init_settings: ctx.props().init.clone(),
         }
     }
 
@@ -1049,15 +1085,7 @@ impl Component for GameView {
                     self.open_restart_prompt()
                 }
             }
-            FacePromptSelected(action) => self.apply_face_prompt_action(action),
-            ToggleSettings => {
-                self.clear_face_prompt();
-                self.settings_open = !self.settings_open;
-                if !self.settings_open {
-                    self.settings = LocalOrDefault::local_or_default();
-                }
-                true
-            }
+            FacePromptSelected(action) => self.apply_face_prompt_action(ctx, action),
             UpdateSettings(settings) => {
                 if self.settings != settings {
                     self.settings = settings;
@@ -1088,7 +1116,6 @@ impl Component for GameView {
 
     fn view(&self, ctx: &Context<Self>) -> Html {
         use Msg::*;
-        use settings::SettingsView;
 
         let (cols, rows) = self.get_size();
         let game_state_icon = self.get_game_state_icon_name();
@@ -1109,98 +1136,107 @@ impl Component for GameView {
             e.stop_propagation();
             FaceButtonPress
         });
-        let cb_toggle_settings = ctx.link().callback(|_| ToggleSettings);
 
         html! {
             <div
-                class={classes!("detonito", self.settings_open.then_some("settings-open"))}
+                class="detonito"
                 oncontextmenu={Callback::from(move |e: MouseEvent| e.prevent_default())}
             >
                 <SpriteDefs/>
-                <small onclick={cb_toggle_settings.clone()}>{"···"}</small>
-                {
-                    if self.settings_open {
-                        html! {
-                            <SettingsView open={true} on_apply={cb_toggle_settings.clone()}/>
-                        }
-                    } else {
-                        html! {
-                            <>
-                                <nav>
-                                    <aside>
-                                        <GlyphRun set={GlyphSet::Counter} text={mines_left} class={classes!("counter-glyphs")}/>
-                                    </aside>
-                                    <span class={classes!("face-slot", self.face_prompt.is_some().then_some("prompt-open"))}>
-                                        {self.view_face_prompt(ctx)}
-                                        <button
-                                            class={game_state_class}
-                                            title={new_game_button_title}
-                                            onclick={cb_face_button}
-                                            disabled={face_button_locked}
-                                        >
-                                            <Icon
-                                                name={game_state_icon}
-                                                crop={IconCrop::CenteredSquare64}
-                                                class={classes!("state-icon")}
-                                            />
-                                        </button>
-                                    </span>
-                                    <aside>
-                                        <GlyphRun set={GlyphSet::Counter} text={elapsed_time} class={classes!("counter-glyphs")}/>
-                                    </aside>
-                                </nav>
-                                <div class="board-shell">
-                                    <table class={classes!((is_playable && !board_locked_by_prompt).then_some("playable"), is_generating_layout.then_some("loading"), board_locked_by_prompt.then_some("prompt-locked"))}>
-                                        {
-                                            for (0..rows).map(|y| html! {
-                                                <tr>
-                                                    {
-                                                        for (0..cols).map(|x| {
-                                                            let pos = (x, y);
-                                                            let cell_state = self
-                                                                .game
-                                                                .as_ref()
-                                                                .map_or(ViewCellState::Hidden, |game| game.cell_state_at(pos));
-                                                            let loading_cell = self.is_generating_layout
-                                                                && self.pending_first_action == Some(pos);
-                                                            let locked = board_locked_by_prompt || self
-                                                                .game
-                                                                .as_ref()
-                                                                .map_or(false, |game| !game.can_interact_at(pos));
-                                                            let pressed = loading_cell || self.is_pressed(pos, cell_state);
-                                                            let callback = ctx.link().callback(Msg::CellEvent);
-                                                            html! {
-                                                                <CellView {x} {y} {cell_state} {callback} {pressed} loading={loading_cell} {locked}/>
-                                                            }
-                                                        })
-                                                    }
-                                                </tr>
-                                            })
-                                        }
-                                    </table>
+                <nav>
+                    <aside>
+                        <GlyphRun set={GlyphSet::Counter} text={mines_left} class={classes!("counter-glyphs")}/>
+                    </aside>
+                    <span class={classes!("face-slot", self.face_prompt.is_some().then_some("prompt-open"))}>
+                        {self.view_face_prompt(ctx)}
+                        <button
+                            class={game_state_class}
+                            title={new_game_button_title}
+                            onclick={cb_face_button}
+                            disabled={face_button_locked}
+                        >
+                            <Icon
+                                name={game_state_icon}
+                                crop={IconCrop::CenteredSquare64}
+                                class={classes!("state-icon")}
+                            />
+                        </button>
+                    </span>
+                    <aside>
+                        <GlyphRun set={GlyphSet::Counter} text={elapsed_time} class={classes!("counter-glyphs")}/>
+                    </aside>
+                </nav>
+                <div class="board-shell">
+                    <table class={classes!((is_playable && !board_locked_by_prompt).then_some("playable"), is_generating_layout.then_some("loading"), board_locked_by_prompt.then_some("prompt-locked"))}>
+                        {
+                            for (0..rows).map(|y| html! {
+                                <tr>
                                     {
-                                        if board_locked_by_prompt {
-                                            html! { <div class="board-prompt-overlay" aria-hidden="true"/> }
-                                        } else {
-                                            Html::default()
-                                        }
+                                        for (0..cols).map(|x| {
+                                            let pos = (x, y);
+                                            let cell_state = self
+                                                .game
+                                                .as_ref()
+                                                .map_or(ViewCellState::Hidden, |game| game.cell_state_at(pos));
+                                            let loading_cell = self.is_generating_layout
+                                                && self.pending_first_action == Some(pos);
+                                            let locked = board_locked_by_prompt || self
+                                                .game
+                                                .as_ref()
+                                                .map_or(false, |game| !game.can_interact_at(pos));
+                                            let pressed = loading_cell || self.is_pressed(pos, cell_state);
+                                            let callback = ctx.link().callback(Msg::CellEvent);
+                                            html! {
+                                                <CellView {x} {y} {cell_state} {callback} {pressed} loading={loading_cell} {locked}/>
+                                            }
+                                        })
                                     }
-                                </div>
-                            </>
+                                </tr>
+                            })
+                        }
+                    </table>
+                    {
+                        if board_locked_by_prompt {
+                            html! { <div class="board-prompt-overlay" aria-hidden="true"/> }
+                        } else {
+                            Html::default()
                         }
                     }
-                }
+                </div>
             </div>
         }
     }
 }
 
+pub(crate) fn has_saved_game() -> bool {
+    Option::<GameSession>::local_or_default().is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
 
     fn t0() -> DateTime<Utc> {
         DateTime::<Utc>::from_timestamp_millis(0).unwrap()
+    }
+
+    fn test_game_view_with_session(session: GameSession) -> GameView {
+        GameView {
+            settings: settings::Settings::default(),
+            game: Some(session),
+            seed: 0,
+            prev_time: 0,
+            face_prompt: None,
+            current_cell_state: None,
+            no_guess_worker: None,
+            pending_first_action: None,
+            generation_id: 0,
+            is_generating_layout: false,
+            generation_timeout: None,
+            _timer_interval: Interval::new(60_000, || {}),
+            _init_settings: GameInitArgs { seed: None },
+        }
     }
 
     #[test]
@@ -1306,7 +1342,7 @@ mod tests {
             vec![
                 ("Yes", FacePromptAction::RestartGame),
                 ("No", FacePromptAction::DismissPrompt),
-                ("Menu", FacePromptAction::OpenSettings),
+                ("Menu", FacePromptAction::OpenMenu),
             ]
         );
     }
@@ -1321,5 +1357,37 @@ mod tests {
             let prompt = FacePrompt::restart_confirmation_with_mode(interaction_mode);
             assert_eq!(prompt.interaction_mode, interaction_mode);
         }
+    }
+
+    #[wasm_bindgen_test]
+    fn restart_prompt_auto_opens_when_a_move_wins_the_game() {
+        let layout = game::MineLayout::from_mine_coords((2, 1), &[(0, 0)]).unwrap();
+        let session = GameSession::new(game::PlayEngine::new(layout));
+        let mut view = test_game_view_with_session(session);
+
+        assert!(view.reveal_cell((1, 0)));
+        assert_eq!(view.get_game_state(), ViewGameState::WonOnFirstMove);
+        assert_eq!(
+            view.face_prompt
+                .as_ref()
+                .map(|prompt| prompt.message.as_ref()),
+            Some("Restart?")
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn restart_prompt_auto_opens_when_a_move_loses_the_game() {
+        let layout = game::MineLayout::from_mine_coords((2, 1), &[(0, 0)]).unwrap();
+        let session = GameSession::new(game::PlayEngine::new(layout));
+        let mut view = test_game_view_with_session(session);
+
+        assert!(view.reveal_cell((0, 0)));
+        assert_eq!(view.get_game_state(), ViewGameState::LostOnFirstMove);
+        assert_eq!(
+            view.face_prompt
+                .as_ref()
+                .map(|prompt| prompt.message.as_ref()),
+            Some("Restart?")
+        );
     }
 }

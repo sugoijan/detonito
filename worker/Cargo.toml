@@ -1,0 +1,28 @@
+[package]
+name = "detonito-worker"
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+anyhow.workspace = true
+barbed.workspace = true
+detonito-core.workspace = true
+detonito-protocol.workspace = true
+futures-channel.workspace = true
+futures-util.workspace = true
+js-sys.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+time.workspace = true
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
+web-sys.workspace = true
+worker.workspace = true

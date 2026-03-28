@@ -2,7 +2,9 @@
 resolver = "3"
 members = [
     "core",
+    "protocol",
     "web",
+    "worker",
     "xtask",
 ]
 
@@ -15,13 +17,17 @@ rust-version = "1.93"
 
 [workspace.dependencies]
 anyhow = "1"
+barbed = { version = "0.0", features = ["cloudflare-worker"] }
 detonito-core = { path = "core" }
+detonito-protocol = { path = "protocol" }
 bitflags = { version = "2", features = ["serde"] }
 chrono = { version = "0.4", default-features = false, features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 clap-verbosity-flag = "3"
 console_error_panic_hook = "0.1"
 console_log = { version = "1", features = ["color", "wasm-bindgen"] }
+futures-channel = "0.3"
+futures-util = "0.3"
 gloo = "0.11"
 js-sys = "0.3"
 log = { version = "0.4", features = ["serde"] }
@@ -32,6 +38,7 @@ rustsat-batsat = "0.7"
 serde = { version = "1", default-features = false }
 serde_json = "1"
 thiserror = { version = "2", default-features = false }
+time = { version = "0.3", features = ["formatting", "parsing", "serde"] }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 wasm-bindgen-test = "0.3"
@@ -39,21 +46,36 @@ web-time = "1"
 web-sys = { version = "0.3", features = [
     "Blob",
     "BlobPropertyBag",
+    "CssStyleDeclaration",
     "Document",
     "DedicatedWorkerGlobalScope",
     "Element",
     "Event",
     "EventTarget",
+    "FocusEvent",
+    "History",
+    "HtmlAnchorElement",
     "HtmlElement",
+    "HtmlInputElement",
+    "InputEvent",
+    "KeyboardEvent",
+    "Location",
     "MessageEvent",
     "MediaQueryList",
     "Node",
+    "PointerEvent",
+    "Request",
+    "RequestCredentials",
+    "RequestInit",
+    "Response",
+    "WebSocket",
     "Url",
     "Window",
     "Worker",
     "WorkerOptions",
     "WorkerType",
 ] }
+worker = "0.7.5"
 yew = { version = "0.22", features = ["csr"] }
 criterion = { version = "0.8", features = ["html_reports"] }
 smallvec = { version = "1", features = ["union", "serde"] }

@@ -1,0 +1,2 @@
+AUTH_SIGNING_SECRET=detonito-local-dev-secret
+TWITCH_CLIENT_SECRET=replace-me

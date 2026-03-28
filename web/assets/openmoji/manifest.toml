@@ -28,6 +28,10 @@ upstream = "1F60E.svg"
 source = "upstream"
 upstream = "1F635.svg"
 
+[icons.sleeping]
+source = "upstream"
+upstream = "1F634.svg"
+
 [icons.instant-win]
 source = "upstream"
 upstream = "E283.svg"

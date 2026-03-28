@@ -1,0 +1,27 @@
+name = "detonito"
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-03-27"
+workers_dev = true
+keep_vars = true
+
+[build]
+command = "worker-build --release ."
+watch_dir = ["src", "../core/src", "../protocol/src"]
+
+[assets]
+directory = "./build/assets"
+binding = "ASSETS"
+
+[durable_objects]
+bindings = [
+  { name = "AFK_SESSIONS", class_name = "AfkSessionDO" },
+]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["AfkSessionDO"]
+
+[vars]
+BASE_PATH = "/detonito"
+PUBLIC_URL = "https://sugoijan.dev/detonito"
+TWITCH_CLIENT_ID = "kidej45fs6smhezvmopp7uuijna5x5"

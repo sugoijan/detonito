@@ -1,8 +1,16 @@
 use clap::Parser;
 use wasm_bindgen::prelude::*;
 
+#[cfg(feature = "afk-runtime")]
+mod afk;
+#[cfg(not(feature = "afk-runtime"))]
+#[path = "afk_disabled.rs"]
+mod afk;
+mod app;
 mod game;
+mod menu;
 mod no_guess_worker;
+mod runtime;
 mod settings;
 mod sprites;
 mod theme;
@@ -15,8 +23,9 @@ struct Args {
     #[command(flatten)]
     verbose: clap_verbosity_flag::Verbosity,
 
-    #[command(flatten)]
-    init_settings: game::GameProps,
+    /// Force a seed instead of random
+    #[arg(short, long)]
+    seed: Option<String>,
 }
 
 #[wasm_bindgen(start)]
@@ -44,13 +53,20 @@ pub fn run_app() {
     let _ = console_log::init_with_level(log_level);
 
     theme::Theme::init();
+    settings::Settings::init();
 
     let root = document()
         .get_element_by_id("game")
         .expect("Could not find id=\"game\" element");
 
     log::debug!("App started");
-    yew::Renderer::<game::GameView>::with_root_and_props(root, args.init_settings).render();
+    yew::Renderer::<app::AppShell>::with_root_and_props(
+        root,
+        app::AppShellProps {
+            init: game::GameInitArgs { seed: args.seed },
+        },
+    )
+    .render();
 }
 
 fn is_worker_context() -> bool {

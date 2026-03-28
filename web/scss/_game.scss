@@ -81,7 +81,7 @@ main {
   user-select: none; // selecting can get in the way, disable it
   display: inline-block;  // prevent it from enlargening horizontally
   @include drop-shadow;  // very slight, makes the white borders visible
-  zoom: 1.75;  // default zoom
+  zoom: var(--detonito-zoom, 1.75);
   min-width: 145px;
   min-height: 105px;
 
@@ -219,6 +219,7 @@ main {
       justify-content: center;
       align-items: center;
       position: relative;
+      z-index: 1;
       overflow: visible;
       width: $state-size;
       min-width: $state-size;
@@ -586,6 +587,35 @@ main {
         text-align: center;
       }
 
+      .menu-number-detail {
+        padding: 0;
+      }
+
+      .menu-number-input {
+        display: block;
+        width: 100%;
+        min-width: 0;
+        padding: 0 6px;
+        border: 0;
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        line-height: inherit;
+        text-align: center;
+        appearance: textfield;
+        -moz-appearance: textfield;
+
+        &:focus {
+          outline: none;
+        }
+
+        &::-webkit-outer-spin-button,
+        &::-webkit-inner-spin-button {
+          margin: 0;
+          -webkit-appearance: none;
+        }
+      }
+
       .menu-link-detail {
         text-align: left;
       }
@@ -641,6 +671,77 @@ main {
         font: inherit;
         line-height: inherit;
       }
+    }
+  }
+
+  &.start-menu-shell,
+  &.afk-menu-shell,
+  &.afk-board-mode {
+    min-width: 0;
+    min-height: 0;
+  }
+
+  &.start-menu-shell {
+    position: relative;
+  }
+
+  &.afk-board-mode {
+    .board-shell {
+      overflow-x: auto;
+    }
+  }
+
+  .afk-board-grid {
+    margin: auto;
+  }
+
+  .afk-cell-code,
+  .afk-cell-tag,
+  .afk-board-note {
+    font-family: "Iosevka", "SFMono-Regular", "Cascadia Mono", "Segoe UI Mono", monospace;
+    color: var(#{$css-var-prefix}shadow);
+  }
+
+  .afk-cell-code {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    font-size: 9px;
+    line-height: 1;
+    letter-spacing: -0.02em;
+    text-transform: uppercase;
+  }
+
+  .afk-cell-tag {
+    position: absolute;
+    bottom: 2px;
+    left: 1px;
+    font-size: 5px;
+    line-height: 1;
+    letter-spacing: -0.03em;
+    opacity: 0.75;
+    text-transform: uppercase;
+    z-index: 1;
+    pointer-events: none;
+  }
+
+  .afk-cell-tag-open {
+    opacity: 0.55;
+  }
+
+  nav > aside.countdown-timer {
+    position: relative;
+  }
+
+  .afk-board-note {
+    margin-top: 5px;
+    font-size: 9px;
+    line-height: 1.2;
+    text-align: center;
+
+    &.error {
+      color: var(#{$css-var-prefix}incorrect);
     }
   }
 }
