@@ -24,15 +24,13 @@ use barbed::oauth::{
 };
 use detonito_core::{
     AfkAction, AfkCellState as CoreAfkCellState, AfkEngine, AfkLossReason as CoreAfkLossReason,
-    AfkPreset,
-    AfkRoundPhase as CoreAfkRoundPhase,
+    AfkPreset, AfkRoundPhase as CoreAfkRoundPhase,
 };
 use detonito_protocol::{
     AfkActionKind, AfkActionRequest, AfkActivityRow, AfkBoardSnapshot, AfkCellSnapshot,
     AfkChatConnectionState, AfkClientMessage, AfkIdentity, AfkLossReason, AfkPenaltySnapshot,
     AfkRoundPhase, AfkServerMessage, AfkSessionSnapshot, AfkStatusResponse,
-    AfkTimerProfileSnapshot,
-    FrontendRuntimeConfig, StreamerAuthStatus,
+    AfkTimerProfileSnapshot, FrontendRuntimeConfig, StreamerAuthStatus,
 };
 use futures_channel::mpsc::{UnboundedReceiver, unbounded};
 use futures_util::StreamExt;
@@ -41,10 +39,31 @@ use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 use worker::*;
 
 const AFK_SESSIONS: &str = "AFK_SESSIONS";
+
+// === Cloudflare Durable Object Storage Limits ===
+//
+// All state is persisted as a single JSON value under STATE_KEY.
+// Cloudflare DO storage enforces a hard 128 KiB (131072 byte) per-value limit.
+//
+// Every Vec field in PersistedAfkState / PersistedAfkSession MUST have a
+// MAX_* constant and be capped via drain(0..overflow) after every push.
+// When adding new Vec fields, calculate per-element JSON size and ensure
+// the combined worst-case stays under PERSISTED_STATE_SIZE_LIMIT.
 const STATE_KEY: &str = "detonito:afk:state";
+const PERSISTED_STATE_SIZE_LIMIT: usize = 100 * 1024;
 const MAX_ACTIVITY_ROWS: usize = 64;
 const MAX_PENALTIES: usize = 16;
 const MAX_EVENTSUB_IDS: usize = 64;
+const MAX_IGNORED_USERS: usize = 200;
+const MAX_TIMED_OUT_USERS: usize = 200;
+/// Entries beyond this cap are dropped (oldest first). This is safe because
+/// Twitch timeouts last only TIMEOUT_DURATION_SECS; by the time this many
+/// entries accumulate across rounds, the oldest timeouts have already expired
+/// on Twitch's side. If TIMEOUT_DURATION_SECS is ever raised significantly,
+/// revisit this cap or add expiry-based eviction.
+const MAX_PENDING_UNTIMEOUTS: usize = 64;
+const TIMEOUT_DURATION_SECS: u32 = 60;
+
 const EVENTSUB_WS_URL: &str = "wss://eventsub.wss.twitch.tv/ws";
 const EVENTSUB_RECONNECT_RETRY_SECS: u64 = 5;
 const EVENTSUB_SESSION_RECONNECT_DELAY_SECS: u64 = 1;
@@ -61,13 +80,22 @@ struct PersistedEventSubState {
     last_error: Option<String>,
 }
 
+/// Per-round session state stored inside [`PersistedAfkState`].
+///
+/// The `ignored_users` and `timed_out_users` vectors are cleared on each
+/// `restart_round()` but capped at [`MAX_IGNORED_USERS`] / [`MAX_TIMED_OUT_USERS`]
+/// as a safety net against the 128 KiB DO storage limit.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct PersistedAfkSession {
     engine: AfkEngine,
+    /// Users who hit mines this round. Capped at [`MAX_IGNORED_USERS`].
     ignored_users: Vec<AfkIdentity>,
+    /// Recent mine-hit penalty records. Capped at [`MAX_PENALTIES`].
     recent_penalties: Vec<AfkPenaltySnapshot>,
+    /// Users successfully timed out this round. Capped at [`MAX_TIMED_OUT_USERS`].
     #[serde(default)]
     timed_out_users: Vec<AfkIdentity>,
+    /// Chronological game event log. Capped at [`MAX_ACTIVITY_ROWS`].
     activity: Vec<AfkActivityRow>,
     last_action: Option<AfkActivityRow>,
     timeout_enabled: bool,
@@ -190,6 +218,7 @@ impl PersistedAfkSession {
             },
             timer_remaining_secs: self.engine.board_timer_remaining_secs(),
             phase_countdown_secs: self.engine.phase_countdown_secs(now_ms),
+            current_level: self.engine.preset().current_level(),
             live_mines_left: self.engine.live_mines_left_for_display(),
             crater_count: self.engine.crater_count(),
             loss_reason: self.engine.loss_reason().map(|reason| match reason {
@@ -205,6 +234,11 @@ impl PersistedAfkSession {
     }
 }
 
+/// Top-level persisted state for an AFK session Durable Object.
+///
+/// Serialized as JSON and stored under a single DO storage key. All `Vec` fields
+/// must be capped to stay within Cloudflare's 128 KiB per-value storage limit.
+/// See [`PERSISTED_STATE_SIZE_LIMIT`] and the `MAX_*` constants.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct PersistedAfkState {
     broadcaster: Option<AfkIdentity>,
@@ -212,8 +246,10 @@ struct PersistedAfkState {
     #[serde(default = "default_timeout_enabled")]
     timeout_enabled: bool,
     session: Option<PersistedAfkSession>,
+    /// Users awaiting untimeout across rounds. Capped at [`MAX_PENDING_UNTIMEOUTS`].
     #[serde(default)]
     pending_untimeouts: Vec<AfkIdentity>,
+    /// EventSub message dedup buffer. Capped at [`MAX_EVENTSUB_IDS`].
     recent_eventsub_ids: Vec<String>,
     eventsub: PersistedEventSubState,
 }
@@ -850,8 +886,8 @@ impl AfkSessionDO {
                 serde_json::json!({
                     "data": {
                         "user_id": chatter_user_id,
-                        "duration": 60,
-                        "reason": "BOOM! There was a mine there.",
+                        "duration": TIMEOUT_DURATION_SECS,
+                        "reason": "BOOM! You found a mine.",
                     }
                 })
                 .to_string(),
@@ -935,6 +971,10 @@ impl AfkSessionDO {
             }
         }
         state.pending_untimeouts = still_pending;
+        if state.pending_untimeouts.len() > MAX_PENDING_UNTIMEOUTS {
+            let overflow = state.pending_untimeouts.len() - MAX_PENDING_UNTIMEOUTS;
+            state.pending_untimeouts.drain(0..overflow);
+        }
         Ok(())
     }
 
@@ -1004,6 +1044,10 @@ impl AfkSessionDO {
                     actor_label.to_string(),
                 );
                 session.ignored_users.push(identity.clone());
+                if session.ignored_users.len() > MAX_IGNORED_USERS {
+                    let overflow = session.ignored_users.len() - MAX_IGNORED_USERS;
+                    session.ignored_users.drain(0..overflow);
+                }
                 let should_request_timeout =
                     session.timeout_enabled && !chat_actor_is_timeout_exempt(chat);
                 let penalty = AfkPenaltySnapshot {
@@ -1045,6 +1089,10 @@ impl AfkSessionDO {
                     .any(|known| known.user_id == identity.user_id)
                 {
                     session.timed_out_users.push(identity);
+                    if session.timed_out_users.len() > MAX_TIMED_OUT_USERS {
+                        let overflow = session.timed_out_users.len() - MAX_TIMED_OUT_USERS;
+                        session.timed_out_users.drain(0..overflow);
+                    }
                 }
             }
         }
@@ -2367,7 +2415,15 @@ async fn persist_storage_json<T>(storage: &Storage, key: &str, value: &T) -> Res
 where
     T: Serialize,
 {
-    storage.put(key, serde_json::to_string(value)?).await?;
+    let json = serde_json::to_string(value)?;
+    debug_assert!(
+        json.len() <= PERSISTED_STATE_SIZE_LIMIT,
+        "Serialized state for key '{key}' is {} bytes, exceeding the \
+         {PERSISTED_STATE_SIZE_LIMIT} byte safety threshold \
+         (Cloudflare DO limit is 128 KiB). Review unbounded Vec fields.",
+        json.len(),
+    );
+    storage.put(key, json).await?;
     Ok(())
 }
 
@@ -2603,6 +2659,7 @@ mod tests {
         let won_snapshot = won_session.snapshot(None, true, now_ms + 5_000);
         assert_eq!(won_snapshot.timer_remaining_secs, won_timer);
         assert_eq!(won_snapshot.phase_countdown_secs, Some(25));
+        assert_eq!(won_snapshot.current_level, 1);
 
         let mut timed_out_session = test_session();
         let timed_out_layout =
@@ -2615,6 +2672,7 @@ mod tests {
         let timed_out_snapshot = timed_out_session.snapshot(None, true, now_ms + 7_000);
         assert_eq!(timed_out_snapshot.timer_remaining_secs, 0);
         assert_eq!(timed_out_snapshot.phase_countdown_secs, Some(53));
+        assert_eq!(timed_out_snapshot.current_level, 1);
     }
 
     #[test]
@@ -2688,5 +2746,115 @@ mod tests {
             snapshot.board.cells,
             vec![AfkCellSnapshot::Flagged, AfkCellSnapshot::Revealed(1)]
         );
+    }
+
+    // --- DO storage size limit tests ---
+
+    fn test_identity(n: usize) -> AfkIdentity {
+        AfkIdentity::new(
+            format!("{n}"),
+            format!("user_{n:0>20}"),
+            format!("DisplayName_{n:0>12}"),
+        )
+    }
+
+    fn worst_case_state() -> PersistedAfkState {
+        let mut session = test_session();
+        session.ignored_users = (0..MAX_IGNORED_USERS).map(test_identity).collect();
+        session.timed_out_users = (0..MAX_TIMED_OUT_USERS).map(test_identity).collect();
+        for i in 0..MAX_PENALTIES {
+            session.push_penalty(AfkPenaltySnapshot {
+                chatter: test_identity(i),
+                timer_delta_secs: -15,
+                timeout_requested: true,
+                timeout_succeeded: true,
+            });
+        }
+        for i in 0..MAX_ACTIVITY_ROWS {
+            session.push_activity(format!("user_{i} hit a mine at 1A"), 1000 * i as i64);
+        }
+
+        PersistedAfkState {
+            broadcaster: Some(test_identity(9999)),
+            tokens: None,
+            timeout_enabled: true,
+            session: Some(session),
+            pending_untimeouts: (0..MAX_PENDING_UNTIMEOUTS).map(test_identity).collect(),
+            recent_eventsub_ids: (0..MAX_EVENTSUB_IDS)
+                .map(|i| format!("eventsub-msg-id-{i:0>30}"))
+                .collect(),
+            eventsub: PersistedEventSubState {
+                connection_status: Some("connected".into()),
+                websocket_session_id: Some("session-id-placeholder-value".into()),
+                reconnect_url: Some(
+                    "wss://eventsub.wss.twitch.tv/ws?reconnect=true".into(),
+                ),
+                reconnect_due_at_ms: Some(9_999_999_999),
+                subscription_id: Some("subscription-id-placeholder".into()),
+                last_message_id: Some("last-message-id-placeholder".into()),
+                last_received_at_ms: Some(9_999_999_999),
+                last_error: Some("Some error message for testing".into()),
+            },
+        }
+    }
+
+    #[test]
+    fn worst_case_state_fits_within_safety_threshold() {
+        let state = worst_case_state();
+        let json = serde_json::to_string(&state).expect("state should serialize");
+        let size = json.len();
+        assert!(
+            size <= PERSISTED_STATE_SIZE_LIMIT,
+            "Worst-case serialized state is {size} bytes, exceeding the \
+             {PERSISTED_STATE_SIZE_LIMIT} byte safety threshold"
+        );
+    }
+
+    #[test]
+    fn worst_case_state_fits_within_do_hard_limit() {
+        let state = worst_case_state();
+        let json = serde_json::to_string(&state).expect("state should serialize");
+        let hard_limit = 128 * 1024;
+        assert!(
+            json.len() <= hard_limit,
+            "Worst-case serialized state is {} bytes, exceeding the \
+             Cloudflare DO hard limit of {hard_limit} bytes",
+            json.len(),
+        );
+    }
+
+    #[test]
+    fn ignored_users_cap_drains_oldest_entries() {
+        let mut session = test_session();
+        for i in 0..MAX_IGNORED_USERS + 10 {
+            session.ignored_users.push(test_identity(i));
+            if session.ignored_users.len() > MAX_IGNORED_USERS {
+                let overflow = session.ignored_users.len() - MAX_IGNORED_USERS;
+                session.ignored_users.drain(0..overflow);
+            }
+        }
+        assert_eq!(session.ignored_users.len(), MAX_IGNORED_USERS);
+        assert_eq!(session.ignored_users[0].user_id, "10");
+    }
+
+    #[test]
+    fn pending_untimeouts_cap_drains_oldest_entries() {
+        let mut state = PersistedAfkState::default();
+        for i in 0..MAX_PENDING_UNTIMEOUTS + 5 {
+            state.pending_untimeouts.push(test_identity(i));
+            if state.pending_untimeouts.len() > MAX_PENDING_UNTIMEOUTS {
+                let overflow = state.pending_untimeouts.len() - MAX_PENDING_UNTIMEOUTS;
+                state.pending_untimeouts.drain(0..overflow);
+            }
+        }
+        assert_eq!(state.pending_untimeouts.len(), MAX_PENDING_UNTIMEOUTS);
+        assert_eq!(state.pending_untimeouts[0].user_id, "5");
+    }
+
+    #[test]
+    fn minimal_state_serializes_small() {
+        let state = PersistedAfkState::default();
+        let json = serde_json::to_string(&state).expect("state should serialize");
+        assert!(json.len() < 1024, "Empty state is {} bytes", json.len());
     }
 }

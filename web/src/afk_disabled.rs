@@ -1,6 +1,6 @@
 use yew::prelude::*;
 
-use crate::menu::{menu_blank_row, menu_entry_row, menu_header_row, menu_icon_button};
+use crate::menu::{menu_blank_row, menu_entry_row, menu_header_row, menu_nav_back_button};
 use crate::sprites::SpriteDefs;
 
 #[derive(Properties, PartialEq)]
@@ -29,7 +29,7 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                         {menu_entry_row(
                             "Unavailable",
                             "Disabled in this build",
-                            menu_icon_button("minus", "Go back", false, on_back),
+                            menu_nav_back_button("Go back", false, on_back),
                         )}
                         {menu_blank_row()}
                     </tbody>

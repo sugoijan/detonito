@@ -8,7 +8,7 @@ use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::{Event, MessageEvent, Request, RequestCredentials, RequestInit, Response, WebSocket};
 use yew::prelude::*;
 
-use crate::menu::{menu_blank_row, menu_header_row, menu_icon_button};
+use crate::menu::{menu_blank_row, menu_header_row, menu_icon_button, menu_nav_enter_button};
 use crate::runtime::{AppRoute, app_path, auth_return_to, frontend_runtime_config, websocket_path};
 use crate::sprites::{Glyph, GlyphRun, GlyphSet, Icon, IconCrop, SpriteDefs};
 use crate::utils::format_for_counter;
@@ -44,8 +44,12 @@ enum AfkFaceAction {
 
 #[derive(Clone, Debug, PartialEq)]
 enum AfkFaceOverlay {
-    Message(AttrValue),
+    Message {
+        message: AttrValue,
+        status: Option<AttrValue>,
+    },
     Prompt(AfkFacePrompt),
+    Status(AttrValue),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -59,6 +63,10 @@ struct AfkFaceChoice {
 struct AfkFacePrompt {
     message: AttrValue,
     choices: Vec<AfkFaceChoice>,
+}
+
+fn current_level_status_text(session: Option<&AfkSessionSnapshot>) -> Option<AttrValue> {
+    session.map(|session| format!("Level {}", session.current_level).into())
 }
 
 fn menu_toggle_icon_button(
@@ -222,21 +230,23 @@ fn active_face_overlay(
         }
         if let LoadState::Ready(status) = status {
             if let Some(session) = &status.session {
+                let level_status = current_level_status_text(Some(session));
                 return match session.phase {
-                    AfkRoundPhase::Countdown => Some(AfkFaceOverlay::Message(
-                        format!(
+                    AfkRoundPhase::Countdown => Some(AfkFaceOverlay::Message {
+                        message: format!(
                             "Starting in {}...",
                             session.phase_countdown_secs.unwrap_or_default().max(0)
                         )
                         .into(),
-                    )),
+                        status: level_status,
+                    }),
                     AfkRoundPhase::Won => Some(AfkFaceOverlay::Prompt(win_continue_prompt(
                         session.phase_countdown_secs.unwrap_or_default(),
                     ))),
                     AfkRoundPhase::TimedOut => Some(AfkFaceOverlay::Prompt(loss_continue_prompt(
                         session.phase_countdown_secs.unwrap_or_default(),
                     ))),
-                    _ => None,
+                    _ => level_status.map(AfkFaceOverlay::Status),
                 };
             }
         }
@@ -279,7 +289,9 @@ fn afk_timer_phase_class(session: Option<&AfkSessionSnapshot>) -> &'static str {
 }
 
 fn board_counter_text(session: Option<&AfkSessionSnapshot>) -> String {
-    let value = session.map(|session| session.timer_remaining_secs).unwrap_or_default();
+    let value = session
+        .map(|session| session.timer_remaining_secs)
+        .unwrap_or_default();
     format_for_counter(value)
 }
 
@@ -293,9 +305,16 @@ fn mines_counter_text(session: Option<&AfkSessionSnapshot>) -> String {
 
 fn view_face_overlay(overlay: &AfkFaceOverlay, on_action: Callback<AfkFaceAction>) -> Html {
     match overlay {
-        AfkFaceOverlay::Message(message) => html! {
+        AfkFaceOverlay::Message { message, status } => html! {
             <div class="face-prompt-rail" aria-live="polite">
                 <div class="face-prompt-bubble">{message.clone()}</div>
+                {
+                    if let Some(status) = status.clone() {
+                        html! { <div class="face-prompt-status">{status}</div> }
+                    } else {
+                        Html::default()
+                    }
+                }
             </div>
         },
         AfkFaceOverlay::Prompt(prompt) => html! {
@@ -318,6 +337,11 @@ fn view_face_overlay(overlay: &AfkFaceOverlay, on_action: Callback<AfkFaceAction
                         })
                     }
                 </div>
+            </div>
+        },
+        AfkFaceOverlay::Status(status) => html! {
+            <div class="face-prompt-rail" aria-live="polite">
+                <div class="face-prompt-status">{status.clone()}</div>
             </div>
         },
     }
@@ -839,7 +863,9 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
     };
 
     let current_overlay = active_face_overlay(*screen, &status, &manual_face_prompt);
-    let face_button_locked = matches!(current_overlay.as_ref(), Some(AfkFaceOverlay::Prompt(_)));
+    let face_button_locked = current_overlay
+        .as_ref()
+        .is_some_and(|overlay| matches!(overlay, AfkFaceOverlay::Prompt(_)));
 
     let on_face_button = {
         let manual_face_prompt = manual_face_prompt.clone();
@@ -980,7 +1006,7 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                         }
                         {menu_primary_row(
                             "Connect Twitch",
-                            menu_icon_button("plus", "Connect with Twitch", false, connect_twitch),
+                            menu_nav_enter_button("Connect with Twitch", false, connect_twitch),
                         )}
                     </>
                 },
@@ -1007,11 +1033,19 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                                     <>
                                         {menu_primary_row(
                                             "Resume",
-                                            menu_icon_button("plus", "Resume live board", false, resume_board.clone()),
+                                            menu_nav_enter_button(
+                                                "Resume live board",
+                                                false,
+                                                resume_board.clone(),
+                                            ),
                                         )}
                                         {menu_primary_row(
                                             "Start New",
-                                            menu_icon_button("plus", "Start a new AFK round", false, start_new_board.clone()),
+                                            menu_nav_enter_button(
+                                                "Start a new AFK round",
+                                                false,
+                                                start_new_board.clone(),
+                                            ),
                                         )}
                                         {menu_toggle_row(
                                             "Timeout on mistake",
@@ -1037,7 +1071,11 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                                     <>
                                         {menu_primary_row(
                                             "Start",
-                                            menu_icon_button("plus", "Start AFK mode", false, start_new_board.clone()),
+                                            menu_nav_enter_button(
+                                                "Start AFK mode",
+                                                false,
+                                                start_new_board.clone(),
+                                            ),
                                         )}
                                         {menu_toggle_row(
                                             "Timeout on mistake",
@@ -1060,6 +1098,7 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                                 }
                             }
                         }
+                        {menu_blank_row()}
                         {menu_primary_row(
                             "Disconnect Twitch",
                             menu_icon_button("cancel", "Disconnect Twitch", false, disconnect_twitch),
@@ -1285,6 +1324,7 @@ mod tests {
                 },
                 timer_remaining_secs: 0,
                 phase_countdown_secs: Some(60),
+                current_level: 1,
                 live_mines_left: 0,
                 crater_count: 0,
                 loss_reason: Some(AfkLossReason::Timer),
@@ -1297,5 +1337,54 @@ mod tests {
         });
 
         assert_eq!(afk_face_icon(&status), "sleeping");
+    }
+
+    #[test]
+    fn active_board_overlay_shows_current_level_status() {
+        let overlay = active_face_overlay(
+            AfkScreen::Board,
+            &LoadState::Ready(AfkStatusResponse {
+                runtime: FrontendRuntimeConfig { afk_enabled: true },
+                auth: StreamerAuthStatus::default(),
+                chat_connection: AfkChatConnectionState::Idle,
+                chat_error: None,
+                timeout_supported: true,
+                timeout_enabled: true,
+                connect_url: None,
+                websocket_path: None,
+                session: Some(AfkSessionSnapshot {
+                    streamer: None,
+                    phase: AfkRoundPhase::Active,
+                    paused: false,
+                    board: AfkBoardSnapshot {
+                        width: 0,
+                        height: 0,
+                        cells: Vec::new(),
+                    },
+                    timer_profile: AfkTimerProfileSnapshot {
+                        start_secs: 120,
+                        safe_reveal_bonus_secs: 1,
+                        mine_penalty_secs: 15,
+                        start_delay_secs: 5,
+                        win_continue_delay_secs: 30,
+                        loss_continue_delay_secs: 60,
+                    },
+                    timer_remaining_secs: 120,
+                    phase_countdown_secs: None,
+                    current_level: 3,
+                    live_mines_left: 50,
+                    crater_count: 0,
+                    loss_reason: None,
+                    timeout_enabled: true,
+                    ignored_users: Vec::new(),
+                    recent_penalties: Vec::new(),
+                    activity: Vec::new(),
+                    last_action: None,
+                }),
+            }),
+            &None,
+        );
+
+        assert_eq!(overlay, Some(AfkFaceOverlay::Status("Level 3".into())));
     }
 }

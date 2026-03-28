@@ -1,5 +1,9 @@
 use serde::{Deserialize, Serialize};
 
+fn default_afk_current_level() -> u16 {
+    1
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrontendRuntimeConfig {
     pub afk_enabled: bool,
@@ -116,6 +120,8 @@ pub struct AfkSessionSnapshot {
     pub timer_remaining_secs: i32,
     #[serde(default)]
     pub phase_countdown_secs: Option<i32>,
+    #[serde(default = "default_afk_current_level")]
+    pub current_level: u16,
     pub live_mines_left: i32,
     pub crater_count: u16,
     #[serde(default)]

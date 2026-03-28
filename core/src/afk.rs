@@ -54,6 +54,15 @@ impl AfkPreset {
         Self::for_mines(Self::INITIAL_MINES)
     }
 
+    pub fn level_number_for_mines(current: u16) -> u16 {
+        let normalized = current.clamp(Self::INITIAL_MINES, Self::MAX_MINES);
+        ((normalized - Self::INITIAL_MINES) / Self::MINE_INCREMENT) + 1
+    }
+
+    pub fn current_level(&self) -> u16 {
+        Self::level_number_for_mines(self.config.mines)
+    }
+
     pub const fn next_mine_count(current: u16) -> u16 {
         if current >= Self::MAX_MINES - Self::MINE_INCREMENT {
             Self::MAX_MINES
@@ -807,6 +816,16 @@ mod tests {
         assert!(outcome.changed);
         assert!(outcome.safe_reveals > 0);
         assert!(engine.timer_remaining_secs() > before);
+    }
+
+    #[test]
+    fn preset_level_tracks_mine_progression() {
+        assert_eq!(AfkPreset::v1().current_level(), 1);
+        assert_eq!(AfkPreset::for_mines(60).current_level(), 2);
+        assert_eq!(
+            AfkPreset::for_mines(AfkPreset::MAX_MINES).current_level(),
+            16
+        );
     }
 
     #[test]

@@ -2,7 +2,7 @@ use yew::prelude::*;
 
 use crate::afk::AfkView;
 use crate::game::{GameInitArgs, GameView, has_saved_game};
-use crate::menu::{menu_blank_row, menu_entry_row, menu_header_row, menu_icon_button};
+use crate::menu::{menu_blank_row, menu_entry_row, menu_header_row, menu_nav_enter_button};
 use crate::runtime::{AppRoute, current_route_state, frontend_runtime_config, replace_route};
 use crate::settings::{AboutView, SettingsView};
 use crate::sprites::SpriteDefs;
@@ -195,14 +195,14 @@ pub(crate) fn AppShell(props: &AppShellProps) -> Html {
                             {menu_entry_row(
                                 "Normal mode",
                                 "Single-player",
-                                menu_icon_button("plus", "Open normal mode", false, open_normal_mode.clone()),
+                                menu_nav_enter_button("Open normal mode", false, open_normal_mode.clone()),
                             )}
                             {
                                 if runtime.afk_enabled {
                                     menu_entry_row(
                                         "AFK mode",
                                         "Twitch plays",
-                                        menu_icon_button("plus", "Open AFK mode", false, open_afk.clone()),
+                                        menu_nav_enter_button("Open AFK mode", false, open_afk.clone()),
                                     )
                                 } else {
                                     Html::default()
@@ -211,12 +211,12 @@ pub(crate) fn AppShell(props: &AppShellProps) -> Html {
                             {menu_entry_row(
                                 "Settings",
                                 "Options",
-                                menu_icon_button("plus", "Open settings", false, open_settings),
+                                menu_nav_enter_button("Open settings", false, open_settings),
                             )}
                             {menu_entry_row(
                                 "About",
                                 "Credits",
-                                menu_icon_button("plus", "Open about", false, open_about),
+                                menu_nav_enter_button("Open about", false, open_about),
                             )}
                             {menu_blank_row()}
                         </tbody>

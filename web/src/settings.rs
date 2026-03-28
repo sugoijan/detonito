@@ -367,10 +367,6 @@ fn theme_label(theme: Option<Theme>) -> &'static str {
     }
 }
 
-fn zoom_label(zoom_percent: u16) -> String {
-    format!("{}%", zoom_percent)
-}
-
 fn menu_blank_cells(count: usize) -> Html {
     Html::from_iter((0..count).map(|_| html! { <td class="menu-pad"/> }))
 }
@@ -387,11 +383,29 @@ fn menu_icon_button(
     pressed: bool,
     onclick: Callback<MouseEvent>,
 ) -> Html {
+    menu_icon_button_with_class(icon, "button-icon", title, pressed, onclick)
+}
+
+fn menu_icon_button_with_class(
+    icon: &'static str,
+    icon_class: &'static str,
+    title: impl Into<AttrValue>,
+    pressed: bool,
+    onclick: Callback<MouseEvent>,
+) -> Html {
     html! {
         <button class={classes!(pressed.then_some("pressed"))} title={title.into()} {onclick}>
-            <Icon name={icon} crop={IconCrop::CenteredSquare64} class={classes!("button-icon")}/>
+            <Icon name={icon} crop={IconCrop::CenteredSquare64} class={classes!(icon_class)}/>
         </button>
     }
+}
+
+fn menu_nav_enter_button(title: impl Into<AttrValue>, onclick: Callback<MouseEvent>) -> Html {
+    menu_icon_button_with_class("menu-enter", "nav-icon", title, false, onclick)
+}
+
+fn menu_nav_back_button(title: impl Into<AttrValue>, onclick: Callback<MouseEvent>) -> Html {
+    menu_icon_button_with_class("menu-back", "nav-icon", title, false, onclick)
 }
 
 fn menu_title_row(title: impl Into<AttrValue>) -> Html {
@@ -464,7 +478,7 @@ fn menu_header_row(title: impl Into<AttrValue>, on_back: Callback<MouseEvent>) -
         <tr>
             <td class="menu-pad"/>
             <td class="menu-button-slot">
-                {menu_icon_button("minus", "Go back", false, on_back)}
+                {menu_nav_back_button("Go back", on_back)}
             </td>
             <td class="menu-heading" colspan="11">{title.into()}</td>
             <td class="menu-pad"/>
@@ -526,6 +540,49 @@ fn menu_adjust_row(
                 />
             </td>
             <td class={classes!("menu-detail", "menu-number-detail")} colspan="5">
+                <MenuNumberField
+                    label={label}
+                    value={value}
+                    min={min}
+                    max={max}
+                    on_set={on_set}
+                />
+            </td>
+            <td class="menu-button-slot">
+                <RepeatIconButton
+                    icon="plus"
+                    title={format!("Increase {}", label)}
+                    on_activate={on_increase}
+                />
+            </td>
+            <td class="menu-pad"/>
+        </tr>
+    }
+}
+
+fn menu_adjust_row_with_leading_button(
+    button: Html,
+    label: &'static str,
+    value: u16,
+    min: u16,
+    max: u16,
+    on_decrease: Callback<()>,
+    on_set: Callback<u16>,
+    on_increase: Callback<()>,
+) -> Html {
+    html! {
+        <tr>
+            <td class="menu-pad"/>
+            <td class="menu-button-slot">{button}</td>
+            <td class="menu-text" colspan="5">{label}</td>
+            <td class="menu-button-slot">
+                <RepeatIconButton
+                    icon="minus"
+                    title={format!("Decrease {}", label)}
+                    on_activate={on_decrease}
+                />
+            </td>
+            <td class={classes!("menu-detail", "menu-number-detail")} colspan="4">
                 <MenuNumberField
                     label={label}
                     value={value}
@@ -819,7 +876,7 @@ fn credit_index_row(entry: &CreditEntry, on_open: Callback<MouseEvent>) -> Html 
     menu_about_index_row(
         entry.name.clone(),
         entry.relation.clone(),
-        menu_icon_button("plus", format!("Open {}", entry.name), false, on_open),
+        menu_nav_enter_button(format!("Open {}", entry.name), on_open),
     )
 }
 
@@ -956,6 +1013,13 @@ pub(crate) fn SettingsView(props: &SettingsProps) -> Html {
     let set_zoom = {
         let settings = settings.clone();
         Callback::from(move |value: u16| settings.dispatch(SettingsAction::SetZoom(value)))
+    };
+
+    let reset_zoom = {
+        let settings = settings.clone();
+        Callback::from(move |_| {
+            settings.dispatch(SettingsAction::SetZoom(Settings::DEFAULT_ZOOM_PERCENT))
+        })
     };
 
     let inc_size_x = {
@@ -1108,10 +1172,8 @@ pub(crate) fn SettingsView(props: &SettingsProps) -> Html {
     let current_choice = difficulty_choice(&settings);
     let current_difficulty_label = difficulty_label(current_choice);
     let current_theme_label = theme_label(*theme);
-    let current_zoom_label = zoom_label(settings.zoom_percent());
     let current_generator_label = generator_label(settings.generator);
     let custom_summary = game_config_summary(&settings.game_config);
-    let theme_detail = format!("{current_theme_label} / {current_zoom_label}");
     let classic_detail = match current_choice {
         DifficultyChoice::ClassicBeginner => "Beginner",
         DifficultyChoice::ClassicIntermediate => "Intermediate",
@@ -1146,13 +1208,24 @@ pub(crate) fn SettingsView(props: &SettingsProps) -> Html {
                 {menu_entry_row(
                     "Difficulty",
                     current_difficulty_label,
-                    menu_icon_button("plus", "Open difficulty menu", false, open_difficulty),
+                    menu_nav_enter_button("Open difficulty menu", open_difficulty),
+                )}
+                {menu_blank_row()}
+                {menu_adjust_row_with_leading_button(
+                    menu_icon_button("zoom-reset", "Reset zoom to 175%", false, reset_zoom),
+                    "Zoom",
+                    settings.zoom_percent(),
+                    Settings::MIN_ZOOM_PERCENT,
+                    Settings::MAX_ZOOM_PERCENT,
+                    dec_zoom,
+                    set_zoom,
+                    inc_zoom,
                 )}
                 {menu_blank_row()}
                 {menu_entry_row(
                     "Theme",
-                    theme_detail,
-                    menu_icon_button("plus", "Open theme menu", false, open_theme),
+                    current_theme_label,
+                    menu_nav_enter_button("Open theme menu", open_theme),
                 )}
                 {menu_blank_row()}
             </>
@@ -1165,17 +1238,17 @@ pub(crate) fn SettingsView(props: &SettingsProps) -> Html {
                 {menu_entry_row(
                     "Modern NG",
                     modern_detail,
-                    menu_icon_button("plus", "Open modern difficulty menu", false, open_modern_ng),
+                    menu_nav_enter_button("Open modern difficulty menu", open_modern_ng),
                 )}
                 {menu_entry_row(
                     "Classic",
                     classic_detail,
-                    menu_icon_button("plus", "Open classic difficulty menu", false, open_classic),
+                    menu_nav_enter_button("Open classic difficulty menu", open_classic),
                 )}
                 {menu_entry_row(
                     "Custom",
                     custom_detail.clone(),
-                    menu_icon_button("plus", "Open custom board menu", false, open_custom),
+                    menu_nav_enter_button("Open custom board menu", open_custom),
                 )}
                 {menu_blank_row()}
                 {menu_dual_action_row(
@@ -1319,7 +1392,7 @@ pub(crate) fn SettingsView(props: &SettingsProps) -> Html {
                 {menu_entry_row(
                     "Generation",
                     current_generator_label,
-                    menu_icon_button("plus", "Open generation menu", false, open_generation),
+                    menu_nav_enter_button("Open generation menu", open_generation),
                 )}
                 {menu_blank_row()}
                 {menu_adjust_row(
@@ -1386,16 +1459,6 @@ pub(crate) fn SettingsView(props: &SettingsProps) -> Html {
                         matches!(*theme, None),
                         Callback::from(set_theme_auto),
                     ),
-                )}
-                {menu_blank_row()}
-                {menu_adjust_row(
-                    "Zoom",
-                    settings.zoom_percent(),
-                    Settings::MIN_ZOOM_PERCENT,
-                    Settings::MAX_ZOOM_PERCENT,
-                    dec_zoom,
-                    set_zoom,
-                    inc_zoom,
                 )}
                 {menu_blank_row()}
             </>

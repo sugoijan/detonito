@@ -151,6 +151,15 @@ main {
     height: 12px;
   }
 
+  .nav-icon {
+    position: absolute;
+    inset: 0;
+    margin: auto;
+    width: 12px;
+    height: 12px;
+    transform: translate(1px, 0.75px);
+  }
+
   .button-icon {
     position: absolute;
     inset: 0;
@@ -329,6 +338,20 @@ main {
         padding: 5px;
       }
 
+      .face-prompt-status {
+        position: absolute;
+        left: calc(100% + 6px);
+        top: 50%;
+        transform: translateY(-50%);
+        min-height: 18px;
+        display: inline-flex;
+        align-items: center;
+        white-space: nowrap;
+        color: var(#{$css-var-prefix}text);
+        font: 9px/1 "Iosevka", "SFMono-Regular", "Cascadia Mono", "Segoe UI Mono", monospace;
+        letter-spacing: 0.01em;
+      }
+
       .face-prompt-choice {
         @include outset-border($border-mid);
         width: auto;
@@ -428,7 +451,8 @@ main {
       background-color: var(#{$css-var-prefix}background-hover);
       @include pressed-border($border-thin);
 
-      .button-icon {
+      .button-icon,
+      .nav-icon {
         transform: translate(0.75px, 0.75px);
       }
     }
@@ -442,7 +466,8 @@ main {
       background-color: var(#{$css-var-prefix}background);
       @include pressed-border($border-mid);
 
-      .button-icon {
+      .button-icon,
+      .nav-icon {
         transform: translate(0.75px, 0.75px);
       }
 

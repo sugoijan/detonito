@@ -861,10 +861,13 @@ fn sync_openmoji(paths: &AssetPaths, openmoji_dir: PathBuf) -> Result<()> {
         }
 
         let destination = paths.openmoji_upstream_dir.join(&entry.filename);
-        fs::copy(&source_path, &destination).with_context(|| {
+        let source_svg = fs::read_to_string(&source_path)
+            .with_context(|| format!("failed to read {}", source_path.display()))?;
+        let normalized_svg = normalize_openmoji_imported_svg(&source_svg)
+            .with_context(|| format!("failed to normalize {}", source_path.display()))?;
+        fs::write(&destination, normalized_svg).with_context(|| {
             format!(
-                "failed to copy {} to {}",
-                source_path.display(),
+                "failed to write normalized OpenMoji asset {}",
                 destination.display()
             )
         })?;
@@ -890,6 +893,93 @@ fn sync_openmoji(paths: &AssetPaths, openmoji_dir: PathBuf) -> Result<()> {
 
     write_openmoji_symbols(paths, &manifest)?;
     write_combined_sprite(paths)
+}
+
+fn normalize_openmoji_imported_svg(svg_source: &str) -> Result<String> {
+    let document = Document::parse(svg_source).context("failed to parse imported OpenMoji SVG")?;
+    let root = document.root_element();
+    let mut writer = new_xml_writer();
+    write_normalized_openmoji_imported_node(&mut writer, root, AffineTransform::identity())?;
+    Ok(writer.end_document())
+}
+
+fn write_normalized_openmoji_imported_node(
+    writer: &mut XmlWriter,
+    node: Node<'_, '_>,
+    inherited_transform: AffineTransform,
+) -> Result<()> {
+    let tag = node.tag_name().name();
+    let mut attrs: BTreeMap<String, String> = node
+        .attributes()
+        .filter(|attribute| attribute.namespace().is_none())
+        .map(|attribute| (attribute.name().to_string(), attribute.value().to_string()))
+        .collect();
+    let local_transform = attrs
+        .remove("transform")
+        .map(|value| parse_svg_transform(&value))
+        .transpose()?
+        .unwrap_or_else(AffineTransform::identity);
+    let effective_transform = inherited_transform.compose(local_transform);
+
+    match tag {
+        "svg" | "g" => {
+            writer.start_element(tag);
+            if tag == "svg" {
+                writer.write_attribute("xmlns", SVG_NS);
+            }
+            for (key, value) in &attrs {
+                writer.write_attribute(key, value);
+            }
+            for child in node.children().filter(|child| child.is_element()) {
+                write_normalized_openmoji_imported_node(writer, child, effective_transform)?;
+            }
+            writer.end_element();
+            Ok(())
+        }
+        "ellipse" => {
+            if effective_transform.is_identity() {
+                writer.start_element("ellipse");
+                for (key, value) in &attrs {
+                    writer.write_attribute(key, value);
+                }
+                writer.end_element();
+                Ok(())
+            } else {
+                write_flattened_ellipse_node(writer, &attrs, effective_transform)
+            }
+        }
+        "circle" => {
+            if effective_transform.is_identity() {
+                writer.start_element("circle");
+                for (key, value) in &attrs {
+                    writer.write_attribute(key, value);
+                }
+                writer.end_element();
+                Ok(())
+            } else {
+                write_flattened_circle_node(writer, &attrs, effective_transform)
+            }
+        }
+        _ if effective_transform.is_identity() => {
+            writer.start_element(tag);
+            for (key, value) in &attrs {
+                writer.write_attribute(key, value);
+            }
+            for child in node.children().filter(|child| child.is_element()) {
+                write_normalized_openmoji_imported_node(
+                    writer,
+                    child,
+                    AffineTransform::identity(),
+                )?;
+            }
+            writer.end_element();
+            Ok(())
+        }
+        _ => bail!(
+            "unsupported non-identity transform on imported OpenMoji <{}> element",
+            tag
+        ),
+    }
 }
 
 fn regen_sprite(paths: &AssetPaths) -> Result<()> {
@@ -1189,6 +1279,264 @@ fn parse_style(style: Option<&str>) -> Result<BTreeMap<String, String>> {
     }
 
     Ok(parsed)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct AffineTransform {
+    a: f64,
+    b: f64,
+    c: f64,
+    d: f64,
+    e: f64,
+    f: f64,
+}
+
+impl AffineTransform {
+    fn identity() -> Self {
+        Self {
+            a: 1.0,
+            b: 0.0,
+            c: 0.0,
+            d: 1.0,
+            e: 0.0,
+            f: 0.0,
+        }
+    }
+
+    fn compose(self, other: Self) -> Self {
+        Self {
+            a: self.a * other.a + self.c * other.b,
+            b: self.b * other.a + self.d * other.b,
+            c: self.a * other.c + self.c * other.d,
+            d: self.b * other.c + self.d * other.d,
+            e: self.a * other.e + self.c * other.f + self.e,
+            f: self.b * other.e + self.d * other.f + self.f,
+        }
+    }
+
+    fn apply(self, x: f64, y: f64) -> (f64, f64) {
+        (
+            (self.a * x) + (self.c * y) + self.e,
+            (self.b * x) + (self.d * y) + self.f,
+        )
+    }
+
+    fn is_identity(self) -> bool {
+        approx_eq(self.a, 1.0)
+            && approx_eq(self.b, 0.0)
+            && approx_eq(self.c, 0.0)
+            && approx_eq(self.d, 1.0)
+            && approx_eq(self.e, 0.0)
+            && approx_eq(self.f, 0.0)
+    }
+
+    fn scale_x(self) -> f64 {
+        self.a.hypot(self.b)
+    }
+
+    fn scale_y(self) -> f64 {
+        self.c.hypot(self.d)
+    }
+
+    fn is_orthogonal(self) -> bool {
+        approx_eq((self.a * self.c) + (self.b * self.d), 0.0)
+    }
+
+    fn determinant(self) -> f64 {
+        (self.a * self.d) - (self.b * self.c)
+    }
+
+    fn rotation_degrees(self) -> f64 {
+        self.b.atan2(self.a).to_degrees()
+    }
+}
+
+fn approx_eq(left: f64, right: f64) -> bool {
+    (left - right).abs() <= 0.001
+}
+
+fn parse_svg_transform(value: &str) -> Result<AffineTransform> {
+    let mut remainder = value.trim();
+    let mut transform = AffineTransform::identity();
+
+    while !remainder.is_empty() {
+        let open = remainder
+            .find('(')
+            .with_context(|| format!("invalid SVG transform {:?}", value))?;
+        let close = remainder[open + 1..]
+            .find(')')
+            .map(|index| index + open + 1)
+            .with_context(|| format!("invalid SVG transform {:?}", value))?;
+        let name = remainder[..open].trim();
+        let args = parse_transform_numbers(&remainder[open + 1..close])?;
+        let next = match name {
+            "matrix" => {
+                if args.len() != 6 {
+                    bail!("matrix transform requires 6 values, got {:?}", args);
+                }
+                AffineTransform {
+                    a: args[0],
+                    b: args[1],
+                    c: args[2],
+                    d: args[3],
+                    e: args[4],
+                    f: args[5],
+                }
+            }
+            "translate" => {
+                if !(1..=2).contains(&args.len()) {
+                    bail!("translate transform requires 1 or 2 values, got {:?}", args);
+                }
+                AffineTransform {
+                    e: args[0],
+                    f: args.get(1).copied().unwrap_or(0.0),
+                    ..AffineTransform::identity()
+                }
+            }
+            "scale" => {
+                if !(1..=2).contains(&args.len()) {
+                    bail!("scale transform requires 1 or 2 values, got {:?}", args);
+                }
+                let sy = args.get(1).copied().unwrap_or(args[0]);
+                AffineTransform {
+                    a: args[0],
+                    d: sy,
+                    ..AffineTransform::identity()
+                }
+            }
+            "rotate" => parse_rotate_transform(&args)?,
+            other => bail!("unsupported SVG transform function {:?}", other),
+        };
+        transform = transform.compose(next);
+        remainder = remainder[close + 1..]
+            .trim_start_matches(|ch: char| ch.is_ascii_whitespace() || ch == ',');
+    }
+
+    Ok(transform)
+}
+
+fn parse_rotate_transform(args: &[f64]) -> Result<AffineTransform> {
+    if !(1..=3).contains(&args.len()) {
+        bail!("rotate transform requires 1 or 3 values, got {:?}", args);
+    }
+    let angle = args[0].to_radians();
+    let rotation = AffineTransform {
+        a: angle.cos(),
+        b: angle.sin(),
+        c: -angle.sin(),
+        d: angle.cos(),
+        ..AffineTransform::identity()
+    };
+    if args.len() == 1 {
+        return Ok(rotation);
+    }
+
+    let translate_to_origin = AffineTransform {
+        e: -args[1],
+        f: -args[2],
+        ..AffineTransform::identity()
+    };
+    let translate_back = AffineTransform {
+        e: args[1],
+        f: args[2],
+        ..AffineTransform::identity()
+    };
+    Ok(translate_back
+        .compose(rotation)
+        .compose(translate_to_origin))
+}
+
+fn parse_transform_numbers(value: &str) -> Result<Vec<f64>> {
+    value
+        .split(|ch: char| ch == ',' || ch.is_ascii_whitespace())
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            part.parse::<f64>()
+                .with_context(|| format!("invalid transform number {:?}", part))
+        })
+        .collect()
+}
+
+fn write_flattened_circle_node(
+    writer: &mut XmlWriter,
+    attrs: &BTreeMap<String, String>,
+    transform: AffineTransform,
+) -> Result<()> {
+    let cx = required_svg_number(attrs, "cx")?;
+    let cy = required_svg_number(attrs, "cy")?;
+    let r = required_svg_number(attrs, "r")?;
+    write_flattened_elliptic_arc_path(writer, attrs, cx, cy, r, r, transform)
+}
+
+fn write_flattened_ellipse_node(
+    writer: &mut XmlWriter,
+    attrs: &BTreeMap<String, String>,
+    transform: AffineTransform,
+) -> Result<()> {
+    let cx = required_svg_number(attrs, "cx")?;
+    let cy = required_svg_number(attrs, "cy")?;
+    let rx = required_svg_number(attrs, "rx")?;
+    let ry = required_svg_number(attrs, "ry")?;
+    write_flattened_elliptic_arc_path(writer, attrs, cx, cy, rx, ry, transform)
+}
+
+fn write_flattened_elliptic_arc_path(
+    writer: &mut XmlWriter,
+    attrs: &BTreeMap<String, String>,
+    cx: f64,
+    cy: f64,
+    rx: f64,
+    ry: f64,
+    transform: AffineTransform,
+) -> Result<()> {
+    if !transform.is_orthogonal() || transform.determinant() <= 0.0 {
+        bail!(
+            "cannot flatten non-orthogonal ellipse transform {:?}",
+            transform
+        );
+    }
+
+    let scale_x = transform.scale_x();
+    let scale_y = transform.scale_y();
+    let rx = rx * scale_x;
+    let ry = ry * scale_y;
+    let rotation = transform.rotation_degrees();
+    let (start_x, start_y) = transform.apply(cx - (rx / scale_x), cy);
+    let (end_x, end_y) = transform.apply(cx + (rx / scale_x), cy);
+    let d = format!(
+        "M{} {} A{} {} {} 0 1 {} {} A{} {} {} 0 1 {} {} Z",
+        fmt_f64(start_x),
+        fmt_f64(start_y),
+        fmt_f64(rx),
+        fmt_f64(ry),
+        fmt_f64(rotation),
+        fmt_f64(end_x),
+        fmt_f64(end_y),
+        fmt_f64(rx),
+        fmt_f64(ry),
+        fmt_f64(rotation),
+        fmt_f64(start_x),
+        fmt_f64(start_y),
+    );
+
+    writer.start_element("path");
+    for (key, value) in attrs {
+        if matches!(key.as_str(), "cx" | "cy" | "rx" | "ry" | "r") {
+            continue;
+        }
+        writer.write_attribute(key, value);
+    }
+    writer.write_attribute("d", &d);
+    writer.end_element();
+    Ok(())
+}
+
+fn required_svg_number(attrs: &BTreeMap<String, String>, key: &str) -> Result<f64> {
+    attrs
+        .get(key)
+        .with_context(|| format!("missing {:?} SVG attribute", key))?
+        .parse::<f64>()
+        .with_context(|| format!("invalid {:?} SVG number", key))
 }
 
 fn normalize_color(value: &str) -> String {
@@ -1677,4 +2025,80 @@ fn fmt_f32(value: f32) -> String {
         formatted.pop();
     }
     formatted
+}
+
+fn fmt_f64(value: f64) -> String {
+    if (value - value.round()).abs() < 0.0001 {
+        return format!("{}", value.round() as i32);
+    }
+    let mut formatted = format!("{value:.4}");
+    while formatted.contains('.') && formatted.ends_with('0') {
+        formatted.pop();
+    }
+    if formatted.ends_with('.') {
+        formatted.pop();
+    }
+    formatted
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn imported_svg_normalizer_removes_identity_translate_transform() {
+        let input = r##"
+            <svg id="emoji" viewBox="0 0 72 72" xmlns="http://www.w3.org/2000/svg">
+              <g id="line">
+                <path transform="translate(0 0)" d="M1 2L3 4" stroke="#000000" fill="none"/>
+              </g>
+            </svg>
+        "##;
+
+        let normalized = normalize_openmoji_imported_svg(input).expect("svg should normalize");
+        let document = Document::parse(&normalized).expect("normalized svg should parse");
+        let path = document
+            .descendants()
+            .find(|node| node.has_tag_name("path"))
+            .expect("path should remain present");
+
+        assert!(!normalized.contains("transform="));
+        assert_eq!(path.attribute("d"), Some("M1 2L3 4"));
+        assert_eq!(path.attribute("fill"), Some("none"));
+        assert_eq!(path.attribute("stroke"), Some("#000000"));
+    }
+
+    #[test]
+    fn imported_svg_normalizer_flattens_transformed_ellipse_to_path() {
+        let input = r##"
+            <svg id="emoji" viewBox="0 0 72 72" xmlns="http://www.w3.org/2000/svg">
+              <g id="color">
+                <ellipse
+                  cx="29.5854"
+                  cy="24.8305"
+                  rx="11.1656"
+                  ry="11.1657"
+                  transform="matrix(0.8006 -0.5992 0.5992 0.8006 -8.979 22.6777)"
+                  fill="#FFFFFF"
+                  stroke="none"
+                />
+              </g>
+            </svg>
+        "##;
+
+        let normalized = normalize_openmoji_imported_svg(input).expect("svg should normalize");
+        let document = Document::parse(&normalized).expect("normalized svg should parse");
+        let path = document
+            .descendants()
+            .find(|node| node.has_tag_name("path"))
+            .expect("ellipse should become a path");
+
+        assert!(!normalized.contains("transform="));
+        assert_eq!(path.attribute("fill"), Some("#FFFFFF"));
+        assert_eq!(path.attribute("stroke"), Some("none"));
+        assert!(
+            path.attribute("d")
+                .is_some_and(|value| value.contains('A') && value.ends_with('Z'))
+        );
+    }
 }
