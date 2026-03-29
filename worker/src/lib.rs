@@ -57,12 +57,14 @@ const MAX_EVENTSUB_IDS: usize = 64;
 const MAX_IGNORED_USERS: usize = 200;
 const MAX_TIMED_OUT_USERS: usize = 200;
 /// Entries beyond this cap are dropped (oldest first). This is safe because
-/// Twitch timeouts last only TIMEOUT_DURATION_SECS; by the time this many
-/// entries accumulate across rounds, the oldest timeouts have already expired
-/// on Twitch's side. If TIMEOUT_DURATION_SECS is ever raised significantly,
-/// revisit this cap or add expiry-based eviction.
+/// Twitch timeouts are short-lived and released again when rounds end; by the
+/// time this many entries accumulate across rounds, the oldest timeouts have
+/// already expired on Twitch's side. If the configured timeout durations are
+/// ever raised significantly, revisit this cap or add expiry-based eviction.
 const MAX_PENDING_UNTIMEOUTS: usize = 64;
-const TIMEOUT_DURATION_SECS: u32 = 60;
+const DEFAULT_TIMEOUT_DURATION_SECS: u32 = 30;
+const TIMEOUT_DURATION_OPTIONS_SECS: [u32; 12] =
+    [1, 5, 10, 15, 30, 45, 60, 90, 120, 180, 240, 300];
 
 const EVENTSUB_WS_URL: &str = "wss://eventsub.wss.twitch.tv/ws";
 const EVENTSUB_RECONNECT_RETRY_SECS: u64 = 5;
@@ -257,6 +259,8 @@ struct PersistedAfkState {
     tokens: Option<TwitchTokenState>,
     #[serde(default = "default_timeout_enabled")]
     timeout_enabled: bool,
+    #[serde(default = "default_timeout_duration_secs")]
+    timeout_duration_secs: u32,
     session: Option<PersistedAfkSession>,
     /// Users awaiting untimeout across rounds. Capped at [`MAX_PENDING_UNTIMEOUTS`].
     #[serde(default)]
@@ -272,6 +276,7 @@ impl Default for PersistedAfkState {
             broadcaster: None,
             tokens: None,
             timeout_enabled: default_timeout_enabled(),
+            timeout_duration_secs: default_timeout_duration_secs(),
             session: None,
             pending_untimeouts: Vec::new(),
             recent_eventsub_ids: Vec::new(),
@@ -306,6 +311,7 @@ impl PersistedAfkState {
             chat_error,
             timeout_supported: self.timeout_supported(),
             timeout_enabled: self.timeout_enabled,
+            timeout_duration_secs: self.timeout_duration_secs,
             connect_url: Some(join_base_path(base_path, "/auth/twitch/login")),
             websocket_path: self
                 .broadcaster
@@ -379,7 +385,10 @@ struct EnsureEventSubRequest {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct SetTimeoutPreferenceRequest {
-    enabled: bool,
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    duration_secs: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -621,6 +630,7 @@ async fn handle_afk_status(req: Request, env: Env) -> Result<Response> {
             chat_error: None,
             timeout_supported: false,
             timeout_enabled: true,
+            timeout_duration_secs: default_timeout_duration_secs(),
             connect_url: Some(join_base_path(
                 &configured_base_path(&env),
                 "/auth/twitch/login",
@@ -672,7 +682,7 @@ impl AfkSessionDO {
             return Ok(cached);
         }
         let storage = self.state.storage();
-        let loaded = match load_storage_json::<PersistedAfkState>(&storage, STATE_KEY).await {
+        let mut loaded = match load_storage_json::<PersistedAfkState>(&storage, STATE_KEY).await {
             Ok(Some(loaded)) => loaded,
             Ok(None) => PersistedAfkState::default(),
             Err(error) => {
@@ -681,6 +691,7 @@ impl AfkSessionDO {
                 PersistedAfkState::default()
             }
         };
+        loaded.timeout_duration_secs = normalize_timeout_duration_secs(loaded.timeout_duration_secs);
         *self.cache.borrow_mut() = Some(loaded.clone());
         Ok(loaded)
     }
@@ -898,7 +909,7 @@ impl AfkSessionDO {
                 serde_json::json!({
                     "data": {
                         "user_id": chatter_user_id,
-                        "duration": TIMEOUT_DURATION_SECS,
+                        "duration": state.timeout_duration_secs,
                         "reason": "BOOM! You found a mine.",
                     }
                 })
@@ -1000,10 +1011,6 @@ impl AfkSessionDO {
         let Some(session) = state.session.as_ref() else {
             return Ok(None);
         };
-        if parsed.coords.0 >= session.engine.size().0 || parsed.coords.1 >= session.engine.size().1
-        {
-            return Ok(None);
-        }
         if session
             .ignored_users
             .iter()
@@ -1011,11 +1018,7 @@ impl AfkSessionDO {
         {
             return Ok(None);
         }
-        if !session
-            .engine
-            .cell_has_label(parsed.coords)
-            .map_err(error_from_display)?
-        {
+        if !chat_board_action_targets_labeled_cell(session, parsed)? {
             return Ok(None);
         }
 
@@ -1161,32 +1164,69 @@ impl AfkSessionDO {
                 vec![session.push_activity(format!("{actor_label} continued the run"), now_ms())]
             }
             ParsedChatCommand::BoardBatch(actions) => {
-                let mut rows = Vec::new();
-                for parsed in actions {
-                    if let Some(row) = self
-                        .apply_chat_board_action(state, &chat, &actor_label, parsed)
-                        .await?
-                    {
-                        rows.push(row);
-                    }
-
-                    let Some(session) = state.session.as_ref() else {
-                        break;
-                    };
-                    let user_ignored = session
+                let user_ignored = state.session.as_ref().is_some_and(|session| {
+                    session
                         .ignored_users
                         .iter()
-                        .any(|identity| identity.user_id == chat.chatter_user_id);
-                    if user_ignored || !matches!(session.engine.phase(), CoreAfkRoundPhase::Active)
-                    {
-                        break;
+                        .any(|identity| identity.user_id == chat.chatter_user_id)
+                });
+                if user_ignored {
+                    let has_valid_move = state.session.as_ref().is_some_and(|session| {
+                        actions.iter().copied().any(|parsed| {
+                            chat_board_action_targets_labeled_cell(session, parsed)
+                                .unwrap_or(false)
+                        })
+                    });
+                    if !has_valid_move {
+                        self.persist(state).await?;
+                        return Ok(false);
                     }
+
+                    let actor = AfkIdentity::new(
+                        chat.chatter_user_id.clone(),
+                        chat.chatter_user_login.clone(),
+                        actor_label.clone(),
+                    );
+                    let row = state
+                        .session
+                        .as_mut()
+                        .expect("session existence checked above")
+                        .push_activity_with_details(
+                            format!("{actor_label} is out for the rest of the round."),
+                            now_ms(),
+                            AfkActivityKind::OutForRound,
+                            Some(actor),
+                        );
+                    vec![row]
+                } else {
+                    let mut rows = Vec::new();
+                    for parsed in actions {
+                        if let Some(row) = self
+                            .apply_chat_board_action(state, &chat, &actor_label, parsed)
+                            .await?
+                        {
+                            rows.push(row);
+                        }
+
+                        let Some(session) = state.session.as_ref() else {
+                            break;
+                        };
+                        let user_ignored = session
+                            .ignored_users
+                            .iter()
+                            .any(|identity| identity.user_id == chat.chatter_user_id);
+                        if user_ignored
+                            || !matches!(session.engine.phase(), CoreAfkRoundPhase::Active)
+                        {
+                            break;
+                        }
+                    }
+                    if rows.is_empty() {
+                        self.persist(state).await?;
+                        return Ok(false);
+                    }
+                    rows
                 }
-                if rows.is_empty() {
-                    self.persist(state).await?;
-                    return Ok(false);
-                }
-                rows
             }
         };
 
@@ -1505,6 +1545,7 @@ impl AfkSessionDO {
         state.broadcaster = None;
         state.tokens = None;
         state.timeout_enabled = default_timeout_enabled();
+        state.timeout_duration_secs = default_timeout_duration_secs();
         state.session = None;
         state.pending_untimeouts.clear();
         state.recent_eventsub_ids.clear();
@@ -1863,13 +1904,18 @@ impl DurableObject for AfkSessionDO {
             (Method::Post, "/api/afk/timeout") => {
                 let payload: SetTimeoutPreferenceRequest = read_json(&mut req).await?;
                 let mut state = self.load().await?;
-                state.timeout_enabled = payload.enabled;
+                if let Some(enabled) = payload.enabled {
+                    state.timeout_enabled = enabled;
+                }
+                if let Some(duration_secs) = payload.duration_secs {
+                    state.timeout_duration_secs = normalize_timeout_duration_secs(duration_secs);
+                }
                 let timeout_supported = state.timeout_supported();
                 if let Some(session) = state.session.as_mut() {
                     session.timeout_enabled = state.timeout_enabled && timeout_supported;
                 }
                 self.persist(&state).await?;
-                self.broadcast_snapshot(&state);
+                self.broadcast_status(&state);
                 Response::from_json(&self.status_response(&state))
             }
             (Method::Post, "/api/afk/panic-reset") => {
@@ -2006,17 +2052,14 @@ where
 {
     let actions = tokens
         .iter()
-        .filter_map(|token| parse_coord(token))
-        .map(|coords| ParsedBoardAction {
-            action: make_action(coords),
-            coords,
+        .map(|token| {
+            parse_coord(token).map(|coords| ParsedBoardAction {
+                action: make_action(coords),
+                coords,
+            })
         })
-        .collect::<Vec<_>>();
-    if actions.is_empty() {
-        None
-    } else {
-        Some(ParsedChatCommand::BoardBatch(actions))
-    }
+        .collect::<Option<Vec<_>>>()?;
+    (!actions.is_empty()).then_some(ParsedChatCommand::BoardBatch(actions))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2109,6 +2152,39 @@ fn error_from_display(error: impl core::fmt::Display) -> Error {
 
 const fn default_timeout_enabled() -> bool {
     true
+}
+
+const fn default_timeout_duration_secs() -> u32 {
+    DEFAULT_TIMEOUT_DURATION_SECS
+}
+
+fn normalize_timeout_duration_secs(value: u32) -> u32 {
+    let mut best = TIMEOUT_DURATION_OPTIONS_SECS[0];
+    let mut best_diff = best.abs_diff(value);
+    for candidate in TIMEOUT_DURATION_OPTIONS_SECS.iter().copied().skip(1) {
+        let diff = candidate.abs_diff(value);
+        if diff < best_diff {
+            best = candidate;
+            best_diff = diff;
+        }
+    }
+    best
+}
+
+fn chat_board_action_targets_labeled_cell(
+    session: &PersistedAfkSession,
+    parsed: ParsedBoardAction,
+) -> Result<bool> {
+    if !matches!(session.engine.phase(), CoreAfkRoundPhase::Active) {
+        return Ok(false);
+    }
+    if parsed.coords.0 >= session.engine.size().0 || parsed.coords.1 >= session.engine.size().1 {
+        return Ok(false);
+    }
+    session
+        .engine
+        .cell_has_label(parsed.coords)
+        .map_err(error_from_display)
 }
 
 fn configured_var(env: &Env, name: &str) -> String {
@@ -2571,21 +2647,24 @@ mod tests {
     #[test]
     fn malformed_commands_are_rejected() {
         assert_eq!(parse_chat_command("!f nope"), None);
-        assert_eq!(
-            parse_chat_command("!flag 3c nope 4d"),
-            Some(ParsedChatCommand::BoardBatch(vec![
-                ParsedBoardAction {
-                    action: AfkAction::SetFlag((2, 2)),
-                    coords: (2, 2),
-                },
-                ParsedBoardAction {
-                    action: AfkAction::SetFlag((3, 3)),
-                    coords: (3, 3),
-                },
-            ]))
-        );
+        assert_eq!(parse_chat_command("!flag 3c nope 4d"), None);
+        assert_eq!(parse_chat_command("hi there"), None);
         assert_eq!(parse_chat_command(""), None);
         assert_eq!(parse_chat_command("!!"), None);
+    }
+
+    #[test]
+    fn timeout_duration_defaults_to_thirty_seconds() {
+        let state = PersistedAfkState::default();
+        assert_eq!(state.timeout_duration_secs, 30);
+    }
+
+    #[test]
+    fn timeout_duration_normalizes_to_supported_steps() {
+        assert_eq!(normalize_timeout_duration_secs(0), 1);
+        assert_eq!(normalize_timeout_duration_secs(33), 30);
+        assert_eq!(normalize_timeout_duration_secs(59), 60);
+        assert_eq!(normalize_timeout_duration_secs(600), 300);
     }
 
     #[test]
@@ -2801,6 +2880,7 @@ mod tests {
             broadcaster: Some(test_identity(9999)),
             tokens: None,
             timeout_enabled: true,
+            timeout_duration_secs: default_timeout_duration_secs(),
             session: Some(session),
             pending_untimeouts: (0..MAX_PENDING_UNTIMEOUTS).map(test_identity).collect(),
             recent_eventsub_ids: (0..MAX_EVENTSUB_IDS)

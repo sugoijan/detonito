@@ -110,6 +110,7 @@ pub enum AfkActivityKind {
     #[default]
     Generic,
     MineHit,
+    OutForRound,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -153,6 +154,7 @@ pub struct AfkStatusResponse {
     pub chat_error: Option<String>,
     pub timeout_supported: bool,
     pub timeout_enabled: bool,
+    pub timeout_duration_secs: u32,
     pub connect_url: Option<String>,
     pub websocket_path: Option<String>,
     pub session: Option<AfkSessionSnapshot>,

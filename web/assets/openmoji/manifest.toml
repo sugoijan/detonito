@@ -2,7 +2,7 @@
 project = "OpenMoji"
 repository = "https://github.com/hfg-gmuend/openmoji"
 license = "CC-BY-SA-4.0"
-source_checkout = "/Users/jan/sugoijan/openmoji"
+source_checkout = "../openmoji"
 release = "16.0.0"
 describe = "16.0.0-115-g4630b28fe"
 commit = "4630b28fef77f665e910680ad2f44deea2e7f8dd"
@@ -23,6 +23,14 @@ upstream = "1F642.svg"
 [icons.win]
 source = "upstream"
 upstream = "1F60E.svg"
+
+[icons.win-close-call]
+source = "upstream"
+upstream = "1F605.svg"
+
+[icons.win-decent]
+source = "upstream"
+upstream = "1F60A.svg"
 
 [icons.lose]
 source = "upstream"
