@@ -10,6 +10,6 @@
     "cf:preview": "wrangler versions upload --config wrangler.generated.toml"
   },
   "devDependencies": {
-    "wrangler": "^4"
+    "wrangler": "^4.78.0"
   }
 }

@@ -2,6 +2,7 @@ use yew::prelude::*;
 
 use crate::sprites::{Icon, IconCrop};
 
+#[cfg(feature = "afk-runtime")]
 pub(crate) fn menu_icon_button(
     icon: &'static str,
     title: impl Into<AttrValue>,

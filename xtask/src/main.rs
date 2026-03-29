@@ -822,14 +822,14 @@ fn worker_dist_dir(root: &Path, base_path: &str) -> PathBuf {
 }
 
 fn wrangler_command(root: &Path) -> Result<Command> {
-    if command_exists("wrangler") {
-        let mut command = Command::new("wrangler");
+    if let Some(local) = local_wrangler_binary(root) {
+        let mut command = Command::new(local);
         command.current_dir(worker_dir(root));
         return Ok(command);
     }
 
-    if let Some(local) = local_wrangler_binary(root) {
-        let mut command = Command::new(local);
+    if command_exists("wrangler") {
+        let mut command = Command::new("wrangler");
         command.current_dir(worker_dir(root));
         return Ok(command);
     }

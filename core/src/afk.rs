@@ -32,6 +32,89 @@ impl AfkTimerProfile {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AfkBoardSize {
+    Tiny,
+    Small,
+    #[default]
+    Medium,
+    Large,
+}
+
+impl AfkBoardSize {
+    pub const fn dimensions(self) -> Coord2 {
+        match self {
+            Self::Tiny => (9, 9),
+            Self::Small => (16, 16),
+            Self::Medium => (24, 18),
+            Self::Large => (30, 20),
+        }
+    }
+
+    pub const fn initial_mines(self) -> u16 {
+        match self {
+            Self::Tiny => 9,
+            Self::Small => 20,
+            Self::Medium => 36,
+            Self::Large => 50,
+        }
+    }
+
+    pub const fn mine_increment(self) -> u16 {
+        match self {
+            Self::Tiny => 1,
+            Self::Small => 4,
+            Self::Medium => 7,
+            Self::Large => 10,
+        }
+    }
+
+    pub const fn max_mines(self) -> u16 {
+        match self {
+            Self::Tiny => 27,
+            Self::Small => 84,
+            Self::Medium => 141,
+            Self::Large => 200,
+        }
+    }
+
+    pub const fn from_size(size: Coord2) -> Option<Self> {
+        match size {
+            (9, 9) => Some(Self::Tiny),
+            (16, 16) => Some(Self::Small),
+            (24, 18) => Some(Self::Medium),
+            (30, 20) => Some(Self::Large),
+            _ => None,
+        }
+    }
+
+    pub const fn for_mines(self, mines: u16) -> AfkPreset {
+        AfkPreset {
+            config: GameConfig::new_unchecked(self.dimensions(), mines),
+            timer: AfkTimerProfile::v1(),
+        }
+    }
+
+    pub const fn initial_preset(self) -> AfkPreset {
+        self.for_mines(self.initial_mines())
+    }
+
+    pub fn level_number_for_mines(self, current: u16) -> u16 {
+        let normalized = current.clamp(self.initial_mines(), self.max_mines());
+        ((normalized - self.initial_mines()) / self.mine_increment()) + 1
+    }
+
+    pub const fn next_mine_count(self, current: u16) -> u16 {
+        let incremented = current.saturating_add(self.mine_increment());
+        if incremented > self.max_mines() {
+            self.max_mines()
+        } else {
+            incremented
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AfkPreset {
     pub config: GameConfig,
@@ -39,36 +122,26 @@ pub struct AfkPreset {
 }
 
 impl AfkPreset {
-    pub const INITIAL_MINES: u16 = 50;
-    pub const MAX_MINES: u16 = 200;
-    pub const MINE_INCREMENT: u16 = 10;
-
-    pub const fn for_mines(mines: u16) -> Self {
-        Self {
-            config: GameConfig::new_unchecked((30, 20), mines),
-            timer: AfkTimerProfile::v1(),
-        }
+    pub const fn for_board_size(board_size: AfkBoardSize) -> Self {
+        board_size.initial_preset()
     }
 
     pub const fn v1() -> Self {
-        Self::for_mines(Self::INITIAL_MINES)
+        Self::for_board_size(AfkBoardSize::Medium)
     }
 
-    pub fn level_number_for_mines(current: u16) -> u16 {
-        let normalized = current.clamp(Self::INITIAL_MINES, Self::MAX_MINES);
-        ((normalized - Self::INITIAL_MINES) / Self::MINE_INCREMENT) + 1
+    pub const fn for_board_size_and_mines(board_size: AfkBoardSize, mines: u16) -> Self {
+        board_size.for_mines(mines)
+    }
+
+    pub fn board_size(&self) -> Option<AfkBoardSize> {
+        AfkBoardSize::from_size(self.config.size)
     }
 
     pub fn current_level(&self) -> u16 {
-        Self::level_number_for_mines(self.config.mines)
-    }
-
-    pub const fn next_mine_count(current: u16) -> u16 {
-        if current >= Self::MAX_MINES - Self::MINE_INCREMENT {
-            Self::MAX_MINES
-        } else {
-            current + Self::MINE_INCREMENT
-        }
+        self.board_size()
+            .map(|board_size| board_size.level_number_for_mines(self.config.mines))
+            .unwrap_or(1)
     }
 }
 
@@ -315,6 +388,9 @@ impl AfkEngine {
 
     fn cell_state_won(&self, coords: Coord2) -> AfkCellState {
         let board_cell = self.board[coords.to_nd_index()];
+        if matches!(board_cell, AfkBoardCell::Crater) {
+            return AfkCellState::Crater;
+        }
         if self.has_mine_at(coords).unwrap_or(false) {
             return AfkCellState::Flagged;
         }
@@ -821,9 +897,28 @@ mod tests {
     #[test]
     fn preset_level_tracks_mine_progression() {
         assert_eq!(AfkPreset::v1().current_level(), 1);
-        assert_eq!(AfkPreset::for_mines(60).current_level(), 2);
         assert_eq!(
-            AfkPreset::for_mines(AfkPreset::MAX_MINES).current_level(),
+            AfkPreset::for_board_size_and_mines(AfkBoardSize::Tiny, 10).current_level(),
+            2
+        );
+        assert_eq!(
+            AfkPreset::for_board_size_and_mines(AfkBoardSize::Small, 24).current_level(),
+            2
+        );
+        assert_eq!(
+            AfkPreset::for_board_size_and_mines(AfkBoardSize::Medium, 43).current_level(),
+            2
+        );
+        assert_eq!(
+            AfkPreset::for_board_size_and_mines(AfkBoardSize::Large, 60).current_level(),
+            2
+        );
+        assert_eq!(
+            AfkPreset::for_board_size_and_mines(
+                AfkBoardSize::Large,
+                AfkBoardSize::Large.max_mines(),
+            )
+            .current_level(),
             16
         );
     }
@@ -966,6 +1061,31 @@ mod tests {
             .expect("chord flag should succeed");
 
         assert!(outcome.changed);
+        assert_eq!(engine.cell_state_at((2, 0)).unwrap(), AfkCellState::Flagged);
+    }
+
+    #[test]
+    fn won_round_keeps_craters_visible_while_auto_flagging_other_mines() {
+        let layout = MineLayout::from_mine_coords((3, 2), &[(0, 0), (2, 0)]).unwrap();
+        let preset = AfkPreset {
+            config: GameConfig::new_unchecked((3, 2), 2),
+            timer: AfkTimerProfile::v1(),
+        };
+        let mut engine = AfkEngine::with_layout_for_tests(layout, preset, now());
+
+        let hit = engine
+            .apply_action(AfkAction::Reveal((0, 0)), now())
+            .expect("mine reveal should succeed");
+        assert!(hit.mine_triggered);
+
+        for coords in [(1, 0), (0, 1), (1, 1), (2, 1)] {
+            engine
+                .apply_action(AfkAction::Reveal(coords), now())
+                .expect("safe reveal should succeed");
+        }
+
+        assert_eq!(engine.phase(), AfkRoundPhase::Won);
+        assert_eq!(engine.cell_state_at((0, 0)).unwrap(), AfkCellState::Crater);
         assert_eq!(engine.cell_state_at((2, 0)).unwrap(), AfkCellState::Flagged);
     }
 }

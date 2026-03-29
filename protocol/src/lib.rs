@@ -110,6 +110,7 @@ pub enum AfkActivityKind {
     #[default]
     Generic,
     MineHit,
+    OutForRound,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -120,6 +121,16 @@ pub struct AfkActivityRow {
     pub kind: AfkActivityKind,
     #[serde(default)]
     pub actor: Option<AfkIdentity>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AfkBoardSize {
+    Tiny,
+    Small,
+    #[default]
+    Medium,
+    Large,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -153,6 +164,8 @@ pub struct AfkStatusResponse {
     pub chat_error: Option<String>,
     pub timeout_supported: bool,
     pub timeout_enabled: bool,
+    pub timeout_duration_secs: u32,
+    pub board_size: AfkBoardSize,
     pub connect_url: Option<String>,
     pub websocket_path: Option<String>,
     pub session: Option<AfkSessionSnapshot>,
