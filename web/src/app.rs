@@ -3,7 +3,7 @@ use yew::prelude::*;
 use crate::afk::AfkView;
 use crate::game::{GameInitArgs, GameView, has_saved_game};
 use crate::menu::{menu_blank_row, menu_entry_row, menu_header_row, menu_nav_enter_button};
-use crate::runtime::{AppRoute, current_route_state, frontend_runtime_config, replace_route};
+use crate::runtime::{AppRoute, frontend_runtime_config, initialize_route_state, replace_route};
 use crate::settings::{AboutView, SettingsView};
 use crate::sprites::SpriteDefs;
 
@@ -50,10 +50,12 @@ fn menu_title_row(title: impl Into<AttrValue>) -> Html {
 #[function_component]
 pub(crate) fn AppShell(props: &AppShellProps) -> Html {
     let runtime = frontend_runtime_config();
-    let initial_route = current_route_state();
-    let screen = use_state_eq(move || route_to_screen(initial_route.route));
+    let initial_route = use_memo((), |_| initialize_route_state());
+    let initial_screen = route_to_screen(initial_route.route);
+    let initial_afk_err = initial_route.afk_auth_error.clone();
+    let screen = use_state_eq(move || initial_screen);
     let resume_target = use_state_eq(|| has_saved_game().then_some(ResumeTarget::Classic));
-    let afk_auth_error = use_state_eq(move || initial_route.afk_auth_error);
+    let afk_auth_error = use_state_eq(move || initial_afk_err);
 
     let open_menu_for = {
         let screen = screen.clone();

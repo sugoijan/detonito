@@ -17,7 +17,7 @@ use crate::menu::{
 };
 use crate::runtime::{AppRoute, app_path, auth_return_to, frontend_runtime_config, websocket_path};
 use crate::sprites::{Glyph, GlyphRun, GlyphSet, Icon, IconCrop, SpriteDefs};
-use crate::utils::format_for_counter;
+use crate::utils::{browser_now_ms, format_for_counter};
 
 #[derive(Properties, PartialEq)]
 pub(crate) struct AfkViewProps {
@@ -91,9 +91,19 @@ struct AfkFaceNotificationEvent {
 
 const AFK_FACE_NOTIFICATION_MS: u32 = 5_000;
 const AFK_OUT_FOR_ROUND_NOTIFICATION_MS: u32 = 10_000;
+const AFK_IDLE_SLEEPING_THRESHOLD_MS: i64 = 3 * 60 * 1_000;
+const AFK_IDLE_PROMPT_THRESHOLD_MS: i64 = 10 * 60 * 1_000;
+const AFK_IDLE_EXPIRY_THRESHOLD_MS: i64 = 60 * 60 * 1_000;
 const AFK_TIMEOUT_DURATION_OPTIONS_SECS: [u32; 12] =
     [1, 5, 10, 15, 30, 45, 60, 90, 120, 180, 240, 300];
 const AFK_DEFAULT_TIMEOUT_DURATION_INDEX: usize = 4;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AfkIdleState {
+    Sleeping,
+    Prompt,
+}
+
 
 fn current_level_status_text(session: Option<&AfkSessionSnapshot>) -> Option<AttrValue> {
     session
@@ -119,7 +129,11 @@ fn board_size_detail(board_size: AfkBoardSize) -> &'static str {
     }
 }
 
-fn board_size_entry_row(label: impl Into<AttrValue>, detail: impl Into<AttrValue>, button: Html) -> Html {
+fn board_size_entry_row(
+    label: impl Into<AttrValue>,
+    detail: impl Into<AttrValue>,
+    button: Html,
+) -> Html {
     html! {
         <tr>
             <td class="menu-pad"/>
@@ -388,11 +402,43 @@ fn face_notification_event(row: &AfkActivityRow) -> Option<AfkFaceNotificationEv
     }
 }
 
+fn idle_duration_ms(last_user_activity_at_ms: i64, now_ms: i64) -> Option<i64> {
+    (last_user_activity_at_ms > 0).then(|| now_ms.saturating_sub(last_user_activity_at_ms))
+}
+
+fn afk_idle_state(session: Option<&AfkSessionSnapshot>, now_ms: i64) -> Option<AfkIdleState> {
+    let idle_ms = idle_duration_ms(session?.last_user_activity_at_ms, now_ms)?;
+    if idle_ms >= AFK_IDLE_EXPIRY_THRESHOLD_MS {
+        return None;
+    }
+    if idle_ms >= AFK_IDLE_PROMPT_THRESHOLD_MS {
+        Some(AfkIdleState::Prompt)
+    } else if idle_ms >= AFK_IDLE_SLEEPING_THRESHOLD_MS {
+        Some(AfkIdleState::Sleeping)
+    } else {
+        None
+    }
+}
+
+fn next_idle_refresh_delay_ms(last_user_activity_at_ms: i64, now_ms: i64) -> Option<u32> {
+    let idle_ms = idle_duration_ms(last_user_activity_at_ms, now_ms)?;
+    let next_threshold = if idle_ms < AFK_IDLE_SLEEPING_THRESHOLD_MS {
+        AFK_IDLE_SLEEPING_THRESHOLD_MS
+    } else if idle_ms < AFK_IDLE_PROMPT_THRESHOLD_MS {
+        AFK_IDLE_PROMPT_THRESHOLD_MS
+    } else {
+        return None;
+    };
+    let remaining_ms = next_threshold.saturating_sub(idle_ms).max(1);
+    Some(remaining_ms.min(u32::MAX as i64) as u32)
+}
+
 fn active_face_overlay(
     screen: AfkScreen,
     status: &LoadState<AfkStatusResponse>,
     manual_prompt: &Option<AfkFacePrompt>,
     notification: &Option<AfkFaceNotification>,
+    idle_state: Option<AfkIdleState>,
 ) -> Option<AfkFaceOverlay> {
     if matches!(screen, AfkScreen::Board) {
         if let Some(prompt) = manual_prompt.clone() {
@@ -419,6 +465,14 @@ fn active_face_overlay(
                             message: notification.message.clone(),
                             status: level_status.clone(),
                         })
+                        .or_else(|| {
+                            matches!(idle_state, Some(AfkIdleState::Prompt)).then_some(
+                                AfkFaceOverlay::Message {
+                                    message: "Is anyone there?".into(),
+                                    status: level_status.clone(),
+                                },
+                            )
+                        })
                         .or_else(|| level_status.map(AfkFaceOverlay::Status)),
                 };
             }
@@ -432,9 +486,13 @@ fn active_face_overlay(
 fn afk_face_icon(
     status: &LoadState<AfkStatusResponse>,
     notification: Option<&AfkFaceNotification>,
+    idle_state: Option<AfkIdleState>,
 ) -> &'static str {
     if notification.is_some() {
         return "dejected";
+    }
+    if idle_state.is_some() {
+        return "sleeping";
     }
     match status {
         LoadState::Loading => "mid-open",
@@ -443,9 +501,7 @@ fn afk_face_icon(
                 AfkRoundPhase::Countdown => "not-started",
                 AfkRoundPhase::Active => "in-progress",
                 AfkRoundPhase::Won => win_face_icon(session),
-                AfkRoundPhase::TimedOut
-                    if session.loss_reason == Some(AfkLossReason::Timer) =>
-                {
+                AfkRoundPhase::TimedOut if session.loss_reason == Some(AfkLossReason::Timer) => {
                     "sleeping"
                 }
                 AfkRoundPhase::TimedOut => "lose",
@@ -752,6 +808,8 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
     let face_notification = use_state_eq(|| None::<AfkFaceNotification>);
     let face_notification_timeout = use_mut_ref(|| None::<Timeout>);
     let next_face_notification_id = use_mut_ref(|| 0_u64);
+    let idle_refresh_tick = use_state_eq(|| 0_u64);
+    let idle_refresh_timeout = use_mut_ref(|| None::<Timeout>);
     let last_error = use_state_eq(|| None::<String>);
     let socket_path = match &*status {
         LoadState::Ready(status) if status.auth.identity.is_some() => status.websocket_path.clone(),
@@ -820,6 +878,45 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
     }
 
     {
+        let idle_refresh_tick = idle_refresh_tick.clone();
+        let idle_refresh_timeout = idle_refresh_timeout.clone();
+        let last_user_activity_at_ms = match &*status {
+            LoadState::Ready(status) => status
+                .session
+                .as_ref()
+                .map(|session| session.last_user_activity_at_ms),
+            _ => None,
+        };
+        let idle_refresh_version = *idle_refresh_tick;
+        use_effect_with(
+            (*screen, last_user_activity_at_ms, idle_refresh_version),
+            move |(screen, last_user_activity_at_ms, _)| {
+                idle_refresh_timeout.borrow_mut().take();
+                if let Some(last_user_activity_at_ms) = *last_user_activity_at_ms {
+                    if matches!(*screen, AfkScreen::Board) {
+                        if let Some(delay_ms) =
+                            next_idle_refresh_delay_ms(last_user_activity_at_ms, browser_now_ms())
+                        {
+                            let idle_refresh_tick = idle_refresh_tick.clone();
+                            let idle_refresh_timeout_for_store = idle_refresh_timeout.clone();
+                            let idle_refresh_timeout_for_callback = idle_refresh_timeout.clone();
+                            *idle_refresh_timeout_for_store.borrow_mut() =
+                                Some(Timeout::new(delay_ms, move || {
+                                    idle_refresh_tick.set(*idle_refresh_tick + 1);
+                                    idle_refresh_timeout_for_callback.borrow_mut().take();
+                                }));
+                        }
+                    }
+                }
+                let idle_refresh_timeout = idle_refresh_timeout.clone();
+                move || {
+                    idle_refresh_timeout.borrow_mut().take();
+                }
+            },
+        );
+    }
+
+    {
         let status = status.clone();
         let last_error = last_error.clone();
         let screen = screen.clone();
@@ -860,7 +957,8 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                                     }
                                     Ok(AfkServerMessage::Activity { row }) => {
                                         if matches!(*screen_for_message, AfkScreen::Board)
-                                            && let Some(notification) = face_notification_event(&row)
+                                            && let Some(notification) =
+                                                face_notification_event(&row)
                                         {
                                             show_face_notification(notification);
                                         }
@@ -1249,7 +1347,9 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
         let status = status.clone();
         Callback::from(move |_| {
             let next_duration = match &*status {
-                LoadState::Ready(status) => previous_timeout_duration_secs(status.timeout_duration_secs),
+                LoadState::Ready(status) => {
+                    previous_timeout_duration_secs(status.timeout_duration_secs)
+                }
                 _ => return,
             };
             let status = status.clone();
@@ -1271,7 +1371,9 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
         let status = status.clone();
         Callback::from(move |_| {
             let next_duration = match &*status {
-                LoadState::Ready(status) => next_timeout_duration_secs(status.timeout_duration_secs),
+                LoadState::Ready(status) => {
+                    next_timeout_duration_secs(status.timeout_duration_secs)
+                }
                 _ => return,
             };
             let status = status.clone();
@@ -1289,8 +1391,17 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
         })
     };
 
-    let current_overlay =
-        active_face_overlay(*screen, &status, &manual_face_prompt, &face_notification);
+    let idle_state = match &*status {
+        LoadState::Ready(status) => afk_idle_state(status.session.as_ref(), browser_now_ms()),
+        _ => None,
+    };
+    let current_overlay = active_face_overlay(
+        *screen,
+        &status,
+        &manual_face_prompt,
+        &face_notification,
+        idle_state,
+    );
     let face_button_locked = current_overlay
         .as_ref()
         .is_some_and(|overlay| matches!(overlay, AfkFaceOverlay::Prompt(_)));
@@ -1445,7 +1556,9 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                     </>
                 },
                 LoadState::Ready(status) => {
-                    if matches!(*menu_page, AfkMenuPage::BoardSize) && status.auth.identity.is_some() {
+                    if matches!(*menu_page, AfkMenuPage::BoardSize)
+                        && status.auth.identity.is_some()
+                    {
                         html! {
                             <>
                                 {menu_blank_row()}
@@ -1682,7 +1795,7 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                             </>
                         }
                     }
-                },
+                }
                 LoadState::Idle => html! {
                     <>
                         {menu_blank_row()}
@@ -1722,6 +1835,7 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
             };
             let mines_left = mines_counter_text(session);
             let timer = board_counter_text(session);
+            let displayed_idle_state = if face_button_locked { None } else { idle_state };
             let game_state_icon = afk_face_icon(
                 &status,
                 if face_button_locked {
@@ -1729,6 +1843,7 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                 } else {
                     (*face_notification).as_ref()
                 },
+                displayed_idle_state,
             );
             let face_button_title = if face_button_locked {
                 "AFK prompt open"
@@ -1887,6 +2002,55 @@ mod tests {
         AfkLossReason, AfkTimerProfileSnapshot, FrontendRuntimeConfig, StreamerAuthStatus,
     };
 
+    fn active_test_session(last_user_activity_at_ms: i64) -> AfkSessionSnapshot {
+        AfkSessionSnapshot {
+            streamer: None,
+            phase: AfkRoundPhase::Active,
+            paused: false,
+            board: AfkBoardSnapshot {
+                width: 24,
+                height: 18,
+                cells: Vec::new(),
+            },
+            timer_profile: AfkTimerProfileSnapshot {
+                start_secs: 120,
+                safe_reveal_bonus_secs: 1,
+                mine_penalty_secs: 15,
+                start_delay_secs: 5,
+                win_continue_delay_secs: 30,
+                loss_continue_delay_secs: 60,
+            },
+            timer_remaining_secs: 120,
+            phase_countdown_secs: None,
+            current_level: 3,
+            live_mines_left: 50,
+            crater_count: 0,
+            loss_reason: None,
+            timeout_enabled: true,
+            ignored_users: Vec::new(),
+            recent_penalties: Vec::new(),
+            activity: Vec::new(),
+            last_action: None,
+            last_user_activity_at_ms,
+        }
+    }
+
+    fn ready_status(session: AfkSessionSnapshot) -> LoadState<AfkStatusResponse> {
+        LoadState::Ready(AfkStatusResponse {
+            runtime: FrontendRuntimeConfig { afk_enabled: true },
+            auth: StreamerAuthStatus::default(),
+            chat_connection: AfkChatConnectionState::Idle,
+            chat_error: None,
+            timeout_supported: true,
+            timeout_enabled: true,
+            timeout_duration_secs: 30,
+            board_size: AfkBoardSize::Medium,
+            connect_url: None,
+            websocket_path: None,
+            session: Some(session),
+        })
+    }
+
     #[test]
     fn face_icon_uses_sleeping_face_for_timer_losses() {
         let status = LoadState::Ready(AfkStatusResponse {
@@ -1928,10 +2092,11 @@ mod tests {
                 recent_penalties: Vec::new(),
                 activity: Vec::new(),
                 last_action: None,
+                last_user_activity_at_ms: 1,
             }),
         });
 
-        assert_eq!(afk_face_icon(&status, None), "sleeping");
+        assert_eq!(afk_face_icon(&status, None, None), "sleeping");
     }
 
     #[test]
@@ -1964,6 +2129,7 @@ mod tests {
             recent_penalties: Vec::new(),
             activity: Vec::new(),
             last_action: None,
+            last_user_activity_at_ms: 1,
         };
 
         assert_eq!(loss_prompt_message(&session), "Too slow! Play again? (60)");
@@ -1999,6 +2165,7 @@ mod tests {
             recent_penalties: Vec::new(),
             activity: Vec::new(),
             last_action: None,
+            last_user_activity_at_ms: 1,
         };
 
         assert_eq!(loss_prompt_message(&session), "Too bad. Play again? (60)");
@@ -2012,9 +2179,111 @@ mod tests {
                 Some(&AfkFaceNotification {
                     id: 1,
                     message: "Jan found a mine! o7".into(),
-                })
+                }),
+                None,
             ),
             "dejected"
+        );
+    }
+
+    #[test]
+    fn idle_state_uses_sleeping_face_after_three_minutes() {
+        let session = active_test_session(1_000);
+        let idle_state = afk_idle_state(Some(&session), 1_000 + AFK_IDLE_SLEEPING_THRESHOLD_MS);
+
+        assert_eq!(idle_state, Some(AfkIdleState::Sleeping));
+        assert_eq!(
+            afk_face_icon(&ready_status(session), None, idle_state),
+            "sleeping"
+        );
+    }
+
+    #[test]
+    fn idle_overlay_shows_is_anyone_there_after_ten_minutes() {
+        let session = active_test_session(1_000);
+        let overlay = active_face_overlay(
+            AfkScreen::Board,
+            &ready_status(session),
+            &None,
+            &None,
+            Some(AfkIdleState::Prompt),
+        );
+
+        assert_eq!(
+            overlay,
+            Some(AfkFaceOverlay::Message {
+                message: "Is anyone there?".into(),
+                status: Some("Level 3".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn idle_overlay_stays_hidden_for_recent_activity() {
+        let session = active_test_session(1_000);
+        assert_eq!(
+            afk_idle_state(Some(&session), 1_000 + AFK_IDLE_SLEEPING_THRESHOLD_MS - 1),
+            None
+        );
+    }
+
+    #[test]
+    fn notifications_override_idle_prompt() {
+        let session = active_test_session(1_000);
+        let overlay = active_face_overlay(
+            AfkScreen::Board,
+            &ready_status(session),
+            &None,
+            &Some(AfkFaceNotification {
+                id: 1,
+                message: "Jan found a mine! o7".into(),
+            }),
+            Some(AfkIdleState::Prompt),
+        );
+
+        assert_eq!(
+            overlay,
+            Some(AfkFaceOverlay::Message {
+                message: "Jan found a mine! o7".into(),
+                status: Some("Level 3".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn automatic_prompts_override_idle_prompt() {
+        let mut session = active_test_session(1_000);
+        session.phase = AfkRoundPhase::TimedOut;
+        session.phase_countdown_secs = Some(60);
+        session.loss_reason = Some(AfkLossReason::Mine);
+        session.current_level = 1;
+        session.live_mines_left = 0;
+
+        let overlay = active_face_overlay(
+            AfkScreen::Board,
+            &ready_status(session),
+            &None,
+            &None,
+            Some(AfkIdleState::Prompt),
+        );
+
+        assert_eq!(
+            overlay,
+            Some(AfkFaceOverlay::Prompt(AfkFacePrompt {
+                message: "Too bad. Play again? (60)".into(),
+                choices: vec![
+                    AfkFaceChoice {
+                        label: "Yes (!continue)".into(),
+                        title: "Start the next round now".into(),
+                        action: AfkFaceAction::ContinueRound,
+                    },
+                    AfkFaceChoice {
+                        label: "No".into(),
+                        title: "Stop AFK mode".into(),
+                        action: AfkFaceAction::StopRun,
+                    },
+                ],
+            }))
         );
     }
 
@@ -2084,6 +2353,7 @@ mod tests {
             recent_penalties: Vec::new(),
             activity: Vec::new(),
             last_action: None,
+            last_user_activity_at_ms: 1,
         };
 
         assert_eq!(win_face_icon(&session), "win-close-call");
@@ -2120,6 +2390,7 @@ mod tests {
             recent_penalties: Vec::new(),
             activity: Vec::new(),
             last_action: None,
+            last_user_activity_at_ms: 1,
         };
 
         assert_eq!(win_face_icon(&session), "win-decent");
@@ -2156,6 +2427,7 @@ mod tests {
             recent_penalties: Vec::new(),
             activity: Vec::new(),
             last_action: None,
+            last_user_activity_at_ms: 1,
         };
 
         assert_eq!(win_face_icon(&session), "win");
@@ -2205,10 +2477,12 @@ mod tests {
                     recent_penalties: Vec::new(),
                     activity: Vec::new(),
                     last_action: None,
+                    last_user_activity_at_ms: 1,
                 }),
             }),
             &None,
             &None,
+            None,
         );
 
         assert_eq!(overlay, Some(AfkFaceOverlay::Status("Level 3".into())));
@@ -2257,10 +2531,12 @@ mod tests {
                     recent_penalties: Vec::new(),
                     activity: Vec::new(),
                     last_action: None,
+                    last_user_activity_at_ms: 1,
                 }),
             }),
             &None,
             &None,
+            None,
         );
 
         assert_eq!(overlay, None);
@@ -2309,6 +2585,7 @@ mod tests {
                     recent_penalties: Vec::new(),
                     activity: Vec::new(),
                     last_action: None,
+                    last_user_activity_at_ms: 1,
                 }),
             }),
             &None,
@@ -2316,6 +2593,7 @@ mod tests {
                 id: 7,
                 message: "Jan found a mine! o7".into(),
             }),
+            None,
         );
 
         assert_eq!(
@@ -2370,6 +2648,7 @@ mod tests {
                     recent_penalties: Vec::new(),
                     activity: Vec::new(),
                     last_action: None,
+                    last_user_activity_at_ms: 1,
                 }),
             }),
             &None,
@@ -2377,6 +2656,7 @@ mod tests {
                 id: 7,
                 message: "Jan found a mine! o7".into(),
             }),
+            None,
         );
 
         assert_eq!(

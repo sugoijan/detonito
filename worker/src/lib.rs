@@ -64,8 +64,9 @@ const MAX_TIMED_OUT_USERS: usize = 200;
 /// ever raised significantly, revisit this cap or add expiry-based eviction.
 const MAX_PENDING_UNTIMEOUTS: usize = 64;
 const DEFAULT_TIMEOUT_DURATION_SECS: u32 = 30;
-const TIMEOUT_DURATION_OPTIONS_SECS: [u32; 12] =
-    [1, 5, 10, 15, 30, 45, 60, 90, 120, 180, 240, 300];
+const TIMEOUT_DURATION_OPTIONS_SECS: [u32; 12] = [1, 5, 10, 15, 30, 45, 60, 90, 120, 180, 240, 300];
+const AFK_FRONTEND_ABSENCE_TIMEOUT_MS: i64 = 10 * 60 * 1_000;
+const AFK_SESSION_INACTIVITY_TIMEOUT_MS: i64 = 60 * 60 * 1_000;
 
 const EVENTSUB_WS_URL: &str = "wss://eventsub.wss.twitch.tv/ws";
 const EVENTSUB_RECONNECT_RETRY_SECS: u64 = 5;
@@ -102,6 +103,10 @@ struct PersistedAfkSession {
     activity: Vec<AfkActivityRow>,
     last_action: Option<AfkActivityRow>,
     timeout_enabled: bool,
+    #[serde(default)]
+    last_user_activity_at_ms: i64,
+    #[serde(default)]
+    frontend_missing_since_at_ms: Option<i64>,
 }
 
 impl PersistedAfkSession {
@@ -114,9 +119,17 @@ impl PersistedAfkSession {
             activity: Vec::new(),
             last_action: None,
             timeout_enabled,
+            last_user_activity_at_ms: now_ms,
+            frontend_missing_since_at_ms: None,
         };
         session.push_activity("AFK run started", now_ms);
         session
+    }
+
+    fn normalize_loaded_state(&mut self, now_ms: i64) {
+        if self.last_user_activity_at_ms <= 0 {
+            self.last_user_activity_at_ms = now_ms;
+        }
     }
 
     fn restart_round(&mut self, now_ms: i64) {
@@ -144,6 +157,38 @@ impl PersistedAfkSession {
         self.timed_out_users.clear();
         self.last_action = None;
         self.push_activity("Round restarted", now_ms);
+    }
+
+    fn record_user_activity(&mut self, now_ms: i64) {
+        self.last_user_activity_at_ms = now_ms;
+    }
+
+    fn mark_frontend_present(&mut self) -> bool {
+        self.frontend_missing_since_at_ms.take().is_some()
+    }
+
+    fn mark_frontend_missing(&mut self, now_ms: i64) -> bool {
+        if self.frontend_missing_since_at_ms.is_some() {
+            return false;
+        }
+        self.frontend_missing_since_at_ms = Some(now_ms);
+        true
+    }
+
+    fn inactivity_deadline_at_ms(&self) -> i64 {
+        self.last_user_activity_at_ms
+            .saturating_add(AFK_SESSION_INACTIVITY_TIMEOUT_MS)
+    }
+
+    fn frontend_missing_deadline_at_ms(&self) -> Option<i64> {
+        self.frontend_missing_since_at_ms
+            .map(|since| since.saturating_add(AFK_FRONTEND_ABSENCE_TIMEOUT_MS))
+    }
+
+    fn next_policy_alarm_at_ms(&self) -> i64 {
+        self.frontend_missing_deadline_at_ms()
+            .map(|deadline| deadline.min(self.inactivity_deadline_at_ms()))
+            .unwrap_or_else(|| self.inactivity_deadline_at_ms())
     }
 
     fn pause(&mut self, now_ms: i64) -> bool {
@@ -258,6 +303,7 @@ impl PersistedAfkSession {
             recent_penalties: self.recent_penalties.clone(),
             activity: self.activity.clone(),
             last_action: self.last_action.clone(),
+            last_user_activity_at_ms: self.last_user_activity_at_ms,
         }
     }
 }
@@ -437,6 +483,7 @@ struct EventSubWebSocketErrorRequest {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct EventSubRuntime {
     connection_id: String,
+    socket: WebSocket,
 }
 
 enum EventSubSocketEvent {
@@ -716,8 +763,12 @@ impl AfkSessionDO {
                 PersistedAfkState::default()
             }
         };
-        loaded.timeout_duration_secs = normalize_timeout_duration_secs(loaded.timeout_duration_secs);
+        loaded.timeout_duration_secs =
+            normalize_timeout_duration_secs(loaded.timeout_duration_secs);
         loaded.board_size = normalize_protocol_board_size(loaded.board_size);
+        if let Some(session) = loaded.session.as_mut() {
+            session.normalize_loaded_state(now_ms());
+        }
         *self.cache.borrow_mut() = Some(loaded.clone());
         Ok(loaded)
     }
@@ -731,10 +782,13 @@ impl AfkSessionDO {
 
     async fn schedule_alarm(&self, state: &PersistedAfkState) -> Result<()> {
         let now = now_ms();
-        let session_deadline = state
-            .session
-            .as_ref()
-            .and_then(|session| session.engine.next_alarm_at_ms(now));
+        let session_deadline = state.session.as_ref().map(|session| {
+            let policy_deadline = session.next_policy_alarm_at_ms();
+            match session.engine.next_alarm_at_ms(now) {
+                Some(engine_deadline) => engine_deadline.min(policy_deadline),
+                None => policy_deadline,
+            }
+        });
         let eventsub_deadline = state.eventsub.reconnect_due_at_ms;
         let deadline = match (session_deadline, eventsub_deadline) {
             (Some(left), Some(right)) => Some(left.min(right)),
@@ -810,14 +864,78 @@ impl AfkSessionDO {
         format!("afk-eventsub-{}-{}", now_ms(), *seq)
     }
 
-    fn set_runtime(&self, connection_id: String) {
-        *self.eventsub_runtime.borrow_mut() = Some(EventSubRuntime { connection_id });
+    fn set_runtime(&self, connection_id: String, socket: WebSocket) {
+        *self.eventsub_runtime.borrow_mut() = Some(EventSubRuntime {
+            connection_id,
+            socket,
+        });
     }
 
     fn clear_runtime_if_matches(&self, connection_id: &str) {
         if self.runtime_matches(connection_id) {
             self.eventsub_runtime.borrow_mut().take();
         }
+    }
+
+    fn has_frontend_websockets_excluding(&self, exclude: Option<&WebSocket>) -> bool {
+        self.state
+            .get_websockets()
+            .into_iter()
+            .any(|socket| exclude.is_none_or(|exclude| socket != *exclude))
+    }
+
+    fn sync_frontend_presence(
+        &self,
+        state: &mut PersistedAfkState,
+        frontend_present: bool,
+        now_ms: i64,
+    ) -> bool {
+        let Some(session) = state.session.as_mut() else {
+            return false;
+        };
+        if frontend_present {
+            session.mark_frontend_present()
+        } else {
+            session.mark_frontend_missing(now_ms)
+        }
+    }
+
+    async fn delete_eventsub_subscription_if_present(
+        &self,
+        state: &mut PersistedAfkState,
+    ) -> Result<()> {
+        let Some(subscription_id) = state.eventsub.subscription_id.clone() else {
+            return Ok(());
+        };
+        if let Some(access_token) = self.ensure_fresh_access_token(state, false).await? {
+            let _ = delete_eventsub_subscription(
+                &configured_var(&self.env, "TWITCH_CLIENT_ID"),
+                &access_token,
+                &subscription_id,
+            )
+            .await;
+        }
+        Ok(())
+    }
+
+    async fn cleanup_live_session(&self, state: &mut PersistedAfkState) -> Result<bool> {
+        let had_session = state.session.is_some();
+        let had_eventsub_state = state.eventsub != PersistedEventSubState::default();
+        if !had_session && !had_eventsub_state && self.eventsub_runtime.borrow().is_none() {
+            return Ok(false);
+        }
+
+        self.release_round_timeouts(state).await?;
+        self.delete_eventsub_subscription_if_present(state).await?;
+
+        if let Some(runtime) = self.eventsub_runtime.borrow_mut().take() {
+            let _ = runtime.socket.close(Some(1000), Some("AFK session ended"));
+        }
+
+        state.session = None;
+        state.recent_eventsub_ids.clear();
+        state.eventsub = PersistedEventSubState::default();
+        Ok(true)
     }
 
     async fn ensure_fresh_access_token(
@@ -1173,6 +1291,7 @@ impl AfkSessionDO {
         } else {
             chat.chatter_user_name.clone()
         };
+        let now = now_ms();
         let rows = match command {
             ParsedChatCommand::Continue => {
                 let Some(session) = state.session.as_mut() else {
@@ -1186,10 +1305,25 @@ impl AfkSessionDO {
                     self.persist(state).await?;
                     return Ok(false);
                 }
-                session.restart_round(now_ms());
-                vec![session.push_activity(format!("{actor_label} continued the run"), now_ms())]
+                session.record_user_activity(now);
+                session.restart_round(now);
+                vec![session.push_activity(format!("{actor_label} continued the run"), now)]
             }
             ParsedChatCommand::BoardBatch(actions) => {
+                let has_targeted_move = state.session.as_ref().is_some_and(|session| {
+                    actions.iter().copied().any(|parsed| {
+                        chat_board_action_targets_labeled_cell(session, parsed).unwrap_or(false)
+                    })
+                });
+                if !has_targeted_move {
+                    self.persist(state).await?;
+                    return Ok(false);
+                }
+
+                if let Some(session) = state.session.as_mut() {
+                    session.record_user_activity(now);
+                }
+
                 let user_ignored = state.session.as_ref().is_some_and(|session| {
                     session
                         .ignored_users
@@ -1197,17 +1331,6 @@ impl AfkSessionDO {
                         .any(|identity| identity.user_id == chat.chatter_user_id)
                 });
                 if user_ignored {
-                    let has_valid_move = state.session.as_ref().is_some_and(|session| {
-                        actions.iter().copied().any(|parsed| {
-                            chat_board_action_targets_labeled_cell(session, parsed)
-                                .unwrap_or(false)
-                        })
-                    });
-                    if !has_valid_move {
-                        self.persist(state).await?;
-                        return Ok(false);
-                    }
-
                     let actor = AfkIdentity::new(
                         chat.chatter_user_id.clone(),
                         chat.chatter_user_login.clone(),
@@ -1219,7 +1342,7 @@ impl AfkSessionDO {
                         .expect("session existence checked above")
                         .push_activity_with_details(
                             format!("{actor_label} is out for the rest of the round."),
-                            now_ms(),
+                            now,
                             AfkActivityKind::OutForRound,
                             Some(actor),
                         );
@@ -1299,6 +1422,8 @@ impl AfkSessionDO {
             self.persist(state).await?;
             return Ok(false);
         }
+        let now = now_ms();
+        session.record_user_activity(now);
 
         if matches!(session.engine.phase(), CoreAfkRoundPhase::Countdown) {
             let AfkAction::Reveal(coords) = action else {
@@ -1307,7 +1432,7 @@ impl AfkSessionDO {
             };
             let started = session
                 .engine
-                .open_starting_cell(coords, now_ms())
+                .open_starting_cell(coords, now)
                 .map_err(error_from_display)?;
             if !started {
                 self.persist(state).await?;
@@ -1315,7 +1440,7 @@ impl AfkSessionDO {
             }
             let row = session.push_activity(
                 format!("{} opened {}", streamer.display_name, format_coord(coords)),
-                now_ms(),
+                now,
             );
             self.persist(state).await?;
             self.broadcast_activity(&row);
@@ -1325,7 +1450,7 @@ impl AfkSessionDO {
 
         let outcome = session
             .engine
-            .apply_action(action, now_ms())
+            .apply_action(action, now)
             .map_err(error_from_display)?;
         if !outcome.changed {
             self.persist(state).await?;
@@ -1342,19 +1467,17 @@ impl AfkSessionDO {
             AfkAction::ChordFlag(_) => "chord-flagged",
         };
         let row = if outcome.mine_triggered {
-            session
-                .engine
-                .force_timed_out(CoreAfkLossReason::Mine, now_ms());
+            session.engine.force_timed_out(CoreAfkLossReason::Mine, now);
             session.push_activity_with_details(
                 format!("{actor_label} hit a mine at {coord_label}"),
-                now_ms(),
+                now,
                 AfkActivityKind::MineHit,
                 Some(streamer.clone()),
             )
         } else if outcome.won {
-            session.push_activity(format!("{actor_label} cleared {coord_label}"), now_ms())
+            session.push_activity(format!("{actor_label} cleared {coord_label}"), now)
         } else {
-            session.push_activity(format!("{actor_label} {verb} {coord_label}"), now_ms())
+            session.push_activity(format!("{actor_label} {verb} {coord_label}"), now)
         };
 
         if matches!(
@@ -1514,6 +1637,9 @@ impl AfkSessionDO {
         let Some(broadcaster) = state.broadcaster.clone() else {
             return Ok(());
         };
+        if state.session.is_none() {
+            return Ok(());
+        }
         if self.eventsub_runtime.borrow().is_some() && !force {
             return Ok(());
         }
@@ -1547,7 +1673,7 @@ impl AfkSessionDO {
         state.eventsub.last_error = None;
         self.persist(&state).await?;
         self.schedule_alarm(&state).await?;
-        self.set_runtime(connection_id.clone());
+        self.set_runtime(connection_id.clone(), socket.clone());
         self.spawn_eventsub_loop(connection_id, broadcaster.user_id, socket);
         self.broadcast_status(&state);
         Ok(())
@@ -1555,28 +1681,13 @@ impl AfkSessionDO {
 
     async fn disconnect_streamer(&self) -> Result<PersistedAfkState> {
         let mut state = self.load().await?;
-        self.release_round_timeouts(&mut state).await?;
-        if let Some(subscription_id) = state.eventsub.subscription_id.clone() {
-            if let Some(access_token) = self.ensure_fresh_access_token(&mut state, false).await? {
-                let _ = delete_eventsub_subscription(
-                    &configured_var(&self.env, "TWITCH_CLIENT_ID"),
-                    &access_token,
-                    &subscription_id,
-                )
-                .await;
-            }
-        }
-
-        self.eventsub_runtime.borrow_mut().take();
+        let _ = self.cleanup_live_session(&mut state).await?;
         state.broadcaster = None;
         state.tokens = None;
         state.timeout_enabled = default_timeout_enabled();
         state.timeout_duration_secs = default_timeout_duration_secs();
         state.board_size = default_protocol_board_size();
-        state.session = None;
         state.pending_untimeouts.clear();
-        state.recent_eventsub_ids.clear();
-        state.eventsub = PersistedEventSubState::default();
         self.persist(&state).await?;
         self.schedule_alarm(&state).await?;
         self.broadcast_status(&state);
@@ -1725,6 +1836,10 @@ impl AfkSessionDO {
         }
         let pair = WebSocketPair::new()?;
         self.state.accept_web_socket(&pair.server);
+        if self.sync_frontend_presence(&mut state, true, now_ms()) {
+            self.persist(&state).await?;
+            self.schedule_alarm(&state).await?;
+        }
         let _ = pair.server.send(&AfkServerMessage::Connected {
             status: self.status_response(&state),
         });
@@ -1746,6 +1861,24 @@ impl AfkSessionDO {
         let mut phase_ended = false;
         let mut needs_restart = false;
         let now = now_ms();
+
+        if !self.has_frontend_websockets_excluding(None) {
+            let _ = self.sync_frontend_presence(&mut state, false, now);
+        }
+
+        if state.session.as_ref().is_some_and(|session| {
+            session.inactivity_deadline_at_ms() <= now
+                || session
+                    .frontend_missing_deadline_at_ms()
+                    .is_some_and(|deadline| deadline <= now)
+        }) {
+            if self.cleanup_live_session(&mut state).await? {
+                self.persist(&state).await?;
+                self.schedule_alarm(&state).await?;
+                self.broadcast_status(&state);
+            }
+            return Ok(());
+        }
 
         if let Some(session) = state.session.as_mut() {
             let before_phase = session.engine.phase();
@@ -1842,11 +1975,15 @@ impl DurableObject for AfkSessionDO {
             (Method::Post, "/api/afk/start") => {
                 let mut state = self.load().await?;
                 self.release_round_timeouts(&mut state).await?;
-                state.session = Some(PersistedAfkSession::new(
+                let mut session = PersistedAfkSession::new(
                     protocol_board_size_to_core(state.board_size),
                     state.timeout_enabled && state.timeout_supported(),
                     now_ms(),
-                ));
+                );
+                if !self.has_frontend_websockets_excluding(None) {
+                    session.mark_frontend_missing(now_ms());
+                }
+                state.session = Some(session);
                 self.persist(&state).await?;
                 self.schedule_alarm(&state).await?;
                 self.broadcast_snapshot(&state);
@@ -1882,10 +2019,11 @@ impl DurableObject for AfkSessionDO {
             }
             (Method::Post, "/api/afk/pause") => {
                 let mut state = self.load().await?;
-                let changed = state
-                    .session
-                    .as_mut()
-                    .is_some_and(|session| session.pause(now_ms()));
+                let now = now_ms();
+                let changed = state.session.as_mut().is_some_and(|session| {
+                    session.record_user_activity(now);
+                    session.pause(now)
+                });
                 self.persist(&state).await?;
                 self.schedule_alarm(&state).await?;
                 if changed {
@@ -1895,10 +2033,11 @@ impl DurableObject for AfkSessionDO {
             }
             (Method::Post, "/api/afk/resume") => {
                 let mut state = self.load().await?;
-                let changed = state
-                    .session
-                    .as_mut()
-                    .is_some_and(|session| session.resume(now_ms()));
+                let now = now_ms();
+                let changed = state.session.as_mut().is_some_and(|session| {
+                    session.record_user_activity(now);
+                    session.resume(now)
+                });
                 self.persist(&state).await?;
                 if let Err(error) = self.start_eventsub_connection(false).await {
                     state = self.load().await?;
@@ -1919,8 +2058,7 @@ impl DurableObject for AfkSessionDO {
             }
             (Method::Post, "/api/afk/stop") => {
                 let mut state = self.load().await?;
-                self.release_round_timeouts(&mut state).await?;
-                state.session = None;
+                let _ = self.cleanup_live_session(&mut state).await?;
                 self.persist(&state).await?;
                 self.schedule_alarm(&state).await?;
                 self.broadcast_status(&state);
@@ -1929,8 +2067,10 @@ impl DurableObject for AfkSessionDO {
             (Method::Post, "/api/afk/continue") => {
                 let mut state = self.load().await?;
                 self.release_round_timeouts(&mut state).await?;
+                let now = now_ms();
                 if let Some(session) = state.session.as_mut() {
-                    session.restart_round(now_ms());
+                    session.record_user_activity(now);
+                    session.restart_round(now);
                 }
                 self.persist(&state).await?;
                 self.schedule_alarm(&state).await?;
@@ -1956,9 +2096,7 @@ impl DurableObject for AfkSessionDO {
             }
             (Method::Post, "/api/afk/panic-reset") => {
                 let mut state = self.load().await?;
-                self.release_round_timeouts(&mut state).await?;
-                state.session = None;
-                state.recent_eventsub_ids.clear();
+                let _ = self.cleanup_live_session(&mut state).await?;
                 self.persist(&state).await?;
                 self.schedule_alarm(&state).await?;
                 self.broadcast_status(&state);
@@ -2016,7 +2154,11 @@ impl DurableObject for AfkSessionDO {
         if let WebSocketIncomingMessage::String(text) = message {
             match serde_json::from_str::<AfkClientMessage>(&text) {
                 Ok(AfkClientMessage::Ping) => {
-                    let state = self.load().await?;
+                    let mut state = self.load().await?;
+                    if self.sync_frontend_presence(&mut state, true, now_ms()) {
+                        self.persist(&state).await?;
+                        self.schedule_alarm(&state).await?;
+                    }
                     let _ = ws.send(&AfkServerMessage::Connected {
                         status: self.status_response(&state),
                     });
@@ -2042,11 +2184,18 @@ impl DurableObject for AfkSessionDO {
 
     async fn websocket_close(
         &self,
-        _ws: WebSocket,
+        ws: WebSocket,
         _code: usize,
         _reason: String,
         _was_clean: bool,
     ) -> Result<()> {
+        let mut state = self.load().await?;
+        if !self.has_frontend_websockets_excluding(Some(&ws))
+            && self.sync_frontend_presence(&mut state, false, now_ms())
+        {
+            self.persist(&state).await?;
+            self.schedule_alarm(&state).await?;
+        }
         Ok(())
     }
 
@@ -2596,6 +2745,8 @@ mod tests {
             activity: Vec::new(),
             last_action: None,
             timeout_enabled: true,
+            last_user_activity_at_ms: 1,
+            frontend_missing_since_at_ms: None,
         }
     }
 
@@ -2728,6 +2879,63 @@ mod tests {
         assert_eq!(normalize_timeout_duration_secs(33), 30);
         assert_eq!(normalize_timeout_duration_secs(59), 60);
         assert_eq!(normalize_timeout_duration_secs(600), 300);
+    }
+
+    #[test]
+    fn automatic_activity_rows_do_not_refresh_user_activity() {
+        let mut session = test_session();
+        session.last_user_activity_at_ms = 42;
+
+        session.push_activity("Round restarted", 5_000);
+        session.push_activity("Round live", 5_000);
+
+        assert_eq!(session.last_user_activity_at_ms, 42);
+    }
+
+    #[test]
+    fn session_policy_alarm_prefers_frontend_absence_timeout() {
+        let mut session = test_session();
+        session.last_user_activity_at_ms = 1_000;
+        session.frontend_missing_since_at_ms = Some(2_000);
+
+        assert_eq!(
+            session.next_policy_alarm_at_ms(),
+            2_000 + AFK_FRONTEND_ABSENCE_TIMEOUT_MS
+        );
+    }
+
+    #[test]
+    fn session_policy_alarm_uses_inactivity_timeout_when_frontend_is_present() {
+        let mut session = test_session();
+        session.last_user_activity_at_ms = 1_000;
+
+        assert_eq!(
+            session.next_policy_alarm_at_ms(),
+            1_000 + AFK_SESSION_INACTIVITY_TIMEOUT_MS
+        );
+    }
+
+    #[test]
+    fn paused_sessions_still_have_policy_cleanup_deadlines() {
+        let mut session = test_session();
+        session.pause(2_000);
+        session.last_user_activity_at_ms = 1_000;
+
+        assert_eq!(session.engine.next_alarm_at_ms(2_000), None);
+        assert_eq!(
+            session.next_policy_alarm_at_ms(),
+            1_000 + AFK_SESSION_INACTIVITY_TIMEOUT_MS
+        );
+    }
+
+    #[test]
+    fn frontend_presence_tracking_clears_absence_window_on_return() {
+        let mut session = test_session();
+
+        assert!(session.mark_frontend_missing(1_000));
+        assert_eq!(session.frontend_missing_since_at_ms, Some(1_000));
+        assert!(session.mark_frontend_present());
+        assert_eq!(session.frontend_missing_since_at_ms, None);
     }
 
     #[test]

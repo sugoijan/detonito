@@ -1,4 +1,10 @@
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+use serde::{Deserialize, Serialize};
+
+use crate::utils::{LocalDelete, LocalOrDefault, LocalSave, StorageKey, browser_now_ms};
+
+const ROUTE_STORAGE_TTL_MS: i64 = 24 * 60 * 60 * 1_000;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum AppRoute {
     Menu,
     Classic,
@@ -16,6 +22,24 @@ pub(crate) struct RouteState {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct FrontendRuntimeConfig {
     pub afk_enabled: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct PersistedRoute {
+    route: AppRoute,
+    updated_at_ms: i64,
+}
+
+impl PersistedRoute {
+    fn fresh_route_at(&self, now_ms: i64) -> Option<AppRoute> {
+        (now_ms.abs_diff(self.updated_at_ms) <= ROUTE_STORAGE_TTL_MS as u64)
+            .then_some(self.route)
+            .and_then(supported_route)
+    }
+}
+
+impl StorageKey for PersistedRoute {
+    const KEY: &'static str = "detonito:route";
 }
 
 pub(crate) fn frontend_runtime_config() -> FrontendRuntimeConfig {
@@ -56,54 +80,35 @@ pub(crate) fn app_root_path() -> String {
     }
 }
 
-pub(crate) fn current_route_state() -> RouteState {
+pub(crate) fn initialize_route_state() -> RouteState {
+    let now_ms = browser_now_ms();
     let view = query_param("view");
-    let route = match view.as_deref() {
-        Some("classic") => AppRoute::Classic,
-        #[cfg(feature = "afk-runtime")]
-        Some("afk") => AppRoute::Afk,
-        Some("settings") => AppRoute::Settings,
-        Some("about") => AppRoute::About,
-        _ => AppRoute::Menu,
-    };
+    let afk_auth_error = query_param("afk_auth_error");
+    let route = resolve_startup_route(
+        route_from_view(view.as_deref()),
+        load_persisted_route(now_ms),
+    );
+    persist_route(route, now_ms);
+    if view.is_some() || afk_auth_error.is_some() {
+        replace_visible_url();
+    }
     RouteState {
         route,
-        afk_auth_error: query_param("afk_auth_error"),
-    }
-}
-
-pub(crate) fn route_return_to(route: AppRoute) -> String {
-    let root = app_root_path();
-    match route {
-        AppRoute::Menu => root,
-        AppRoute::Classic => format!("{root}?view=classic"),
-        AppRoute::Afk => format!("{root}?view=afk"),
-        AppRoute::Settings => format!("{root}?view=settings"),
-        AppRoute::About => format!("{root}?view=about"),
+        afk_auth_error,
     }
 }
 
 #[cfg(feature = "afk-runtime")]
 pub(crate) fn auth_return_to(route: AppRoute) -> String {
-    match route {
-        AppRoute::Menu => "/".to_string(),
-        AppRoute::Classic => "/?view=classic".to_string(),
-        AppRoute::Afk => "/?view=afk".to_string(),
-        AppRoute::Settings => "/?view=settings".to_string(),
-        AppRoute::About => "/?view=about".to_string(),
+    match route_view(route) {
+        Some(view) => format!("/?view={view}"),
+        None => "/".to_string(),
     }
 }
 
 pub(crate) fn replace_route(route: AppRoute) {
-    let history = match gloo::utils::window().history() {
-        Ok(history) => history,
-        Err(_) => return,
-    };
-    let _ = history.replace_state_with_url(
-        &wasm_bindgen::JsValue::NULL,
-        "",
-        Some(&route_return_to(route)),
-    );
+    persist_route(route, browser_now_ms());
+    replace_visible_url();
 }
 
 #[cfg(feature = "afk-runtime")]
@@ -138,6 +143,81 @@ pub(crate) fn websocket_path(path: &str) -> String {
     format!("{scheme}://{authority}{resolved_path}")
 }
 
+fn route_from_view(view: Option<&str>) -> Option<AppRoute> {
+    match view {
+        Some("menu") => Some(AppRoute::Menu),
+        Some("classic") => Some(AppRoute::Classic),
+        #[cfg(feature = "afk-runtime")]
+        Some("afk") => Some(AppRoute::Afk),
+        Some("settings") => Some(AppRoute::Settings),
+        Some("about") => Some(AppRoute::About),
+        _ => None,
+    }
+}
+
+fn route_view(route: AppRoute) -> Option<&'static str> {
+    match route {
+        AppRoute::Menu => None,
+        AppRoute::Classic => Some("classic"),
+        AppRoute::Afk => Some("afk"),
+        AppRoute::Settings => Some("settings"),
+        AppRoute::About => Some("about"),
+    }
+}
+
+fn supported_route(route: AppRoute) -> Option<AppRoute> {
+    match route {
+        AppRoute::Afk if !cfg!(feature = "afk-runtime") => None,
+        _ => Some(route),
+    }
+}
+
+fn resolve_startup_route(url_route: Option<AppRoute>, stored_route: Option<AppRoute>) -> AppRoute {
+    url_route.or(stored_route).unwrap_or(AppRoute::Menu)
+}
+
+fn load_persisted_route(now_ms: i64) -> Option<AppRoute> {
+    let stored = Option::<PersistedRoute>::local_or_default()?;
+    let route = stored.fresh_route_at(now_ms);
+    if route.is_none() {
+        clear_persisted_route();
+    }
+    route
+}
+
+fn persist_route(route: AppRoute, now_ms: i64) {
+    PersistedRoute {
+        route,
+        updated_at_ms: now_ms,
+    }
+    .local_save();
+}
+
+fn clear_persisted_route() {
+    PersistedRoute::local_delete();
+}
+
+fn replace_visible_url() {
+    let history = match gloo::utils::window().history() {
+        Ok(history) => history,
+        Err(_) => return,
+    };
+    let _ = history.replace_state_with_url(
+        &wasm_bindgen::JsValue::NULL,
+        "",
+        Some(&clean_visible_url()),
+    );
+}
+
+fn clean_visible_url() -> String {
+    let root = app_root_path();
+    let hash = gloo::utils::window()
+        .location()
+        .hash()
+        .unwrap_or_else(|_| "".to_string());
+    format!("{root}{hash}")
+}
+
 fn query_param(name: &str) -> Option<String> {
     let search = gloo::utils::window()
         .location()
@@ -155,4 +235,80 @@ fn query_param(name: &str) -> Option<String> {
                 None
             }
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn persisted_route_is_fresh_up_to_ttl() {
+        let stored = PersistedRoute {
+            route: AppRoute::Classic,
+            updated_at_ms: 1_000,
+        };
+
+        assert_eq!(
+            stored.fresh_route_at(1_000 + ROUTE_STORAGE_TTL_MS),
+            Some(AppRoute::Classic)
+        );
+    }
+
+    #[test]
+    fn persisted_route_expires_after_ttl() {
+        let stored = PersistedRoute {
+            route: AppRoute::Classic,
+            updated_at_ms: 1_000,
+        };
+
+        assert_eq!(stored.fresh_route_at(1_001 + ROUTE_STORAGE_TTL_MS), None);
+    }
+
+    #[test]
+    fn startup_route_prefers_url_route() {
+        assert_eq!(
+            resolve_startup_route(Some(AppRoute::About), Some(AppRoute::Classic)),
+            AppRoute::About
+        );
+    }
+
+    #[test]
+    fn startup_route_falls_back_to_persisted_route() {
+        assert_eq!(
+            resolve_startup_route(None, Some(AppRoute::Settings)),
+            AppRoute::Settings
+        );
+    }
+
+    #[test]
+    fn startup_route_defaults_to_menu() {
+        assert_eq!(resolve_startup_route(None, None), AppRoute::Menu);
+    }
+
+    #[test]
+    fn menu_query_route_is_supported() {
+        assert_eq!(route_from_view(Some("menu")), Some(AppRoute::Menu));
+    }
+
+    #[cfg(feature = "afk-runtime")]
+    #[test]
+    fn afk_route_is_supported_when_enabled() {
+        let stored = PersistedRoute {
+            route: AppRoute::Afk,
+            updated_at_ms: 1_000,
+        };
+
+        assert_eq!(stored.fresh_route_at(1_000), Some(AppRoute::Afk));
+    }
+
+    #[cfg(not(feature = "afk-runtime"))]
+    #[test]
+    fn afk_route_is_rejected_when_disabled() {
+        let stored = PersistedRoute {
+            route: AppRoute::Afk,
+            updated_at_ms: 1_000,
+        };
+
+        assert_eq!(stored.fresh_route_at(1_000), None);
+    }
 }

@@ -29,6 +29,10 @@ pub(crate) fn format_for_counter(num: i32) -> String {
     }
 }
 
+pub(crate) fn browser_now_ms() -> i64 {
+    js_sys::Date::now() as i64
+}
+
 pub(crate) trait StorageKey {
     const KEY: &'static str;
 }
@@ -52,6 +56,18 @@ where
     fn local_or_default() -> Self {
         use gloo::storage::{LocalStorage, Storage};
         LocalStorage::get(Self::KEY).unwrap_or_default()
+    }
+}
+
+/// Easily delete values from local storage
+pub(crate) trait LocalDelete: StorageKey {
+    fn local_delete();
+}
+
+impl<T: StorageKey> LocalDelete for T {
+    fn local_delete() {
+        use gloo::storage::{LocalStorage, Storage};
+        LocalStorage::delete(Self::KEY);
     }
 }
 

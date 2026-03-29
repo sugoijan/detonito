@@ -154,6 +154,8 @@ pub struct AfkSessionSnapshot {
     pub recent_penalties: Vec<AfkPenaltySnapshot>,
     pub activity: Vec<AfkActivityRow>,
     pub last_action: Option<AfkActivityRow>,
+    #[serde(default)]
+    pub last_user_activity_at_ms: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
