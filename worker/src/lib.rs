@@ -24,7 +24,7 @@ use barbed::oauth::{
 };
 use detonito_core::{
     AfkAction, AfkBoardSize as CoreAfkBoardSize, AfkCellState as CoreAfkCellState, AfkEngine,
-    AfkLossReason as CoreAfkLossReason, AfkPreset, AfkRoundPhase as CoreAfkRoundPhase,
+    AfkLossReason as CoreAfkLossReason, AfkPreset, AfkRoundPhase as CoreAfkRoundPhase, flat_index,
 };
 use detonito_protocol::{
     AfkActionKind, AfkActionRequest, AfkActivityKind, AfkActivityRow,
@@ -248,6 +248,7 @@ impl PersistedAfkSession {
         now_ms: i64,
     ) -> AfkSessionSnapshot {
         let (width, height) = self.engine.size();
+        let labeled_cells = self.engine.labeled_cells();
         let mut cells = Vec::with_capacity(usize::from(width) * usize::from(height));
         for y in 0..height {
             for x in 0..width {
@@ -281,6 +282,7 @@ impl PersistedAfkSession {
                 height,
                 cells,
             },
+            labeled_cells,
             timer_profile: AfkTimerProfileSnapshot {
                 start_secs: timer.start_secs,
                 safe_reveal_bonus_secs: timer.safe_reveal_bonus_secs,
@@ -2387,10 +2389,8 @@ fn chat_board_action_targets_labeled_cell(
     if parsed.coords.0 >= session.engine.size().0 || parsed.coords.1 >= session.engine.size().1 {
         return Ok(false);
     }
-    session
-        .engine
-        .cell_has_label(parsed.coords)
-        .map_err(error_from_display)
+    let labels = session.engine.labeled_cells();
+    Ok(labels[flat_index(session.engine.size(), parsed.coords)])
 }
 
 fn configured_var(env: &Env, name: &str) -> String {
@@ -2748,6 +2748,21 @@ mod tests {
             last_user_activity_at_ms: 1,
             frontend_missing_since_at_ms: None,
         }
+    }
+
+    fn line_session(width: u8, mine_xs: &[u8]) -> PersistedAfkSession {
+        let mine_coords: Vec<(u8, u8)> = mine_xs.iter().copied().map(|x| (x, 0)).collect();
+        let layout = detonito_core::MineLayout::from_mine_coords((width, 1), &mine_coords).unwrap();
+        let mut session = test_session();
+        session.engine = AfkEngine::with_layout_for_tests(
+            layout,
+            AfkPreset {
+                config: detonito_core::GameConfig::new_unchecked((width, 1), mine_xs.len() as u16),
+                timer: AfkPreset::v1().timer,
+            },
+            1_000,
+        );
+        session
     }
 
     #[test]
@@ -3119,6 +3134,44 @@ mod tests {
             snapshot.board.cells,
             vec![AfkCellSnapshot::Flagged, AfkCellSnapshot::Revealed(1)]
         );
+    }
+
+    #[test]
+    fn snapshot_exposes_endgame_unlocked_back_cells() {
+        let mut session = line_session(6, &[0, 2, 4, 5]);
+        session
+            .engine
+            .apply_action(AfkAction::Reveal((0, 0)), 1_000)
+            .expect("mine reveal should succeed");
+        session
+            .engine
+            .apply_action(AfkAction::Reveal((1, 0)), 1_000)
+            .expect("safe reveal should succeed");
+
+        let snapshot = session.snapshot(None, true, 1_000);
+
+        assert_eq!(snapshot.labeled_cells.len(), snapshot.board.cells.len());
+        assert!(snapshot.labeled_cells[flat_index((6, 1), (3, 0))]);
+    }
+
+    #[test]
+    fn chat_validation_accepts_actions_on_endgame_unlocked_back_cells() {
+        let mut session = line_session(6, &[0, 2, 4, 5]);
+        session
+            .engine
+            .apply_action(AfkAction::Reveal((0, 0)), 1_000)
+            .expect("mine reveal should succeed");
+        session
+            .engine
+            .apply_action(AfkAction::Reveal((1, 0)), 1_000)
+            .expect("safe reveal should succeed");
+
+        let parsed = ParsedBoardAction {
+            action: AfkAction::Reveal((3, 0)),
+            coords: (3, 0),
+        };
+
+        assert!(chat_board_action_targets_labeled_cell(&session, parsed).unwrap());
     }
 
     // --- DO storage size limit tests ---

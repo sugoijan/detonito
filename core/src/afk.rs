@@ -1,4 +1,5 @@
 use alloc::collections::VecDeque;
+use alloc::vec::Vec;
 use core::num::Saturating;
 
 use ndarray::Array2;
@@ -8,6 +9,8 @@ use crate::{
     Coord2, FirstMovePolicy, GameConfig, GameError, LayoutGenerator, MineLayout, NeighborIterExt,
     RandomLayoutGenerator, Result, ToNdIndex,
 };
+
+const AFK_ENDGAME_LABEL_CUSHION: usize = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AfkTimerProfile {
@@ -350,6 +353,59 @@ impl AfkEngine {
 
     pub fn crater_count(&self) -> u16 {
         self.crater_count.0
+    }
+
+    pub fn labeled_cells(&self) -> Vec<bool> {
+        let size = self.size();
+        let width = usize::from(size.0);
+        let height = usize::from(size.1);
+        let total = width * height;
+        if matches!(self.phase, AfkRoundPhase::Countdown) {
+            return alloc::vec![false; total];
+        }
+
+        let states = self.visible_cell_states();
+        let mut labels = alloc::vec![false; total];
+        let mut back_hidden_count = 0usize;
+
+        for y in 0..size.1 {
+            for x in 0..size.0 {
+                let coords = (x, y);
+                let idx = flat_index(size, coords);
+                match states[idx] {
+                    AfkCellState::Flagged => labels[idx] = true,
+                    AfkCellState::Hidden => {
+                        if self.hidden_cell_has_frontier_neighbor(&states, coords) {
+                            labels[idx] = true;
+                        } else {
+                            back_hidden_count += 1;
+                        }
+                    }
+                    AfkCellState::Revealed(_)
+                    | AfkCellState::Mine
+                    | AfkCellState::Misflagged
+                    | AfkCellState::Crater => {}
+                }
+            }
+        }
+
+        let observed_mines =
+            usize::from(self.crater_count.0) + self.count_locally_forced_mines(&states);
+        let total_mines = usize::from(self.preset.config.mines);
+        let remaining_mines = total_mines.saturating_sub(observed_mines);
+        let safe_unlock = observed_mines.saturating_add(AFK_ENDGAME_LABEL_CUSHION) >= total_mines;
+        let mine_unlock = back_hidden_count >= remaining_mines
+            && back_hidden_count - remaining_mines <= AFK_ENDGAME_LABEL_CUSHION;
+
+        if safe_unlock || mine_unlock {
+            for idx in 0..total {
+                if matches!(states[idx], AfkCellState::Hidden) && !labels[idx] {
+                    labels[idx] = true;
+                }
+            }
+        }
+
+        labels
     }
 
     pub fn live_mines_left_for_display(&self) -> i32 {
@@ -805,23 +861,7 @@ impl AfkEngine {
 
     pub fn cell_has_label(&self, coords: Coord2) -> Result<bool> {
         let coords = self.validate_coords(coords)?;
-        if matches!(self.phase, AfkRoundPhase::Countdown) {
-            return Ok(false);
-        }
-        match self.cell_state_at(coords)? {
-            AfkCellState::Flagged => Ok(true),
-            AfkCellState::Hidden => Ok(self.board.iter_neighbors(coords).any(|neighbor| {
-                matches!(self.cell_state_at(neighbor), Ok(AfkCellState::Crater))
-                    || matches!(
-                        self.cell_state_at(neighbor),
-                        Ok(AfkCellState::Revealed(count)) if count > 0
-                    )
-            })),
-            AfkCellState::Revealed(_)
-            | AfkCellState::Mine
-            | AfkCellState::Misflagged
-            | AfkCellState::Crater => Ok(false),
-        }
+        Ok(self.labeled_cells()[flat_index(self.size(), coords)])
     }
 
     pub fn open_starting_cell(&mut self, coords: Coord2, now_ms: i64) -> Result<bool> {
@@ -856,6 +896,70 @@ impl AfkEngine {
             ((self.seed / width_u64) % height_u64) as u8,
         )
     }
+
+    fn visible_cell_states(&self) -> Vec<AfkCellState> {
+        let size = self.size();
+        let mut states = Vec::with_capacity(usize::from(size.0) * usize::from(size.1));
+        for y in 0..size.1 {
+            for x in 0..size.0 {
+                states.push(
+                    self.cell_state_at((x, y))
+                        .expect("board iteration should only visit valid coordinates"),
+                );
+            }
+        }
+        states
+    }
+
+    fn hidden_cell_has_frontier_neighbor(&self, states: &[AfkCellState], coords: Coord2) -> bool {
+        self.board.iter_neighbors(coords).any(|neighbor| {
+            match states[flat_index(self.size(), neighbor)] {
+                AfkCellState::Crater => true,
+                AfkCellState::Revealed(count) => count > 0,
+                _ => false,
+            }
+        })
+    }
+
+    fn count_locally_forced_mines(&self, states: &[AfkCellState]) -> usize {
+        let size = self.size();
+        let mut forced = alloc::vec![false; usize::from(size.0) * usize::from(size.1)];
+
+        for y in 0..size.1 {
+            for x in 0..size.0 {
+                let coords = (x, y);
+                let AfkCellState::Revealed(required_mines) = states[flat_index(size, coords)]
+                else {
+                    continue;
+                };
+                if required_mines == 0 {
+                    continue;
+                }
+
+                let mut crater_neighbors = 0usize;
+                let mut unresolved_neighbors = Vec::new();
+                for neighbor in self.board.iter_neighbors(coords) {
+                    match states[flat_index(size, neighbor)] {
+                        AfkCellState::Crater => crater_neighbors += 1,
+                        AfkCellState::Hidden | AfkCellState::Flagged => {
+                            unresolved_neighbors.push(flat_index(size, neighbor));
+                        }
+                        AfkCellState::Revealed(_)
+                        | AfkCellState::Mine
+                        | AfkCellState::Misflagged => {}
+                    }
+                }
+
+                if usize::from(required_mines) == crater_neighbors + unresolved_neighbors.len() {
+                    for idx in unresolved_neighbors {
+                        forced[idx] = true;
+                    }
+                }
+            }
+        }
+
+        forced.into_iter().filter(|forced| *forced).count()
+    }
 }
 
 const fn next_display_alarm_at_ms(now_ms: i64, deadline_ms: i64) -> i64 {
@@ -871,12 +975,33 @@ const fn next_display_alarm_at_ms(now_ms: i64, deadline_ms: i64) -> i64 {
     }
 }
 
+pub fn flat_index(size: Coord2, coords: Coord2) -> usize {
+    usize::from(coords.1) * usize::from(size.0) + usize::from(coords.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn now() -> i64 {
         1_000
+    }
+
+    fn line_preset(width: u8, mines: u16) -> AfkPreset {
+        AfkPreset {
+            config: GameConfig::new_unchecked((width, 1), mines),
+            timer: AfkTimerProfile::v1(),
+        }
+    }
+
+    fn line_engine(width: u8, mine_xs: &[u8]) -> AfkEngine {
+        let mine_coords: Vec<Coord2> = mine_xs.iter().copied().map(|x| (x, 0)).collect();
+        let layout = MineLayout::from_mine_coords((width, 1), &mine_coords).unwrap();
+        AfkEngine::with_layout_for_tests(layout, line_preset(width, mine_xs.len() as u16), now())
+    }
+
+    fn label_at(engine: &AfkEngine, coords: Coord2) -> bool {
+        engine.labeled_cells()[flat_index(engine.size(), coords)]
     }
 
     #[test]
@@ -1087,5 +1212,70 @@ mod tests {
         assert_eq!(engine.phase(), AfkRoundPhase::Won);
         assert_eq!(engine.cell_state_at((0, 0)).unwrap(), AfkCellState::Crater);
         assert_eq!(engine.cell_state_at((2, 0)).unwrap(), AfkCellState::Flagged);
+    }
+
+    #[test]
+    fn base_frontier_labels_stay_unchanged_without_endgame_unlock() {
+        let mut engine = line_engine(6, &[0, 3, 4, 5]);
+
+        engine
+            .apply_action(AfkAction::Reveal((1, 0)), now())
+            .expect("safe reveal should succeed");
+
+        assert!(label_at(&engine, (0, 0)));
+        assert!(label_at(&engine, (2, 0)));
+        assert!(!label_at(&engine, (3, 0)));
+        assert!(!label_at(&engine, (4, 0)));
+        assert!(!label_at(&engine, (5, 0)));
+    }
+
+    #[test]
+    fn safe_leaning_endgame_unlock_labels_back_cells() {
+        let mut engine = line_engine(6, &[0, 2, 4, 5]);
+
+        let mine_hit = engine
+            .apply_action(AfkAction::Reveal((0, 0)), now())
+            .expect("mine reveal should succeed");
+        assert!(mine_hit.mine_triggered);
+        engine
+            .apply_action(AfkAction::Reveal((1, 0)), now())
+            .expect("safe reveal should succeed");
+
+        assert!(label_at(&engine, (3, 0)));
+        assert!(label_at(&engine, (4, 0)));
+        assert!(label_at(&engine, (5, 0)));
+    }
+
+    #[test]
+    fn mine_leaning_endgame_unlock_uses_two_cell_cushion() {
+        for (width, should_unlock) in [(6, true), (7, true), (8, true), (9, false)] {
+            let mut engine = line_engine(width, &[0, width - 2, width - 1]);
+            engine
+                .apply_action(AfkAction::Reveal((1, 0)), now())
+                .expect("safe reveal should succeed");
+
+            assert_eq!(
+                label_at(&engine, (3, 0)),
+                should_unlock,
+                "width {width} should {}unlock back cells",
+                if should_unlock { "" } else { "not " }
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_manual_flags_do_not_unlock_back_cells() {
+        let mut engine = line_engine(6, &[0, 3, 4, 5]);
+        engine
+            .apply_action(AfkAction::Reveal((1, 0)), now())
+            .expect("safe reveal should succeed");
+        engine
+            .apply_action(AfkAction::SetFlag((4, 0)), now())
+            .expect("flag should succeed");
+        engine
+            .apply_action(AfkAction::SetFlag((5, 0)), now())
+            .expect("flag should succeed");
+
+        assert!(!label_at(&engine, (3, 0)));
     }
 }

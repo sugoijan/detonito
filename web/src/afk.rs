@@ -104,7 +104,6 @@ enum AfkIdleState {
     Prompt,
 }
 
-
 fn current_level_status_text(session: Option<&AfkSessionSnapshot>) -> Option<AttrValue> {
     session
         .filter(|session| session.board.width >= 15)
@@ -610,12 +609,24 @@ fn board_cell_at(session: &AfkSessionSnapshot, x: usize, y: usize) -> Option<Afk
     session.board.cells.get(y * width + x).copied()
 }
 
+fn board_label_at(session: &AfkSessionSnapshot, x: usize, y: usize) -> Option<bool> {
+    let width = usize::from(session.board.width);
+    let height = usize::from(session.board.height);
+    if x >= width || y >= height || session.labeled_cells.len() != width * height {
+        return None;
+    }
+    session.labeled_cells.get(y * width + x).copied()
+}
+
 fn should_show_cell_code(
     session: &AfkSessionSnapshot,
     x: usize,
     y: usize,
     cell: AfkCellSnapshot,
 ) -> bool {
+    if let Some(show_code) = board_label_at(session, x, y) {
+        return show_code;
+    }
     if matches!(session.phase, AfkRoundPhase::Countdown) {
         return false;
     }
@@ -2012,6 +2023,7 @@ mod tests {
                 height: 18,
                 cells: Vec::new(),
             },
+            labeled_cells: Vec::new(),
             timer_profile: AfkTimerProfileSnapshot {
                 start_secs: 120,
                 safe_reveal_bonus_secs: 1,
@@ -2052,6 +2064,110 @@ mod tests {
     }
 
     #[test]
+    fn should_show_cell_code_uses_snapshot_label_mask_when_present() {
+        let session = AfkSessionSnapshot {
+            streamer: None,
+            phase: AfkRoundPhase::Active,
+            paused: false,
+            board: AfkBoardSnapshot {
+                width: 3,
+                height: 1,
+                cells: vec![
+                    AfkCellSnapshot::Hidden,
+                    AfkCellSnapshot::Hidden,
+                    AfkCellSnapshot::Hidden,
+                ],
+            },
+            labeled_cells: vec![false, false, true],
+            timer_profile: AfkTimerProfileSnapshot {
+                start_secs: 120,
+                safe_reveal_bonus_secs: 1,
+                mine_penalty_secs: 15,
+                start_delay_secs: 5,
+                win_continue_delay_secs: 30,
+                loss_continue_delay_secs: 60,
+            },
+            timer_remaining_secs: 120,
+            phase_countdown_secs: None,
+            current_level: 1,
+            live_mines_left: 1,
+            crater_count: 0,
+            loss_reason: None,
+            timeout_enabled: true,
+            ignored_users: Vec::new(),
+            recent_penalties: Vec::new(),
+            activity: Vec::new(),
+            last_action: None,
+            last_user_activity_at_ms: 1,
+        };
+
+        assert!(should_show_cell_code(
+            &session,
+            2,
+            0,
+            AfkCellSnapshot::Hidden
+        ));
+        assert!(!should_show_cell_code(
+            &session,
+            1,
+            0,
+            AfkCellSnapshot::Hidden
+        ));
+    }
+
+    #[test]
+    fn should_show_cell_code_falls_back_to_legacy_frontier_rule_when_mask_is_missing() {
+        let session = AfkSessionSnapshot {
+            streamer: None,
+            phase: AfkRoundPhase::Active,
+            paused: false,
+            board: AfkBoardSnapshot {
+                width: 3,
+                height: 1,
+                cells: vec![
+                    AfkCellSnapshot::Hidden,
+                    AfkCellSnapshot::Revealed(1),
+                    AfkCellSnapshot::Hidden,
+                ],
+            },
+            labeled_cells: Vec::new(),
+            timer_profile: AfkTimerProfileSnapshot {
+                start_secs: 120,
+                safe_reveal_bonus_secs: 1,
+                mine_penalty_secs: 15,
+                start_delay_secs: 5,
+                win_continue_delay_secs: 30,
+                loss_continue_delay_secs: 60,
+            },
+            timer_remaining_secs: 120,
+            phase_countdown_secs: None,
+            current_level: 1,
+            live_mines_left: 1,
+            crater_count: 0,
+            loss_reason: None,
+            timeout_enabled: true,
+            ignored_users: Vec::new(),
+            recent_penalties: Vec::new(),
+            activity: Vec::new(),
+            last_action: None,
+            last_user_activity_at_ms: 1,
+        };
+
+        assert!(should_show_cell_code(
+            &session,
+            0,
+            0,
+            AfkCellSnapshot::Hidden
+        ));
+        assert!(should_show_cell_code(
+            &session,
+            2,
+            0,
+            AfkCellSnapshot::Hidden
+        ));
+    }
+
+    #[test]
     fn face_icon_uses_sleeping_face_for_timer_losses() {
         let status = LoadState::Ready(AfkStatusResponse {
             runtime: FrontendRuntimeConfig { afk_enabled: true },
@@ -2073,6 +2189,7 @@ mod tests {
                     height: 0,
                     cells: Vec::new(),
                 },
+                labeled_cells: Vec::new(),
                 timer_profile: AfkTimerProfileSnapshot {
                     start_secs: 120,
                     safe_reveal_bonus_secs: 1,
@@ -2110,6 +2227,7 @@ mod tests {
                 height: 0,
                 cells: Vec::new(),
             },
+            labeled_cells: Vec::new(),
             timer_profile: AfkTimerProfileSnapshot {
                 start_secs: 120,
                 safe_reveal_bonus_secs: 1,
@@ -2146,6 +2264,7 @@ mod tests {
                 height: 0,
                 cells: Vec::new(),
             },
+            labeled_cells: Vec::new(),
             timer_profile: AfkTimerProfileSnapshot {
                 start_secs: 120,
                 safe_reveal_bonus_secs: 1,
@@ -2334,6 +2453,7 @@ mod tests {
                 height: 0,
                 cells: Vec::new(),
             },
+            labeled_cells: Vec::new(),
             timer_profile: AfkTimerProfileSnapshot {
                 start_secs: 120,
                 safe_reveal_bonus_secs: 1,
@@ -2371,6 +2491,7 @@ mod tests {
                 height: 0,
                 cells: Vec::new(),
             },
+            labeled_cells: Vec::new(),
             timer_profile: AfkTimerProfileSnapshot {
                 start_secs: 120,
                 safe_reveal_bonus_secs: 1,
@@ -2408,6 +2529,7 @@ mod tests {
                 height: 0,
                 cells: Vec::new(),
             },
+            labeled_cells: Vec::new(),
             timer_profile: AfkTimerProfileSnapshot {
                 start_secs: 120,
                 safe_reveal_bonus_secs: 1,
@@ -2458,6 +2580,7 @@ mod tests {
                         height: 18,
                         cells: Vec::new(),
                     },
+                    labeled_cells: Vec::new(),
                     timer_profile: AfkTimerProfileSnapshot {
                         start_secs: 120,
                         safe_reveal_bonus_secs: 1,
@@ -2512,6 +2635,7 @@ mod tests {
                         height: 9,
                         cells: Vec::new(),
                     },
+                    labeled_cells: Vec::new(),
                     timer_profile: AfkTimerProfileSnapshot {
                         start_secs: 120,
                         safe_reveal_bonus_secs: 1,
@@ -2566,6 +2690,7 @@ mod tests {
                         height: 18,
                         cells: Vec::new(),
                     },
+                    labeled_cells: Vec::new(),
                     timer_profile: AfkTimerProfileSnapshot {
                         start_secs: 120,
                         safe_reveal_bonus_secs: 1,
@@ -2629,6 +2754,7 @@ mod tests {
                         height: 0,
                         cells: Vec::new(),
                     },
+                    labeled_cells: Vec::new(),
                     timer_profile: AfkTimerProfileSnapshot {
                         start_secs: 120,
                         safe_reveal_bonus_secs: 1,

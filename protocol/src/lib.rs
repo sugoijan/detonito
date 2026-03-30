@@ -139,6 +139,8 @@ pub struct AfkSessionSnapshot {
     pub phase: AfkRoundPhase,
     pub paused: bool,
     pub board: AfkBoardSnapshot,
+    #[serde(default)]
+    pub labeled_cells: Vec<bool>,
     pub timer_profile: AfkTimerProfileSnapshot,
     pub timer_remaining_secs: i32,
     #[serde(default)]
