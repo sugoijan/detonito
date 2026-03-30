@@ -7,9 +7,12 @@ const ROUTE_STORAGE_TTL_MS: i64 = 24 * 60 * 60 * 1_000;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum AppRoute {
     Menu,
+    NormalMenu,
     Classic,
     Afk,
     Settings,
+    SettingsNormal,
+    SettingsAfk,
     About,
 }
 
@@ -17,6 +20,7 @@ pub(crate) enum AppRoute {
 pub(crate) struct RouteState {
     pub route: AppRoute,
     pub afk_auth_error: Option<String>,
+    pub afk_start_after_connect: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -84,17 +88,19 @@ pub(crate) fn initialize_route_state() -> RouteState {
     let now_ms = browser_now_ms();
     let view = query_param("view");
     let afk_auth_error = query_param("afk_auth_error");
+    let afk_start_after_connect = query_param("afk_start").is_some();
     let route = resolve_startup_route(
         route_from_view(view.as_deref()),
         load_persisted_route(now_ms),
     );
     persist_route(route, now_ms);
-    if view.is_some() || afk_auth_error.is_some() {
+    if view.is_some() || afk_auth_error.is_some() || afk_start_after_connect {
         replace_visible_url();
     }
     RouteState {
         route,
         afk_auth_error,
+        afk_start_after_connect,
     }
 }
 
@@ -146,28 +152,36 @@ pub(crate) fn websocket_path(path: &str) -> String {
 fn route_from_view(view: Option<&str>) -> Option<AppRoute> {
     match view {
         Some("menu") => Some(AppRoute::Menu),
+        Some("normal") => Some(AppRoute::NormalMenu),
         Some("classic") => Some(AppRoute::Classic),
         #[cfg(feature = "afk-runtime")]
         Some("afk") => Some(AppRoute::Afk),
         Some("settings") => Some(AppRoute::Settings),
+        Some("settings-normal") => Some(AppRoute::SettingsNormal),
+        #[cfg(feature = "afk-runtime")]
+        Some("settings-afk") => Some(AppRoute::SettingsAfk),
         Some("about") => Some(AppRoute::About),
         _ => None,
     }
 }
 
+#[cfg(feature = "afk-runtime")]
 fn route_view(route: AppRoute) -> Option<&'static str> {
     match route {
         AppRoute::Menu => None,
+        AppRoute::NormalMenu => Some("normal"),
         AppRoute::Classic => Some("classic"),
         AppRoute::Afk => Some("afk"),
         AppRoute::Settings => Some("settings"),
+        AppRoute::SettingsNormal => Some("settings-normal"),
+        AppRoute::SettingsAfk => Some("settings-afk"),
         AppRoute::About => Some("about"),
     }
 }
 
 fn supported_route(route: AppRoute) -> Option<AppRoute> {
     match route {
-        AppRoute::Afk if !cfg!(feature = "afk-runtime") => None,
+        AppRoute::Afk | AppRoute::SettingsAfk if !cfg!(feature = "afk-runtime") => None,
         _ => Some(route),
     }
 }
@@ -275,8 +289,8 @@ mod tests {
     #[test]
     fn startup_route_falls_back_to_persisted_route() {
         assert_eq!(
-            resolve_startup_route(None, Some(AppRoute::Settings)),
-            AppRoute::Settings
+            resolve_startup_route(None, Some(AppRoute::SettingsNormal)),
+            AppRoute::SettingsNormal
         );
     }
 
@@ -290,6 +304,19 @@ mod tests {
         assert_eq!(route_from_view(Some("menu")), Some(AppRoute::Menu));
     }
 
+    #[test]
+    fn normal_query_route_is_supported() {
+        assert_eq!(route_from_view(Some("normal")), Some(AppRoute::NormalMenu));
+    }
+
+    #[test]
+    fn normal_settings_query_route_is_supported() {
+        assert_eq!(
+            route_from_view(Some("settings-normal")),
+            Some(AppRoute::SettingsNormal)
+        );
+    }
+
     #[cfg(feature = "afk-runtime")]
     #[test]
     fn afk_route_is_supported_when_enabled() {
@@ -301,11 +328,33 @@ mod tests {
         assert_eq!(stored.fresh_route_at(1_000), Some(AppRoute::Afk));
     }
 
+    #[cfg(feature = "afk-runtime")]
+    #[test]
+    fn afk_settings_route_is_supported_when_enabled() {
+        let stored = PersistedRoute {
+            route: AppRoute::SettingsAfk,
+            updated_at_ms: 1_000,
+        };
+
+        assert_eq!(stored.fresh_route_at(1_000), Some(AppRoute::SettingsAfk));
+    }
+
     #[cfg(not(feature = "afk-runtime"))]
     #[test]
     fn afk_route_is_rejected_when_disabled() {
         let stored = PersistedRoute {
             route: AppRoute::Afk,
+            updated_at_ms: 1_000,
+        };
+
+        assert_eq!(stored.fresh_route_at(1_000), None);
+    }
+
+    #[cfg(not(feature = "afk-runtime"))]
+    #[test]
+    fn afk_settings_route_is_rejected_when_disabled() {
+        let stored = PersistedRoute {
+            route: AppRoute::SettingsAfk,
             updated_at_ms: 1_000,
         };
 

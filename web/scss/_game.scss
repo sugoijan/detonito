@@ -360,7 +360,7 @@ main {
         height: 18px;
         min-height: 18px;
         max-height: 18px;
-        padding: 0 6px;
+        padding: 0 5px;
         outline: solid 1px var(#{$css-var-prefix}shadow);
         display: inline-flex;
         align-items: center;
@@ -616,6 +616,15 @@ main {
         padding: 0;
       }
 
+      .menu-number-field {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
+        min-width: 0;
+        padding: 0 6px;
+      }
+
       .menu-number-input {
         display: block;
         width: 100%;
@@ -639,6 +648,19 @@ main {
           margin: 0;
           -webkit-appearance: none;
         }
+
+        &.with-suffix {
+          flex: 0 1 4ch;
+          width: 4ch;
+          padding: 0;
+          text-align: right;
+        }
+      }
+
+      .menu-number-suffix {
+        flex: 0 0 auto;
+        min-width: 1ch;
+        text-align: left;
       }
 
       .menu-link-detail {
@@ -735,7 +757,6 @@ main {
     font-size: 9px;
     line-height: 1;
     letter-spacing: -0.02em;
-    text-transform: uppercase;
   }
 
   .afk-cell-tag {
@@ -746,7 +767,6 @@ main {
     line-height: 1;
     letter-spacing: -0.03em;
     opacity: 0.75;
-    text-transform: uppercase;
     z-index: 1;
     pointer-events: none;
   }

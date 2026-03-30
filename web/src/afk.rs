@@ -7,23 +7,31 @@ use detonito_protocol::{
 };
 use gloo::timers::callback::Timeout;
 use js_sys::encode_uri_component;
+use serde::{Deserialize, Serialize};
 use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::{Event, MessageEvent, Request, RequestCredentials, RequestInit, Response, WebSocket};
 use yew::prelude::*;
 
 use crate::menu::{
-    menu_blank_row, menu_entry_row, menu_header_row, menu_icon_button, menu_nav_enter_button,
+    menu_copy_row, menu_header_row, menu_icon_button, menu_nav_enter_button, menu_primary_row,
+    menu_section_gap, menu_stepper_row, menu_toggle_row, menu_wide_detail_row,
 };
 use crate::runtime::{AppRoute, app_path, auth_return_to, frontend_runtime_config, websocket_path};
 use crate::sprites::{Glyph, GlyphRun, GlyphSet, Icon, IconCrop, SpriteDefs};
-use crate::utils::{browser_now_ms, format_for_counter};
+use crate::utils::{
+    LocalDelete, LocalOrDefault, LocalSave, StorageKey, browser_now_ms, format_for_counter,
+};
 
 #[derive(Properties, PartialEq)]
 pub(crate) struct AfkViewProps {
     pub on_menu: Callback<()>,
+    pub on_open_settings: Callback<()>,
     #[prop_or_default]
     pub auth_error: Option<String>,
+    #[prop_or_default]
+    pub start_after_connect: bool,
+    pub on_consume_start_after_connect: Callback<()>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -44,6 +52,7 @@ enum AfkScreen {
 enum AfkMenuPage {
     Root,
     BoardSize,
+    ConfirmBoardSize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -128,67 +137,92 @@ fn board_size_detail(board_size: AfkBoardSize) -> &'static str {
     }
 }
 
-fn board_size_entry_row(
-    label: impl Into<AttrValue>,
-    detail: impl Into<AttrValue>,
-    button: Html,
-) -> Html {
-    html! {
-        <tr>
-            <td class="menu-pad"/>
-            <td class="menu-button-slot">{button}</td>
-            <td class="menu-text" colspan="3">{label.into()}</td>
-            <td class="menu-detail" colspan="8">{detail.into()}</td>
-            <td class="menu-pad"/>
-        </tr>
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct AfkMenuPreferences {
+    board_size: AfkBoardSize,
+    timeout_enabled: bool,
+    timeout_duration_secs: u32,
+}
+
+impl Default for AfkMenuPreferences {
+    fn default() -> Self {
+        Self {
+            board_size: AfkBoardSize::Medium,
+            timeout_enabled: true,
+            timeout_duration_secs: 30,
+        }
     }
 }
 
-fn menu_toggle_icon_button(
-    icon: &'static str,
-    title: impl Into<AttrValue>,
-    selected: bool,
-    disabled: bool,
-    onclick: Callback<MouseEvent>,
-) -> Html {
-    html! {
-        <button class={classes!(selected.then_some("pressed"))} {disabled} {onclick} title={title.into()}>
-            <Icon name={icon} crop={IconCrop::CenteredSquare64} class={classes!("button-icon")}/>
-        </button>
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct AfkConnectStartDraft {
+    preferences: AfkMenuPreferences,
+}
+
+impl StorageKey for AfkConnectStartDraft {
+    const KEY: &'static str = "detonito:afk:connect-start";
+}
+
+fn afk_menu_preferences_from_status(status: &AfkStatusResponse) -> AfkMenuPreferences {
+    AfkMenuPreferences {
+        board_size: status.board_size,
+        timeout_enabled: status.timeout_enabled,
+        timeout_duration_secs: status.timeout_duration_secs,
     }
 }
 
-fn menu_primary_row(label: impl Into<AttrValue>, button: Html) -> Html {
-    html! {
-        <tr>
-            <td class="menu-pad"/>
-            <td class="menu-button-slot">{button}</td>
-            <td class="menu-text" colspan="11">{label.into()}</td>
-            <td class="menu-pad"/>
-        </tr>
+fn displayed_afk_menu_preferences(
+    status: &AfkStatusResponse,
+    pending_preferences: Option<AfkMenuPreferences>,
+) -> AfkMenuPreferences {
+    if status.auth.identity.is_none() {
+        pending_preferences.unwrap_or_else(|| afk_menu_preferences_from_status(status))
+    } else {
+        afk_menu_preferences_from_status(status)
     }
 }
 
-fn menu_toggle_row(label: impl Into<AttrValue>, left_button: Html, right_button: Html) -> Html {
-    html! {
-        <tr>
-            <td class="menu-pad"/>
-            <td class="menu-text" colspan="9">{label.into()}</td>
-            <td class="menu-button-slot">{left_button}</td>
-            <td class="menu-button-slot">{right_button}</td>
-            <td class="menu-pad"/>
-            <td class="menu-pad"/>
-        </tr>
+fn persist_afk_connect_start_draft(preferences: Option<AfkMenuPreferences>) {
+    match preferences {
+        Some(preferences) => Some(AfkConnectStartDraft { preferences }).local_save(),
+        None => Option::<AfkConnectStartDraft>::local_delete(),
     }
 }
 
-fn menu_copy_row(text: impl Into<AttrValue>) -> Html {
-    html! {
-        <tr>
-            <td class="menu-pad"/>
-            <td class="menu-about-copy" colspan="12">{text.into()}</td>
-            <td class="menu-pad"/>
-        </tr>
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AfkBoardSizeChangePlan {
+    NoChange,
+    ApplyOnly(AfkBoardSize),
+    ConfirmRestart(AfkBoardSize),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AfkRootPrimaryAction {
+    ResumeAndStartNew,
+    Start,
+    ConnectAndStart,
+}
+
+fn plan_board_size_change(
+    status: &AfkStatusResponse,
+    next_board_size: AfkBoardSize,
+) -> AfkBoardSizeChangePlan {
+    if status.board_size == next_board_size {
+        AfkBoardSizeChangePlan::NoChange
+    } else if status.session.is_some() {
+        AfkBoardSizeChangePlan::ConfirmRestart(next_board_size)
+    } else {
+        AfkBoardSizeChangePlan::ApplyOnly(next_board_size)
+    }
+}
+
+fn afk_root_primary_action(status: &AfkStatusResponse) -> AfkRootPrimaryAction {
+    if status.session.is_some() {
+        AfkRootPrimaryAction::ResumeAndStartNew
+    } else if status.auth.identity.is_some() {
+        AfkRootPrimaryAction::Start
+    } else {
+        AfkRootPrimaryAction::ConnectAndStart
     }
 }
 
@@ -203,9 +237,234 @@ fn has_critical_chat_failure(status: &AfkStatusResponse) -> bool {
     status.session.is_some() && matches!(status.chat_connection, AfkChatConnectionState::Error)
 }
 
-fn afk_connect_href(base: String) -> String {
+fn handle_started_status(
+    status: &UseStateHandle<LoadState<AfkStatusResponse>>,
+    screen: &UseStateHandle<AfkScreen>,
+    last_error: &UseStateHandle<Option<String>>,
+    response: AfkStatusResponse,
+) {
+    let has_session = response.session.is_some();
+    let can_open_board =
+        has_session && !matches!(response.chat_connection, AfkChatConnectionState::Error);
+    let next_error = status_chat_error(&response);
+    status.set(LoadState::Ready(response));
+    if can_open_board {
+        last_error.set(None);
+        screen.set(AfkScreen::Board);
+    } else if let Some(error) = next_error {
+        last_error.set(Some(error));
+    }
+}
+
+/// Optional AFK notices own their trailing separator so root menus do not end
+/// up with a second blank row when no notice is visible.
+fn afk_menu_notice_block(
+    primary_notice: Option<AttrValue>,
+    secondary_notice: Option<AttrValue>,
+) -> Html {
+    let rows: Vec<Html> = [primary_notice, secondary_notice]
+        .into_iter()
+        .flatten()
+        .map(menu_copy_row)
+        .collect();
+
+    if rows.is_empty() {
+        Html::default()
+    } else {
+        html! {
+            <>
+                {for rows}
+                {menu_section_gap()}
+            </>
+        }
+    }
+}
+
+fn afk_root_primary_rows(
+    action: AfkRootPrimaryAction,
+    resume_board: &Callback<MouseEvent>,
+    start_new_board: &Callback<MouseEvent>,
+    connect_twitch_and_start: &Callback<MouseEvent>,
+) -> Html {
+    match action {
+        AfkRootPrimaryAction::ResumeAndStartNew => html! {
+            <>
+                {menu_primary_row(
+                    "Resume",
+                    menu_nav_enter_button(
+                        "Resume live board",
+                        false,
+                        resume_board.clone(),
+                    ),
+                )}
+                {menu_primary_row(
+                    "Start New",
+                    menu_nav_enter_button(
+                        "Start a new AFK round",
+                        false,
+                        start_new_board.clone(),
+                    ),
+                )}
+            </>
+        },
+        AfkRootPrimaryAction::Start => html! {
+            {menu_primary_row(
+                "Start",
+                menu_nav_enter_button(
+                    "Start AFK mode",
+                    false,
+                    start_new_board.clone(),
+                ),
+            )}
+        },
+        AfkRootPrimaryAction::ConnectAndStart => html! {
+            {menu_primary_row(
+                "Connect and Start",
+                menu_nav_enter_button(
+                    "Connect Twitch and start AFK mode",
+                    false,
+                    connect_twitch_and_start.clone(),
+                ),
+            )}
+        },
+    }
+}
+
+fn afk_root_option_rows(
+    displayed_preferences: AfkMenuPreferences,
+    timeout_controls_disabled: bool,
+    open_board_size_menu: &Callback<MouseEvent>,
+    set_timeout_on: &Callback<MouseEvent>,
+    set_timeout_off: &Callback<MouseEvent>,
+    decrease_timeout_duration: &Callback<MouseEvent>,
+    increase_timeout_duration: &Callback<MouseEvent>,
+    open_settings: &Callback<MouseEvent>,
+) -> Html {
+    html! {
+        <>
+            {menu_wide_detail_row(
+                "Board Size",
+                board_size_label(displayed_preferences.board_size),
+                menu_nav_enter_button(
+                    "Open board size menu",
+                    false,
+                    open_board_size_menu.clone(),
+                ),
+            )}
+            {menu_toggle_row(
+                "Timeout on mistake",
+                menu_icon_button(
+                    "ok",
+                    "Enable timeout on mistake",
+                    displayed_preferences.timeout_enabled,
+                    timeout_controls_disabled,
+                    set_timeout_on.clone(),
+                ),
+                menu_icon_button(
+                    "cancel",
+                    "Disable timeout on mistake",
+                    !displayed_preferences.timeout_enabled,
+                    timeout_controls_disabled,
+                    set_timeout_off.clone(),
+                ),
+            )}
+            {
+                if displayed_preferences.timeout_enabled {
+                    menu_stepper_row(
+                        None,
+                        "Timeout length",
+                        html! { format!("{}s", displayed_preferences.timeout_duration_secs) },
+                        menu_icon_button(
+                            "minus",
+                            "Decrease timeout length",
+                            false,
+                            timeout_controls_disabled
+                                || previous_timeout_duration_secs(
+                                    displayed_preferences.timeout_duration_secs,
+                                ) == displayed_preferences.timeout_duration_secs,
+                            decrease_timeout_duration.clone(),
+                        ),
+                        menu_icon_button(
+                            "plus",
+                            "Increase timeout length",
+                            false,
+                            timeout_controls_disabled
+                                || next_timeout_duration_secs(
+                                    displayed_preferences.timeout_duration_secs,
+                                ) == displayed_preferences.timeout_duration_secs,
+                            increase_timeout_duration.clone(),
+                        ),
+                    )
+                } else {
+                    Html::default()
+                }
+            }
+            {menu_section_gap()}
+            {menu_wide_detail_row(
+                "Settings",
+                "",
+                menu_nav_enter_button(
+                    "Open settings",
+                    false,
+                    open_settings.clone(),
+                ),
+            )}
+        </>
+    }
+}
+
+/// The AFK root menu keeps one shared option block for resumable, fresh, and
+/// disconnected states so new settings rows cannot drift between branches.
+fn afk_root_menu_rows(
+    action: AfkRootPrimaryAction,
+    displayed_preferences: AfkMenuPreferences,
+    timeout_controls_disabled: bool,
+    resume_board: &Callback<MouseEvent>,
+    start_new_board: &Callback<MouseEvent>,
+    connect_twitch_and_start: &Callback<MouseEvent>,
+    open_board_size_menu: &Callback<MouseEvent>,
+    set_timeout_on: &Callback<MouseEvent>,
+    set_timeout_off: &Callback<MouseEvent>,
+    decrease_timeout_duration: &Callback<MouseEvent>,
+    increase_timeout_duration: &Callback<MouseEvent>,
+    open_settings: &Callback<MouseEvent>,
+) -> Html {
+    html! {
+        <>
+            {afk_root_primary_rows(
+                action,
+                resume_board,
+                start_new_board,
+                connect_twitch_and_start,
+            )}
+            {menu_section_gap()}
+            {afk_root_option_rows(
+                displayed_preferences,
+                timeout_controls_disabled,
+                open_board_size_menu,
+                set_timeout_on,
+                set_timeout_off,
+                decrease_timeout_duration,
+                increase_timeout_duration,
+                open_settings,
+            )}
+        </>
+    }
+}
+
+fn afk_return_to_path(start_after_connect: bool) -> String {
+    let mut return_to = auth_return_to(AppRoute::Afk);
+    if start_after_connect {
+        let separator = if return_to.contains('?') { '&' } else { '?' };
+        return_to.push(separator);
+        return_to.push_str("afk_start=1");
+    }
+    return_to
+}
+
+fn afk_connect_href(base: String, start_after_connect: bool) -> String {
     let separator = if base.contains('?') { '&' } else { '?' };
-    let afk_return_to = auth_return_to(AppRoute::Afk);
+    let afk_return_to = afk_return_to_path(start_after_connect);
     let return_to = encode_uri_component(&afk_return_to)
         .as_string()
         .unwrap_or(afk_return_to);
@@ -594,7 +853,17 @@ fn format_cell_code((x, y): (usize, usize)) -> String {
         .copied()
         .map(char::from)
         .unwrap_or('?');
-    format!("{row}{column}")
+    let mut code = String::with_capacity(2);
+    code.push(display_afk_label_char(row));
+    code.push(display_afk_label_char(column));
+    code
+}
+
+fn display_afk_label_char(label: char) -> char {
+    match label {
+        'a'..='z' if label != 'o' => label.to_ascii_uppercase(),
+        _ => label,
+    }
 }
 
 const AFK_ROW_LABELS: &str = "123456789abcdefghijk";
@@ -815,6 +1084,11 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
     let status = use_state_eq(|| LoadState::<AfkStatusResponse>::Idle);
     let screen = use_state_eq(|| AfkScreen::Menu);
     let menu_page = use_state_eq(|| AfkMenuPage::Root);
+    let pending_board_size = use_state_eq(|| None::<AfkBoardSize>);
+    let pre_auth_preferences = use_state_eq(|| {
+        Option::<AfkConnectStartDraft>::local_or_default().map(|draft| draft.preferences)
+    });
+    let auto_start_in_progress = use_state_eq(|| false);
     let manual_face_prompt = use_state_eq(|| None::<AfkFacePrompt>);
     let face_notification = use_state_eq(|| None::<AfkFaceNotification>);
     let face_notification_timeout = use_mut_ref(|| None::<Timeout>);
@@ -883,6 +1157,38 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                 });
             } else {
                 status.set(LoadState::Idle);
+            }
+            || ()
+        });
+    }
+
+    {
+        let pre_auth_preferences = pre_auth_preferences.clone();
+        use_effect_with(
+            ((*status).clone(), props.start_after_connect),
+            move |(status_snapshot, start_after_connect)| {
+                if let LoadState::Ready(status) = status_snapshot {
+                    if status.auth.identity.is_none() {
+                        if (*pre_auth_preferences).is_none() {
+                            let preferences = afk_menu_preferences_from_status(status);
+                            pre_auth_preferences.set(Some(preferences));
+                            persist_afk_connect_start_draft(Some(preferences));
+                        }
+                    } else if !*start_after_connect && (*pre_auth_preferences).is_some() {
+                        pre_auth_preferences.set(None);
+                        persist_afk_connect_start_draft(None);
+                    }
+                }
+                || ()
+            },
+        );
+    }
+
+    {
+        let auto_start_in_progress = auto_start_in_progress.clone();
+        use_effect_with(props.start_after_connect, move |start_after_connect| {
+            if !*start_after_connect && *auto_start_in_progress {
+                auto_start_in_progress.set(false);
             }
             || ()
         });
@@ -1063,6 +1369,60 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
     }
 
     {
+        let status = status.clone();
+        let screen = screen.clone();
+        let menu_page = menu_page.clone();
+        let manual_face_prompt = manual_face_prompt.clone();
+        let last_error = last_error.clone();
+        let pre_auth_preferences = pre_auth_preferences.clone();
+        let auto_start_in_progress = auto_start_in_progress.clone();
+        let on_consume_start_after_connect = props.on_consume_start_after_connect.clone();
+        use_effect_with(
+            (
+                props.start_after_connect,
+                (*status).clone(),
+                *pre_auth_preferences,
+                *auto_start_in_progress,
+            ),
+            move |(
+                start_after_connect,
+                status_snapshot,
+                pending_preferences,
+                auto_start_pending,
+            )| {
+                if *start_after_connect
+                    && !*auto_start_pending
+                    && let LoadState::Ready(current_status) = status_snapshot
+                    && current_status.auth.identity.is_some()
+                {
+                    let preferences = pending_preferences
+                        .unwrap_or_else(|| afk_menu_preferences_from_status(current_status));
+                    auto_start_in_progress.set(true);
+                    on_consume_start_after_connect.emit(());
+                    pre_auth_preferences.set(None);
+                    persist_afk_connect_start_draft(None);
+                    manual_face_prompt.set(None);
+                    menu_page.set(AfkMenuPage::Root);
+                    last_error.set(None);
+
+                    let status = status.clone();
+                    let screen = screen.clone();
+                    let last_error = last_error.clone();
+                    spawn_local(async move {
+                        match apply_preferences_and_start(preferences).await {
+                            Ok(response) => {
+                                handle_started_status(&status, &screen, &last_error, response);
+                            }
+                            Err(error) => status.set(LoadState::Error(error)),
+                        }
+                    });
+                }
+                || ()
+            },
+        );
+    }
+
+    {
         let clear_face_notification = clear_face_notification.clone();
         let notification_id = (*face_notification)
             .as_ref()
@@ -1178,19 +1538,10 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
             let screen = screen.clone();
             let last_error = last_error.clone();
             spawn_local(async move {
-                let _ = post_action("/api/afk/start").await;
-                match fetch_status().await {
+                last_error.set(None);
+                match post_empty_status("/api/afk/start").await {
                     Ok(response) => {
-                        let has_session = response.session.is_some();
-                        let can_open_board = has_session
-                            && !matches!(response.chat_connection, AfkChatConnectionState::Error);
-                        let next_error = status_chat_error(&response);
-                        status.set(LoadState::Ready(response));
-                        if can_open_board {
-                            screen.set(AfkScreen::Board);
-                        } else if let Some(error) = next_error {
-                            last_error.set(Some(error));
-                        }
+                        handle_started_status(&status, &screen, &last_error, response);
                     }
                     Err(error) => status.set(LoadState::Error(error)),
                 }
@@ -1218,7 +1569,7 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
         })
     };
 
-    let connect_twitch = {
+    let connect_twitch_and_start = {
         let href = match &*status {
             LoadState::Ready(status) => status
                 .connect_url
@@ -1226,97 +1577,138 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                 .unwrap_or_else(|| app_path("/auth/twitch/login")),
             _ => app_path("/auth/twitch/login"),
         };
-        let href = afk_connect_href(href);
+        let pre_auth_preferences = pre_auth_preferences.clone();
+        let status = status.clone();
         Callback::from(move |_| {
+            let preferences = match &*status {
+                LoadState::Ready(current_status) => {
+                    displayed_afk_menu_preferences(current_status, *pre_auth_preferences)
+                }
+                _ => AfkMenuPreferences::default(),
+            };
+            persist_afk_connect_start_draft(Some(preferences));
+            let href = afk_connect_href(href.clone(), true);
             let _ = gloo::utils::window().location().set_href(&href);
         })
     };
 
-    let set_board_size_tiny = {
+    let open_settings = {
+        let on_open_settings = props.on_open_settings.clone();
+        Callback::from(move |_| on_open_settings.emit(()))
+    };
+
+    let change_board_size = {
         let status = status.clone();
         let menu_page = menu_page.clone();
-        Callback::from(move |_| {
-            let status = status.clone();
-            let menu_page = menu_page.clone();
-            spawn_local(async move {
-                match post_json_status(
-                    "/api/afk/board-size",
-                    &serde_json::json!({ "board_size": AfkBoardSize::Tiny }),
-                )
-                .await
-                {
-                    Ok(response) => {
-                        status.set(LoadState::Ready(response));
-                        menu_page.set(AfkMenuPage::Root);
-                    }
-                    Err(error) => status.set(LoadState::Error(error)),
+        let pending_board_size = pending_board_size.clone();
+        let pre_auth_preferences = pre_auth_preferences.clone();
+        Rc::new(move |next_board_size: AfkBoardSize| {
+            let LoadState::Ready(current_status) = &*status else {
+                return;
+            };
+
+            if current_status.auth.identity.is_none() {
+                let current_preferences =
+                    displayed_afk_menu_preferences(current_status, *pre_auth_preferences);
+                let next_preferences = AfkMenuPreferences {
+                    board_size: next_board_size,
+                    ..current_preferences
+                };
+                pre_auth_preferences.set(Some(next_preferences));
+                persist_afk_connect_start_draft(Some(next_preferences));
+                menu_page.set(AfkMenuPage::Root);
+                return;
+            }
+
+            match plan_board_size_change(current_status, next_board_size) {
+                AfkBoardSizeChangePlan::NoChange => {
+                    menu_page.set(AfkMenuPage::Root);
                 }
-            });
+                AfkBoardSizeChangePlan::ApplyOnly(next_board_size) => {
+                    let status = status.clone();
+                    let menu_page = menu_page.clone();
+                    spawn_local(async move {
+                        match post_json_status(
+                            "/api/afk/board-size",
+                            &serde_json::json!({ "board_size": next_board_size }),
+                        )
+                        .await
+                        {
+                            Ok(response) => {
+                                status.set(LoadState::Ready(response));
+                                menu_page.set(AfkMenuPage::Root);
+                            }
+                            Err(error) => status.set(LoadState::Error(error)),
+                        }
+                    });
+                }
+                AfkBoardSizeChangePlan::ConfirmRestart(next_board_size) => {
+                    pending_board_size.set(Some(next_board_size));
+                    menu_page.set(AfkMenuPage::ConfirmBoardSize);
+                }
+            }
         })
+    };
+
+    let set_board_size_tiny = {
+        let change_board_size = change_board_size.clone();
+        Callback::from(move |_| change_board_size(AfkBoardSize::Tiny))
     };
 
     let set_board_size_small = {
-        let status = status.clone();
-        let menu_page = menu_page.clone();
-        Callback::from(move |_| {
-            let status = status.clone();
-            let menu_page = menu_page.clone();
-            spawn_local(async move {
-                match post_json_status(
-                    "/api/afk/board-size",
-                    &serde_json::json!({ "board_size": AfkBoardSize::Small }),
-                )
-                .await
-                {
-                    Ok(response) => {
-                        status.set(LoadState::Ready(response));
-                        menu_page.set(AfkMenuPage::Root);
-                    }
-                    Err(error) => status.set(LoadState::Error(error)),
-                }
-            });
-        })
+        let change_board_size = change_board_size.clone();
+        Callback::from(move |_| change_board_size(AfkBoardSize::Small))
     };
 
     let set_board_size_medium = {
-        let status = status.clone();
-        let menu_page = menu_page.clone();
-        Callback::from(move |_| {
-            let status = status.clone();
-            let menu_page = menu_page.clone();
-            spawn_local(async move {
-                match post_json_status(
-                    "/api/afk/board-size",
-                    &serde_json::json!({ "board_size": AfkBoardSize::Medium }),
-                )
-                .await
-                {
-                    Ok(response) => {
-                        status.set(LoadState::Ready(response));
-                        menu_page.set(AfkMenuPage::Root);
-                    }
-                    Err(error) => status.set(LoadState::Error(error)),
-                }
-            });
-        })
+        let change_board_size = change_board_size.clone();
+        Callback::from(move |_| change_board_size(AfkBoardSize::Medium))
     };
 
     let set_board_size_large = {
-        let status = status.clone();
+        let change_board_size = change_board_size.clone();
+        Callback::from(move |_| change_board_size(AfkBoardSize::Large))
+    };
+
+    let cancel_board_size_restart = {
         let menu_page = menu_page.clone();
+        let pending_board_size = pending_board_size.clone();
         Callback::from(move |_| {
+            pending_board_size.set(None);
+            menu_page.set(AfkMenuPage::BoardSize);
+        })
+    };
+
+    let confirm_board_size_restart = {
+        let status = status.clone();
+        let screen = screen.clone();
+        let menu_page = menu_page.clone();
+        let pending_board_size = pending_board_size.clone();
+        let last_error = last_error.clone();
+        Callback::from(move |_| {
+            let Some(next_board_size) = *pending_board_size else {
+                return;
+            };
+            pending_board_size.set(None);
+            menu_page.set(AfkMenuPage::Root);
             let status = status.clone();
-            let menu_page = menu_page.clone();
+            let screen = screen.clone();
+            let last_error = last_error.clone();
             spawn_local(async move {
-                match post_json_status(
+                let size_response = post_json_status(
                     "/api/afk/board-size",
-                    &serde_json::json!({ "board_size": AfkBoardSize::Large }),
+                    &serde_json::json!({ "board_size": next_board_size }),
                 )
-                .await
-                {
-                    Ok(response) => {
-                        status.set(LoadState::Ready(response));
-                        menu_page.set(AfkMenuPage::Root);
+                .await;
+                match size_response {
+                    Ok(_) => {
+                        last_error.set(None);
+                        match post_empty_status("/api/afk/start").await {
+                            Ok(response) => {
+                                handle_started_status(&status, &screen, &last_error, response);
+                            }
+                            Err(error) => status.set(LoadState::Error(error)),
+                        }
                     }
                     Err(error) => status.set(LoadState::Error(error)),
                 }
@@ -1326,7 +1718,20 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
 
     let set_timeout_on = {
         let status = status.clone();
+        let pre_auth_preferences = pre_auth_preferences.clone();
         Callback::from(move |_| {
+            let LoadState::Ready(current_status) = &*status else {
+                return;
+            };
+            if current_status.auth.identity.is_none() {
+                let next_preferences = AfkMenuPreferences {
+                    timeout_enabled: true,
+                    ..displayed_afk_menu_preferences(current_status, *pre_auth_preferences)
+                };
+                pre_auth_preferences.set(Some(next_preferences));
+                persist_afk_connect_start_draft(Some(next_preferences));
+                return;
+            }
             let status = status.clone();
             spawn_local(async move {
                 match post_json_status("/api/afk/timeout", &serde_json::json!({ "enabled": true }))
@@ -1341,7 +1746,20 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
 
     let set_timeout_off = {
         let status = status.clone();
+        let pre_auth_preferences = pre_auth_preferences.clone();
         Callback::from(move |_| {
+            let LoadState::Ready(current_status) = &*status else {
+                return;
+            };
+            if current_status.auth.identity.is_none() {
+                let next_preferences = AfkMenuPreferences {
+                    timeout_enabled: false,
+                    ..displayed_afk_menu_preferences(current_status, *pre_auth_preferences)
+                };
+                pre_auth_preferences.set(Some(next_preferences));
+                persist_afk_connect_start_draft(Some(next_preferences));
+                return;
+            }
             let status = status.clone();
             spawn_local(async move {
                 match post_json_status("/api/afk/timeout", &serde_json::json!({ "enabled": false }))
@@ -1356,13 +1774,31 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
 
     let decrease_timeout_duration = {
         let status = status.clone();
+        let pre_auth_preferences = pre_auth_preferences.clone();
         Callback::from(move |_| {
             let next_duration = match &*status {
+                LoadState::Ready(current_status) if current_status.auth.identity.is_none() => {
+                    previous_timeout_duration_secs(
+                        displayed_afk_menu_preferences(current_status, *pre_auth_preferences)
+                            .timeout_duration_secs,
+                    )
+                }
                 LoadState::Ready(status) => {
                     previous_timeout_duration_secs(status.timeout_duration_secs)
                 }
                 _ => return,
             };
+            if let LoadState::Ready(current_status) = &*status
+                && current_status.auth.identity.is_none()
+            {
+                let next_preferences = AfkMenuPreferences {
+                    timeout_duration_secs: next_duration,
+                    ..displayed_afk_menu_preferences(current_status, *pre_auth_preferences)
+                };
+                pre_auth_preferences.set(Some(next_preferences));
+                persist_afk_connect_start_draft(Some(next_preferences));
+                return;
+            }
             let status = status.clone();
             spawn_local(async move {
                 match post_json_status(
@@ -1380,13 +1816,31 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
 
     let increase_timeout_duration = {
         let status = status.clone();
+        let pre_auth_preferences = pre_auth_preferences.clone();
         Callback::from(move |_| {
             let next_duration = match &*status {
+                LoadState::Ready(current_status) if current_status.auth.identity.is_none() => {
+                    next_timeout_duration_secs(
+                        displayed_afk_menu_preferences(current_status, *pre_auth_preferences)
+                            .timeout_duration_secs,
+                    )
+                }
                 LoadState::Ready(status) => {
                     next_timeout_duration_secs(status.timeout_duration_secs)
                 }
                 _ => return,
             };
+            if let LoadState::Ready(current_status) = &*status
+                && current_status.auth.identity.is_none()
+            {
+                let next_preferences = AfkMenuPreferences {
+                    timeout_duration_secs: next_duration,
+                    ..displayed_afk_menu_preferences(current_status, *pre_auth_preferences)
+                };
+                pre_auth_preferences.set(Some(next_preferences));
+                persist_afk_connect_start_draft(Some(next_preferences));
+                return;
+            }
             let status = status.clone();
             spawn_local(async move {
                 match post_json_status(
@@ -1527,289 +1981,176 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
             let body = match &*status {
                 LoadState::Idle if !runtime.afk_enabled => html! {
                     <>
-                        {menu_blank_row()}
+                        {menu_section_gap()}
                         {menu_copy_row("AFK mode is unavailable in this build.")}
                     </>
                 },
                 LoadState::Loading => html! {
                     <>
-                        {menu_blank_row()}
+                        {menu_section_gap()}
                         {menu_copy_row("Loading AFK status…")}
                     </>
                 },
                 LoadState::Error(error) => html! {
                     <>
-                        {menu_blank_row()}
+                        {menu_section_gap()}
                         {menu_copy_row(error.clone())}
                     </>
                 },
-                LoadState::Ready(status) if status.auth.identity.is_none() => html! {
-                    <>
-                        {menu_blank_row()}
-                        {
-                            if let Some(error) = auth_error_html.clone() {
-                                menu_copy_row(error)
-                            } else {
-                                Html::default()
-                            }
-                        }
-                        {
-                            if let Some(error) = status_error.clone().or_else(|| websocket_error.clone()) {
-                                menu_copy_row(error)
-                            } else {
-                                Html::default()
-                            }
-                        }
-                        {menu_primary_row(
-                            "Connect Twitch",
-                            menu_nav_enter_button("Connect with Twitch", false, connect_twitch),
-                        )}
-                    </>
-                },
                 LoadState::Ready(status) => {
-                    if matches!(*menu_page, AfkMenuPage::BoardSize)
-                        && status.auth.identity.is_some()
-                    {
+                    if matches!(*menu_page, AfkMenuPage::BoardSize) {
+                        let displayed_preferences =
+                            displayed_afk_menu_preferences(status, *pre_auth_preferences);
                         html! {
                             <>
-                                {menu_blank_row()}
-                                {
-                                    if let Some(error) = auth_error_html.clone() {
-                                        menu_copy_row(error)
-                                    } else {
-                                        Html::default()
-                                    }
-                                }
-                                {
-                                    if let Some(error) = status_error.clone().or_else(|| websocket_error.clone()) {
-                                        menu_copy_row(error)
-                                    } else {
-                                        Html::default()
-                                    }
-                                }
-                                {board_size_entry_row(
+                                {menu_section_gap()}
+                                {afk_menu_notice_block(
+                                    auth_error_html.clone(),
+                                    status_error
+                                        .clone()
+                                        .or_else(|| websocket_error.clone())
+                                        .map(AttrValue::from),
+                                )}
+                                {menu_wide_detail_row(
                                     "Tiny",
                                     board_size_detail(AfkBoardSize::Tiny),
-                                    menu_toggle_icon_button(
+                                    menu_icon_button(
                                         "ok",
                                         "Use tiny AFK board size",
-                                        status.board_size == AfkBoardSize::Tiny,
+                                        displayed_preferences.board_size == AfkBoardSize::Tiny,
                                         false,
                                         set_board_size_tiny.clone(),
                                     ),
                                 )}
-                                {board_size_entry_row(
+                                {menu_wide_detail_row(
                                     "Small",
                                     board_size_detail(AfkBoardSize::Small),
-                                    menu_toggle_icon_button(
+                                    menu_icon_button(
                                         "ok",
                                         "Use small AFK board size",
-                                        status.board_size == AfkBoardSize::Small,
+                                        displayed_preferences.board_size == AfkBoardSize::Small,
                                         false,
                                         set_board_size_small.clone(),
                                     ),
                                 )}
-                                {board_size_entry_row(
+                                {menu_wide_detail_row(
                                     "Medium",
                                     board_size_detail(AfkBoardSize::Medium),
-                                    menu_toggle_icon_button(
+                                    menu_icon_button(
                                         "ok",
                                         "Use medium AFK board size",
-                                        status.board_size == AfkBoardSize::Medium,
+                                        displayed_preferences.board_size == AfkBoardSize::Medium,
                                         false,
                                         set_board_size_medium.clone(),
                                     ),
                                 )}
-                                {board_size_entry_row(
+                                {menu_wide_detail_row(
                                     "Large",
                                     board_size_detail(AfkBoardSize::Large),
-                                    menu_toggle_icon_button(
+                                    menu_icon_button(
                                         "ok",
                                         "Use large AFK board size",
-                                        status.board_size == AfkBoardSize::Large,
+                                        displayed_preferences.board_size == AfkBoardSize::Large,
                                         false,
                                         set_board_size_large.clone(),
                                     ),
                                 )}
+                                {menu_section_gap()}
+                            </>
+                        }
+                    } else if matches!(*menu_page, AfkMenuPage::ConfirmBoardSize)
+                        && status.auth.identity.is_some()
+                    {
+                        let pending_label = (*pending_board_size)
+                            .map(board_size_label)
+                            .unwrap_or("New size");
+                        html! {
+                            <>
+                                {menu_section_gap()}
+                                {menu_copy_row("Changing board size starts a new AFK round immediately.")}
+                                {menu_copy_row(format!("New board size: {pending_label}"))}
+                                {menu_section_gap()}
+                                {menu_primary_row(
+                                    "Start New Round",
+                                    menu_icon_button(
+                                        "ok",
+                                        "Apply board size and start a new AFK round",
+                                        false,
+                                        false,
+                                        confirm_board_size_restart.clone(),
+                                    ),
+                                )}
+                                {menu_primary_row(
+                                    "Keep Current Round",
+                                    menu_icon_button(
+                                        "cancel",
+                                        "Discard the pending board size change",
+                                        false,
+                                        false,
+                                        cancel_board_size_restart.clone(),
+                                    ),
+                                )}
+                                {menu_section_gap()}
                             </>
                         }
                     } else {
+                        let displayed_preferences =
+                            displayed_afk_menu_preferences(status, *pre_auth_preferences);
+                        let primary_action = afk_root_primary_action(status);
+                        let timeout_controls_disabled =
+                            status.auth.identity.is_some() && !status.timeout_supported;
                         html! {
                             <>
-                                {menu_blank_row()}
-                                {
-                                    if let Some(error) = auth_error_html.clone() {
-                                        menu_copy_row(error)
-                                    } else {
-                                        Html::default()
-                                    }
-                                }
-                                {
-                                    if let Some(error) = status_error.clone().or_else(|| websocket_error.clone()) {
-                                        menu_copy_row(error)
-                                    } else {
-                                        Html::default()
-                                    }
-                                }
-                                {
-                                    if status.session.is_some() {
-                                        html! {
-                                            <>
-                                                {menu_primary_row(
-                                                    "Resume",
-                                                    menu_nav_enter_button(
-                                                        "Resume live board",
-                                                        false,
-                                                        resume_board.clone(),
-                                                    ),
-                                                )}
-                                                {menu_primary_row(
-                                                    "Start New",
-                                                    menu_nav_enter_button(
-                                                        "Start a new AFK round",
-                                                        false,
-                                                        start_new_board.clone(),
-                                                    ),
-                                                )}
-                                                {menu_entry_row(
-                                                    "Board Size",
-                                                    board_size_label(status.board_size),
-                                                    menu_nav_enter_button(
-                                                        "Open board size menu",
-                                                        false,
-                                                        open_board_size_menu.clone(),
-                                                    ),
-                                                )}
-                                                {menu_toggle_row(
-                                                    "Timeout on mistake",
-                                                    menu_toggle_icon_button(
-                                                        "ok",
-                                                        "Enable timeout on mistake",
-                                                        status.timeout_enabled,
-                                                        !status.timeout_supported,
-                                                        set_timeout_on.clone(),
-                                                    ),
-                                                    menu_toggle_icon_button(
-                                                        "cancel",
-                                                        "Disable timeout on mistake",
-                                                        !status.timeout_enabled,
-                                                        !status.timeout_supported,
-                                                        set_timeout_off.clone(),
-                                                    ),
-                                                )}
-                                                {
-                                                    if status.timeout_enabled {
-                                                        menu_toggle_row(
-                                                            format!("Timeout length ({}s)", status.timeout_duration_secs),
-                                                            menu_toggle_icon_button(
-                                                                "minus",
-                                                                "Decrease timeout length",
-                                                                false,
-                                                                !status.timeout_supported
-                                                                    || previous_timeout_duration_secs(
-                                                                        status.timeout_duration_secs,
-                                                                    ) == status.timeout_duration_secs,
-                                                                decrease_timeout_duration.clone(),
-                                                            ),
-                                                            menu_toggle_icon_button(
-                                                                "plus",
-                                                                "Increase timeout length",
-                                                                false,
-                                                                !status.timeout_supported
-                                                                    || next_timeout_duration_secs(
-                                                                        status.timeout_duration_secs,
-                                                                    ) == status.timeout_duration_secs,
-                                                                increase_timeout_duration.clone(),
-                                                            ),
-                                                        )
-                                                    } else {
-                                                        Html::default()
-                                                    }
-                                                }
-                                            </>
-                                        }
-                                    } else {
-                                        html! {
-                                            <>
-                                                {menu_primary_row(
-                                                    "Start",
-                                                    menu_nav_enter_button(
-                                                        "Start AFK mode",
-                                                        false,
-                                                        start_new_board.clone(),
-                                                    ),
-                                                )}
-                                                {menu_entry_row(
-                                                    "Board Size",
-                                                    board_size_label(status.board_size),
-                                                    menu_nav_enter_button(
-                                                        "Open board size menu",
-                                                        false,
-                                                        open_board_size_menu.clone(),
-                                                    ),
-                                                )}
-                                                {menu_toggle_row(
-                                                    "Timeout on mistake",
-                                                    menu_toggle_icon_button(
-                                                        "ok",
-                                                        "Enable timeout on mistake",
-                                                        status.timeout_enabled,
-                                                        !status.timeout_supported,
-                                                        set_timeout_on.clone(),
-                                                    ),
-                                                    menu_toggle_icon_button(
-                                                        "cancel",
-                                                        "Disable timeout on mistake",
-                                                        !status.timeout_enabled,
-                                                        !status.timeout_supported,
-                                                        set_timeout_off.clone(),
-                                                    ),
-                                                )}
-                                                {
-                                                    if status.timeout_enabled {
-                                                        menu_toggle_row(
-                                                            format!("Timeout length ({}s)", status.timeout_duration_secs),
-                                                            menu_toggle_icon_button(
-                                                                "minus",
-                                                                "Decrease timeout length",
-                                                                false,
-                                                                !status.timeout_supported
-                                                                    || previous_timeout_duration_secs(
-                                                                        status.timeout_duration_secs,
-                                                                    ) == status.timeout_duration_secs,
-                                                                decrease_timeout_duration.clone(),
-                                                            ),
-                                                            menu_toggle_icon_button(
-                                                                "plus",
-                                                                "Increase timeout length",
-                                                                false,
-                                                                !status.timeout_supported
-                                                                    || next_timeout_duration_secs(
-                                                                        status.timeout_duration_secs,
-                                                                    ) == status.timeout_duration_secs,
-                                                                increase_timeout_duration.clone(),
-                                                            ),
-                                                        )
-                                                    } else {
-                                                        Html::default()
-                                                    }
-                                                }
-                                            </>
-                                        }
-                                    }
-                                }
-                                {menu_blank_row()}
-                                {menu_primary_row(
-                                    "Disconnect Twitch",
-                                    menu_icon_button("cancel", "Disconnect Twitch", false, disconnect_twitch),
+                                {menu_section_gap()}
+                                {afk_menu_notice_block(
+                                    auth_error_html.clone(),
+                                    status_error
+                                        .clone()
+                                        .or_else(|| websocket_error.clone())
+                                        .map(AttrValue::from),
                                 )}
+                                {afk_root_menu_rows(
+                                    primary_action,
+                                    displayed_preferences,
+                                    timeout_controls_disabled,
+                                    &resume_board,
+                                    &start_new_board,
+                                    &connect_twitch_and_start,
+                                    &open_board_size_menu,
+                                    &set_timeout_on,
+                                    &set_timeout_off,
+                                    &decrease_timeout_duration,
+                                    &increase_timeout_duration,
+                                    &open_settings,
+                                )}
+                                {
+                                    if status.auth.identity.is_some() {
+                                        html! {
+                                            <>
+                                                {menu_section_gap()}
+                                                {menu_primary_row(
+                                                    "Disconnect Twitch",
+                                                    menu_icon_button(
+                                                        "cancel",
+                                                        "Disconnect Twitch",
+                                                        false,
+                                                        false,
+                                                        disconnect_twitch,
+                                                    ),
+                                                )}
+                                            </>
+                                        }
+                                    } else {
+                                        Html::default()
+                                    }
+                                }
                             </>
                         }
                     }
                 }
                 LoadState::Idle => html! {
                     <>
-                        {menu_blank_row()}
+                        {menu_section_gap()}
                         {menu_copy_row("AFK mode is idle.")}
                     </>
                 },
@@ -1821,18 +2162,22 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                     <dialog open=true>
                         <table class="menu-grid">
                             <tbody>
-                                {menu_blank_row()}
+                                {menu_section_gap()}
                                 {
                                     if matches!(*menu_page, AfkMenuPage::BoardSize)
-                                        && matches!(&*status, LoadState::Ready(status) if status.auth.identity.is_some())
+                                        && matches!(&*status, LoadState::Ready(_))
                                     {
                                         menu_header_row("Board Size", close_board_size_menu)
+                                    } else if matches!(*menu_page, AfkMenuPage::ConfirmBoardSize)
+                                        && matches!(&*status, LoadState::Ready(status) if status.auth.identity.is_some())
+                                    {
+                                        menu_header_row("Start New Round", cancel_board_size_restart)
                                     } else {
                                         menu_header_row("AFK Mode", go_to_main_menu)
                                     }
                                 }
                                 {body}
-                                {menu_blank_row()}
+                                {menu_section_gap()}
                             </tbody>
                         </table>
                     </dialog>
@@ -1953,8 +2298,39 @@ async fn post_action(path: &str) -> Result<(), String> {
     }
 }
 
+async fn post_empty_status(path: &str) -> Result<AfkStatusResponse, String> {
+    let init = RequestInit::new();
+    init.set_method("POST");
+    init.set_credentials(RequestCredentials::Include);
+    let request = Request::new_with_str_and_init(&app_path(path), &init).map_err(js_error)?;
+    let response = fetch_request(request).await?;
+    if !response.ok() {
+        return Err(format!("request failed with {}", response.status()));
+    }
+    read_json(response).await
+}
+
 async fn post_board_action(request_body: AfkActionRequest) -> Result<AfkStatusResponse, String> {
     post_json_status("/api/afk/action", &request_body).await
+}
+
+async fn apply_preferences_and_start(
+    preferences: AfkMenuPreferences,
+) -> Result<AfkStatusResponse, String> {
+    post_json_status(
+        "/api/afk/timeout",
+        &serde_json::json!({
+            "enabled": preferences.timeout_enabled,
+            "duration_secs": preferences.timeout_duration_secs,
+        }),
+    )
+    .await?;
+    post_json_status(
+        "/api/afk/board-size",
+        &serde_json::json!({ "board_size": preferences.board_size }),
+    )
+    .await?;
+    post_empty_status("/api/afk/start").await
 }
 
 async fn post_json_status<T>(path: &str, request_body: &T) -> Result<AfkStatusResponse, String>
@@ -2063,6 +2439,108 @@ mod tests {
         })
     }
 
+    fn base_status(session: Option<AfkSessionSnapshot>) -> AfkStatusResponse {
+        AfkStatusResponse {
+            runtime: FrontendRuntimeConfig { afk_enabled: true },
+            auth: StreamerAuthStatus::default(),
+            chat_connection: AfkChatConnectionState::Idle,
+            chat_error: None,
+            timeout_supported: true,
+            timeout_enabled: true,
+            timeout_duration_secs: 30,
+            board_size: AfkBoardSize::Medium,
+            connect_url: None,
+            websocket_path: None,
+            session,
+        }
+    }
+
+    #[test]
+    fn board_size_change_requires_confirmation_when_run_is_active() {
+        let status = base_status(Some(active_test_session(1_000)));
+
+        assert_eq!(
+            plan_board_size_change(&status, AfkBoardSize::Large),
+            AfkBoardSizeChangePlan::ConfirmRestart(AfkBoardSize::Large)
+        );
+    }
+
+    #[test]
+    fn board_size_change_applies_immediately_when_no_run_exists() {
+        let status = base_status(None);
+
+        assert_eq!(
+            plan_board_size_change(&status, AfkBoardSize::Large),
+            AfkBoardSizeChangePlan::ApplyOnly(AfkBoardSize::Large)
+        );
+    }
+
+    #[test]
+    fn root_primary_action_depends_on_connection_and_session_state() {
+        let disconnected = base_status(None);
+        assert_eq!(
+            afk_root_primary_action(&disconnected),
+            AfkRootPrimaryAction::ConnectAndStart
+        );
+
+        let connected_without_session = AfkStatusResponse {
+            auth: StreamerAuthStatus {
+                identity: Some(AfkIdentity::new("1", "streamer", "Streamer")),
+                ..StreamerAuthStatus::default()
+            },
+            ..base_status(None)
+        };
+        assert_eq!(
+            afk_root_primary_action(&connected_without_session),
+            AfkRootPrimaryAction::Start
+        );
+
+        let connected_with_session = AfkStatusResponse {
+            auth: StreamerAuthStatus {
+                identity: Some(AfkIdentity::new("1", "streamer", "Streamer")),
+                ..StreamerAuthStatus::default()
+            },
+            ..base_status(Some(active_test_session(1_000)))
+        };
+        assert_eq!(
+            afk_root_primary_action(&connected_with_session),
+            AfkRootPrimaryAction::ResumeAndStartNew
+        );
+    }
+
+    #[test]
+    fn disconnected_preferences_use_pending_draft_values() {
+        let status = base_status(None);
+
+        assert_eq!(
+            displayed_afk_menu_preferences(
+                &status,
+                Some(AfkMenuPreferences {
+                    board_size: AfkBoardSize::Large,
+                    timeout_enabled: false,
+                    timeout_duration_secs: 90,
+                }),
+            ),
+            AfkMenuPreferences {
+                board_size: AfkBoardSize::Large,
+                timeout_enabled: false,
+                timeout_duration_secs: 90,
+            }
+        );
+    }
+
+    #[test]
+    fn afk_return_to_path_can_request_start_after_connect() {
+        assert_eq!(afk_return_to_path(false), "/?view=afk");
+        assert_eq!(afk_return_to_path(true), "/?view=afk&afk_start=1");
+    }
+
+    #[test]
+    fn format_cell_code_uppercases_letters_except_o() {
+        assert_eq!(format_cell_code((0, 0)), "1A");
+        assert_eq!(format_cell_code((14, 9)), "Ao");
+    }
+
     #[test]
     fn should_show_cell_code_uses_snapshot_label_mask_when_present() {
         let session = AfkSessionSnapshot {
@@ -2112,6 +2590,22 @@ mod tests {
             1,
             0,
             AfkCellSnapshot::Hidden
+        ));
+
+        let flagged_session = AfkSessionSnapshot {
+            board: AfkBoardSnapshot {
+                width: 1,
+                height: 1,
+                cells: vec![AfkCellSnapshot::Flagged],
+            },
+            labeled_cells: vec![false],
+            ..session
+        };
+        assert!(!should_show_cell_code(
+            &flagged_session,
+            0,
+            0,
+            AfkCellSnapshot::Flagged
         ));
     }
 

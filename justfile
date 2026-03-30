@@ -5,8 +5,13 @@ default: help
 help:
 	@just --list
 
-check:
+check: check-local check-web-static
+
+check-local:
 	cargo check
+
+check-web-static:
+	cargo check --target wasm32-unknown-unknown --manifest-path web/Cargo.toml --no-default-features --features web-static
 
 test: test-local test-wasm
 

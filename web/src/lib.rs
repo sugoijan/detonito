@@ -10,6 +10,7 @@ mod app;
 mod game;
 mod menu;
 mod no_guess_worker;
+mod normal;
 mod runtime;
 mod settings;
 mod sprites;

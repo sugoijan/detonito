@@ -2590,6 +2590,7 @@ fn maybe_refresh_auth_cookie(
     if !should_refresh_auth_token(claims, now_ms()) {
         return Ok(());
     }
+    detach_response_headers(response)?;
     let refreshed = refreshed_auth_claims(claims, now_ms());
     let token =
         sign_auth_token(&auth_signing_secret(env), &refreshed).map_err(error_from_display)?;
@@ -2598,6 +2599,17 @@ fn maybe_refresh_auth_cookie(
         &auth_cookie_header(&token, &configured_base_path(env), secure),
     )?;
     response.headers_mut().set("Cache-Control", "no-store")?;
+    Ok(())
+}
+
+/// Durable-object and fetch responses can carry an immutable JS `Headers` guard.
+/// Rebuild the response with a cloned header bag before mutating it so refresh
+/// cookies do not depend on the upstream response type.
+fn detach_response_headers(response: &mut Response) -> Result<()> {
+    let mutable_headers = response.headers().clone();
+    let original = mem::replace(response, Response::empty()?);
+    let (builder, body) = original.into_parts();
+    *response = builder.with_headers(mutable_headers).body(body);
     Ok(())
 }
 
@@ -2886,6 +2898,42 @@ mod tests {
     fn board_size_defaults_to_medium() {
         let state = PersistedAfkState::default();
         assert_eq!(state.board_size, ProtocolAfkBoardSize::Medium);
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[test]
+    fn detaching_response_headers_preserves_response_and_allows_mutation() {
+        let mut response = ResponseBuilder::new()
+            .with_status(202)
+            .with_header("X-Test", "before")
+            .expect("header should be set")
+            .body(ResponseBody::Body(b"ok".to_vec()));
+
+        detach_response_headers(&mut response).expect("response should be rebuilt");
+        response
+            .headers_mut()
+            .set("X-After", "after")
+            .expect("detached headers should be mutable");
+
+        assert_eq!(response.status_code(), 202);
+        assert_eq!(
+            response
+                .headers()
+                .get("X-Test")
+                .expect("header read should succeed"),
+            Some("before".into())
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("X-After")
+                .expect("header read should succeed"),
+            Some("after".into())
+        );
+        match response.body() {
+            ResponseBody::Body(bytes) => assert_eq!(bytes.as_slice(), b"ok"),
+            body => panic!("expected fixed body, got {body:?}"),
+        }
     }
 
     #[test]

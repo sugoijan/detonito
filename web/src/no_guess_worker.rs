@@ -270,9 +270,9 @@ fn js_value_to_string(value: &JsValue) -> String {
 fn resolve_worker_path() -> Option<String> {
     let doc = document();
     let selectors = [
-        "link[rel='modulepreload'][href*='detonito-webapp'][href$='.js']",
+        "link[rel='modulepreload'][href*='detonito-web'][href$='.js']",
         "link[rel='modulepreload'][href$='.js']",
-        "script[src*='detonito-webapp'][src$='.js']",
+        "script[src*='detonito-web'][src$='.js']",
         "script[src$='.js']",
     ];
 

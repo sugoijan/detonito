@@ -365,6 +365,7 @@ impl AfkEngine {
         }
 
         let states = self.visible_cell_states();
+        let forced_mines = self.locally_forced_mine_mask(&states);
         let mut labels = alloc::vec![false; total];
         let mut back_hidden_count = 0usize;
 
@@ -373,7 +374,7 @@ impl AfkEngine {
                 let coords = (x, y);
                 let idx = flat_index(size, coords);
                 match states[idx] {
-                    AfkCellState::Flagged => labels[idx] = true,
+                    AfkCellState::Flagged => labels[idx] = !forced_mines[idx],
                     AfkCellState::Hidden => {
                         if self.hidden_cell_has_frontier_neighbor(&states, coords) {
                             labels[idx] = true;
@@ -389,8 +390,8 @@ impl AfkEngine {
             }
         }
 
-        let observed_mines =
-            usize::from(self.crater_count.0) + self.count_locally_forced_mines(&states);
+        let observed_mines = usize::from(self.crater_count.0)
+            + forced_mines.into_iter().filter(|forced| *forced).count();
         let total_mines = usize::from(self.preset.config.mines);
         let remaining_mines = total_mines.saturating_sub(observed_mines);
         let safe_unlock = observed_mines.saturating_add(AFK_ENDGAME_LABEL_CUSHION) >= total_mines;
@@ -921,8 +922,9 @@ impl AfkEngine {
         })
     }
 
-    fn count_locally_forced_mines(&self, states: &[AfkCellState]) -> usize {
+    fn locally_forced_mine_mask(&self, states: &[AfkCellState]) -> Vec<bool> {
         let size = self.size();
+        // Only hide a flag when a visible clue already proves the cell is a mine.
         let mut forced = alloc::vec![false; usize::from(size.0) * usize::from(size.1)];
 
         for y in 0..size.1 {
@@ -958,7 +960,7 @@ impl AfkEngine {
             }
         }
 
-        forced.into_iter().filter(|forced| *forced).count()
+        forced
     }
 }
 
@@ -1230,6 +1232,32 @@ mod tests {
     }
 
     #[test]
+    fn locally_forced_flags_hide_their_labels() {
+        let mut engine = line_engine(2, &[0]);
+        engine
+            .apply_action(AfkAction::Reveal((1, 0)), now())
+            .expect("safe reveal should succeed");
+        engine
+            .apply_action(AfkAction::SetFlag((0, 0)), now())
+            .expect("flag should succeed");
+
+        assert!(!label_at(&engine, (0, 0)));
+    }
+
+    #[test]
+    fn non_forced_flags_keep_their_labels() {
+        let mut engine = line_engine(3, &[0]);
+        engine
+            .apply_action(AfkAction::Reveal((1, 0)), now())
+            .expect("safe reveal should succeed");
+        engine
+            .apply_action(AfkAction::SetFlag((0, 0)), now())
+            .expect("flag should succeed");
+
+        assert!(label_at(&engine, (0, 0)));
+    }
+
+    #[test]
     fn safe_leaning_endgame_unlock_labels_back_cells() {
         let mut engine = line_engine(6, &[0, 2, 4, 5]);
 
@@ -1277,5 +1305,7 @@ mod tests {
             .expect("flag should succeed");
 
         assert!(!label_at(&engine, (3, 0)));
+        assert!(label_at(&engine, (4, 0)));
+        assert!(label_at(&engine, (5, 0)));
     }
 }

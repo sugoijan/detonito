@@ -1,5 +1,5 @@
 [package]
-name = "detonito-webapp"
+name = "detonito-web"
 version.workspace = true
 license.workspace = true
 authors.workspace = true

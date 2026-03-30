@@ -287,7 +287,6 @@ pub(crate) enum Msg {
     NewGame,
     FaceButtonPress,
     FacePromptSelected(FacePromptAction),
-    UpdateSettings(settings::Settings),
     NoGuessGenerated(no_guess_worker::NoGuessGenResponse),
     NoGuessGenerationTimeout(u64),
 }
@@ -1086,16 +1085,6 @@ impl Component for GameView {
                 }
             }
             FacePromptSelected(action) => self.apply_face_prompt_action(ctx, action),
-            UpdateSettings(settings) => {
-                if self.settings != settings {
-                    self.settings = settings;
-                    self.clear_face_prompt();
-                    self.cancel_pending_generation();
-                    true
-                } else {
-                    false
-                }
-            }
             NoGuessGenerated(response) => self.complete_no_guess_generation(response),
             NoGuessGenerationTimeout(generation_id) => {
                 if self.is_generating_layout && self.generation_id == generation_id {
@@ -1210,6 +1199,10 @@ impl Component for GameView {
 
 pub(crate) fn has_saved_game() -> bool {
     Option::<GameSession>::local_or_default().is_some()
+}
+
+pub(crate) fn clear_saved_game() {
+    Option::<GameSession>::local_delete();
 }
 
 #[cfg(test)]
