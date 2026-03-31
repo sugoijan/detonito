@@ -2051,8 +2051,7 @@ impl DurableObject for AfkSessionDO {
                     session.mark_frontend_missing(now_ms());
                 }
                 state.session = Some(session);
-                let queued_broadcaster =
-                    self.prepare_eventsub_connecting_state(&mut state, false);
+                let queued_broadcaster = self.prepare_eventsub_connecting_state(&mut state, false);
                 self.persist(&state).await?;
                 self.schedule_alarm(&state).await?;
                 self.broadcast_snapshot(&state);
@@ -2103,8 +2102,7 @@ impl DurableObject for AfkSessionDO {
                     session.record_user_activity(now);
                     session.resume(now)
                 });
-                let queued_broadcaster =
-                    self.prepare_eventsub_connecting_state(&mut state, false);
+                let queued_broadcaster = self.prepare_eventsub_connecting_state(&mut state, false);
                 self.persist(&state).await?;
                 if let Some(broadcaster_user_id) = queued_broadcaster.as_deref() {
                     self.queue_eventsub_ensure(broadcaster_user_id, false);

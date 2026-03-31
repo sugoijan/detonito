@@ -1,5 +1,9 @@
 use std::{cell::Cell, rc::Rc};
 
+use crate::board_input::{
+    CellMsg as BoardCellMsg, CellPointerCallbacks, CellPointerState as BoardCellPointerState,
+    MouseButtons, cell_pointer_callbacks, update_cell_pointer_state,
+};
 use detonito_protocol::{
     AfkActionKind, AfkActionRequest, AfkActivityKind, AfkActivityRow, AfkBoardSize,
     AfkCellSnapshot, AfkChatConnectionState, AfkClientMessage, AfkLossReason, AfkRoundPhase,
@@ -101,17 +105,83 @@ struct AfkFaceNotificationEvent {
     timeout_ms: u32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AfkCountdownDemoCell {
+    state: AfkCellSnapshot,
+    code: Option<&'static str>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AfkCountdownDemoRow {
+    before: AfkCountdownDemoCell,
+    after: AfkCountdownDemoCell,
+    command: &'static str,
+    description: &'static str,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AfkCountdownOverlay {
+    title: &'static str,
+    rows: [AfkCountdownDemoRow; 3],
+    aria_label: &'static str,
+}
+
 const AFK_FACE_NOTIFICATION_MS: u32 = 5_000;
 const AFK_OUT_FOR_ROUND_NOTIFICATION_MS: u32 = 10_000;
 const AFK_IDLE_SLEEPING_THRESHOLD_MS: i64 = 3 * 60 * 1_000;
 const AFK_IDLE_PROMPT_THRESHOLD_MS: i64 = 10 * 60 * 1_000;
 const AFK_IDLE_EXPIRY_THRESHOLD_MS: i64 = 60 * 60 * 1_000;
+const AFK_CONNECTION_NOTICE_GRACE_MS: u32 = 2_000;
 const AFK_WEBSOCKET_RECONNECT_BASE_DELAY_MS: u32 = 1_000;
 const AFK_WEBSOCKET_RECONNECT_MAX_DELAY_MS: u32 = 60_000;
 const AFK_WEBSOCKET_RECONNECT_TICK_MS: u32 = 1_000;
 const AFK_TIMEOUT_DURATION_OPTIONS_SECS: [u32; 12] =
     [1, 5, 10, 15, 30, 45, 60, 90, 120, 180, 240, 300];
 const AFK_DEFAULT_TIMEOUT_DURATION_INDEX: usize = 4;
+const AFK_COUNTDOWN_DEMO_BEFORE_MS: u32 = 600;
+const AFK_COUNTDOWN_DEMO_AFTER_MS: u32 = AFK_COUNTDOWN_DEMO_BEFORE_MS / 2;
+const AFK_COUNTDOWN_OVERLAY: AfkCountdownOverlay = AfkCountdownOverlay {
+    title: "How to play",
+    rows: [
+        AfkCountdownDemoRow {
+            before: AfkCountdownDemoCell {
+                state: AfkCellSnapshot::Hidden,
+                code: Some("1A"),
+            },
+            after: AfkCountdownDemoCell {
+                state: AfkCellSnapshot::Revealed(0),
+                code: None,
+            },
+            command: "1a",
+            description: "open",
+        },
+        AfkCountdownDemoRow {
+            before: AfkCountdownDemoCell {
+                state: AfkCellSnapshot::Hidden,
+                code: Some("5C"),
+            },
+            after: AfkCountdownDemoCell {
+                state: AfkCellSnapshot::Flagged,
+                code: None,
+            },
+            command: "!f 5c",
+            description: "flag",
+        },
+        AfkCountdownDemoRow {
+            before: AfkCountdownDemoCell {
+                state: AfkCellSnapshot::Flagged,
+                code: Some("2E"),
+            },
+            after: AfkCountdownDemoCell {
+                state: AfkCellSnapshot::Hidden,
+                code: None,
+            },
+            command: "!u 2e",
+            description: "unflag",
+        },
+    ],
+    aria_label: "Chat commands: 1a opens, !f 5c flags, !u 2e unflags. Letter case does not matter.",
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AfkIdleState {
@@ -124,6 +194,15 @@ enum AfkBoardScreenResolution {
     Keep,
     FinishStartTransition,
     ReturnToMenu,
+}
+
+type AfkCellPointerState = BoardCellPointerState<(usize, usize)>;
+type AfkCellMsg = BoardCellMsg<(usize, usize)>;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AfkHeldCellPreview {
+    pointer_state: AfkCellPointerState,
+    session_before_action: AfkSessionSnapshot,
 }
 
 fn initial_afk_screen(restore_view_state: bool) -> AfkScreen {
@@ -167,10 +246,10 @@ fn board_size_label(board_size: AfkBoardSize) -> &'static str {
 
 fn board_size_detail(board_size: AfkBoardSize) -> &'static str {
     match board_size {
-        AfkBoardSize::Tiny => "9x9 / 9 +1/level",
-        AfkBoardSize::Small => "16x16 / 20 +4/level",
-        AfkBoardSize::Medium => "24x18 / 36 +7/level",
-        AfkBoardSize::Large => "30x20 / 50 +10/level",
+        AfkBoardSize::Tiny => "9x9 | 9+1/Lv",
+        AfkBoardSize::Small => "16x16 | 20+4/Lv",
+        AfkBoardSize::Medium => "24x18 | 36+7/Lv",
+        AfkBoardSize::Large => "30x20 | 50+10/Lv",
     }
 }
 
@@ -274,6 +353,19 @@ fn next_afk_reconnect_delay_ms(attempt: u32) -> u32 {
         .min(AFK_WEBSOCKET_RECONNECT_MAX_DELAY_MS)
 }
 
+fn connection_notice_visible(started_at_ms: Option<i64>, now_ms: i64) -> bool {
+    started_at_ms.is_some_and(|started_at_ms| {
+        now_ms.saturating_sub(started_at_ms) >= i64::from(AFK_CONNECTION_NOTICE_GRACE_MS)
+    })
+}
+
+fn next_connection_notice_refresh_delay_ms(started_at_ms: Option<i64>, now_ms: i64) -> Option<u32> {
+    let started_at_ms = started_at_ms?;
+    let elapsed_ms = now_ms.saturating_sub(started_at_ms);
+    let remaining_ms = i64::from(AFK_CONNECTION_NOTICE_GRACE_MS).saturating_sub(elapsed_ms);
+    (remaining_ms > 0).then(|| remaining_ms.min(i64::from(u32::MAX)) as u32)
+}
+
 fn afk_websocket_reconnect_notice(remaining_ms: i64) -> String {
     let remaining_secs = (remaining_ms.max(1).saturating_add(999)) / 1_000;
     format!("Reconnecting in {remaining_secs}...")
@@ -283,11 +375,14 @@ fn afk_websocket_connecting_notice() -> String {
     "Reconnecting...".to_string()
 }
 
-fn status_chat_notice(status: &AfkStatusResponse, reconnecting: bool) -> Option<String> {
+fn status_chat_notice(
+    status: &AfkStatusResponse,
+    reconnecting_notice_visible: bool,
+) -> Option<String> {
     if status.session.is_none() {
         return None;
     }
-    if reconnecting || matches!(status.chat_connection, AfkChatConnectionState::Connecting) {
+    if reconnecting_notice_visible {
         Some("Chat reconnecting...".to_string())
     } else if matches!(status.chat_connection, AfkChatConnectionState::Error) {
         Some("Chat unavailable.".to_string())
@@ -823,7 +918,7 @@ fn afk_face_icon(
         LoadState::Loading => "mid-open",
         LoadState::Ready(status) => match status.session.as_ref() {
             Some(session) => match session.phase {
-                AfkRoundPhase::Countdown => "not-started",
+                AfkRoundPhase::Countdown => "starting-soon",
                 AfkRoundPhase::Active => "in-progress",
                 AfkRoundPhase::Won => win_face_icon(session),
                 AfkRoundPhase::TimedOut if session.loss_reason == Some(AfkLossReason::Timer) => {
@@ -994,16 +1089,53 @@ fn should_show_cell_code(
     false
 }
 
-fn request_for_streamer_click(
-    cell: AfkCellSnapshot,
+fn afk_count_flagged_neighbors(session: &AfkSessionSnapshot, coords: (usize, usize)) -> u8 {
+    let mut flagged_neighbors: u8 = 0;
+    for dy in -1isize..=1 {
+        for dx in -1isize..=1 {
+            if dx == 0 && dy == 0 {
+                continue;
+            }
+            let nx = coords.0.checked_add_signed(dx);
+            let ny = coords.1.checked_add_signed(dy);
+            let (Some(nx), Some(ny)) = (nx, ny) else {
+                continue;
+            };
+            if matches!(
+                board_cell_at(session, nx, ny),
+                Some(AfkCellSnapshot::Flagged)
+            ) {
+                flagged_neighbors = flagged_neighbors.saturating_add(1);
+            }
+        }
+    }
+    flagged_neighbors
+}
+
+fn afk_can_chord_reveal_at(session: &AfkSessionSnapshot, coords: (usize, usize)) -> bool {
+    match board_cell_at(session, coords.0, coords.1) {
+        Some(AfkCellSnapshot::Revealed(count)) => {
+            count == afk_count_flagged_neighbors(session, coords)
+        }
+        _ => false,
+    }
+}
+
+fn request_for_streamer_pointer_release(
+    session: &AfkSessionSnapshot,
     coords: (usize, usize),
-    button: i16,
+    buttons: MouseButtons,
 ) -> Option<AfkActionRequest> {
-    let kind = match (button, cell) {
-        (0, AfkCellSnapshot::Hidden) => AfkActionKind::Reveal,
-        (0, AfkCellSnapshot::Revealed(count)) if count > 0 => AfkActionKind::Chord,
-        (2, AfkCellSnapshot::Revealed(count)) if count > 0 => AfkActionKind::ChordFlag,
-        (2, AfkCellSnapshot::Hidden | AfkCellSnapshot::Flagged) => AfkActionKind::ToggleFlag,
+    let cell = board_cell_at(session, coords.0, coords.1)?;
+    let kind = match (buttons, cell) {
+        (MouseButtons::LEFT, AfkCellSnapshot::Hidden) => AfkActionKind::Reveal,
+        (MouseButtons::LEFT, AfkCellSnapshot::Revealed(count)) if count > 0 => AfkActionKind::Chord,
+        (MouseButtons::RIGHT, AfkCellSnapshot::Revealed(count)) if count > 0 => {
+            AfkActionKind::ChordFlag
+        }
+        (MouseButtons::RIGHT, AfkCellSnapshot::Hidden | AfkCellSnapshot::Flagged) => {
+            AfkActionKind::ToggleFlag
+        }
         _ => return None,
     };
     Some(AfkActionRequest {
@@ -1013,16 +1145,59 @@ fn request_for_streamer_click(
     })
 }
 
-fn render_afk_cell(
+fn held_afk_press_preview(
+    session: Option<&AfkSessionSnapshot>,
+    pointer_state: AfkCellPointerState,
+) -> Option<AfkHeldCellPreview> {
+    matches!(pointer_state.buttons, MouseButtons::LEFT)
+        .then(|| session.cloned())
+        .flatten()
+        .map(|session_before_action| AfkHeldCellPreview {
+            pointer_state,
+            session_before_action,
+        })
+}
+
+fn held_afk_pointer_state(
+    preview: Option<&AfkHeldCellPreview>,
+    session: Option<&AfkSessionSnapshot>,
+) -> Option<AfkCellPointerState> {
+    preview.and_then(|preview| {
+        session
+            .filter(|session| *session == &preview.session_before_action)
+            .map(|_| preview.pointer_state)
+    })
+}
+
+fn afk_is_pressed(
     session: &AfkSessionSnapshot,
-    (x, y): (usize, usize),
+    coords: (usize, usize),
     cell: AfkCellSnapshot,
-    interactive: bool,
-    on_cell_action: Callback<AfkActionRequest>,
-) -> Html {
-    let code = format_cell_code((x, y));
-    let show_code = should_show_cell_code(session, x, y, cell);
-    let class = match cell {
+    pointer_state: Option<AfkCellPointerState>,
+) -> bool {
+    let Some(AfkCellPointerState {
+        pos,
+        buttons: MouseButtons::LEFT,
+    }) = pointer_state
+    else {
+        return false;
+    };
+
+    if !matches!(cell, AfkCellSnapshot::Hidden) {
+        return false;
+    }
+
+    if pos == coords {
+        return true;
+    }
+
+    pos.0.abs_diff(coords.0) <= 1
+        && pos.1.abs_diff(coords.1) <= 1
+        && afk_can_chord_reveal_at(session, pos)
+}
+
+fn afk_cell_classes(cell: AfkCellSnapshot, interactive: bool, pressed: bool) -> Classes {
+    let mut class = match cell {
         AfkCellSnapshot::Hidden => classes!(
             "cell",
             (!interactive).then_some("locked"),
@@ -1069,16 +1244,26 @@ fn render_afk_cell(
             )
         }
     };
+    if pressed {
+        class.push("open");
+    }
+    class
+}
 
-    let content = match cell {
+fn afk_cell_content(cell: AfkCellSnapshot, code: Option<AttrValue>, show_code: bool) -> Html {
+    match cell {
         AfkCellSnapshot::Hidden => show_code
-            .then(|| html! { <span class="afk-cell-code">{code}</span> })
+            .then(|| {
+                code.map(|code| html! { <span class="afk-cell-code">{code}</span> })
+                    .unwrap_or_default()
+            })
             .unwrap_or_default(),
         AfkCellSnapshot::Flagged => html! {
             <>
                 {
                     if show_code {
-                        html! { <span class="afk-cell-tag">{code}</span> }
+                        code.map(|code| html! { <span class="afk-cell-tag">{code}</span> })
+                            .unwrap_or_default()
                     } else {
                         Html::default()
                     }
@@ -1103,27 +1288,123 @@ fn render_afk_cell(
                 class={classes!("cell-glyph")}
             />
         },
-    };
+    }
+}
 
-    let onmousedown = Callback::from(move |e: MouseEvent| {
-        e.prevent_default();
-        e.stop_propagation();
-        if !interactive {
-            return;
-        }
-        if let Some(request) = request_for_streamer_click(cell, (x, y), e.button()) {
-            on_cell_action.emit(request);
-        }
-    });
+fn render_afk_cell(
+    session: &AfkSessionSnapshot,
+    (x, y): (usize, usize),
+    cell: AfkCellSnapshot,
+    interactive: bool,
+    pointer_state: Option<AfkCellPointerState>,
+    on_cell_event: Callback<AfkCellMsg>,
+) -> Html {
+    let code: AttrValue = format_cell_code((x, y)).into();
+    let show_code = should_show_cell_code(session, x, y, cell);
+    let pressed = interactive && afk_is_pressed(session, (x, y), cell, pointer_state);
+    let class = afk_cell_classes(cell, interactive, pressed);
+    let content = afk_cell_content(cell, Some(code), show_code);
+    let CellPointerCallbacks {
+        onmousedown,
+        onmouseup,
+        onmouseenter,
+        onmouseleave,
+    } = cell_pointer_callbacks((x, y), on_cell_event);
+
     let oncontextmenu = Callback::from(|e: MouseEvent| e.prevent_default());
 
-    html! { <td class={class} {onmousedown} {oncontextmenu}>{content}</td> }
+    html! {
+        <td class={class} {onmousedown} {onmouseup} {onmouseenter} {onmouseleave} {oncontextmenu}>
+            {content}
+        </td>
+    }
+}
+
+fn active_countdown_overlay(session: Option<&AfkSessionSnapshot>) -> Option<AfkCountdownOverlay> {
+    session
+        .is_some_and(|session| matches!(session.phase, AfkRoundPhase::Countdown))
+        .then_some(AFK_COUNTDOWN_OVERLAY)
+}
+
+fn countdown_demo_step_ms(show_after: bool) -> u32 {
+    if show_after {
+        AFK_COUNTDOWN_DEMO_AFTER_MS
+    } else {
+        AFK_COUNTDOWN_DEMO_BEFORE_MS
+    }
+}
+
+fn render_countdown_demo_board_cell(cell: AfkCountdownDemoCell) -> Html {
+    html! {
+        <td class={afk_cell_classes(cell.state, false, false)}>
+            {afk_cell_content(cell.state, cell.code.map(AttrValue::from), cell.code.is_some())}
+        </td>
+    }
+}
+
+fn render_countdown_context_board(cell: AfkCountdownDemoCell) -> Html {
+    html! {
+        <div class="afk-countdown-board-window" aria-hidden="true">
+            <table class="afk-countdown-board-preview">
+                <tbody>
+                    {
+                        for (0..3).map(|y| html! {
+                            <tr>
+                                {
+                                    for (0..3).map(|x| {
+                                        let preview_cell = if x == 1 && y == 1 {
+                                            cell
+                                        } else {
+                                            AfkCountdownDemoCell {
+                                                state: AfkCellSnapshot::Hidden,
+                                                code: None,
+                                            }
+                                        };
+                                        render_countdown_demo_board_cell(preview_cell)
+                                    })
+                                }
+                            </tr>
+                        })
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+}
+
+fn render_countdown_overlay_row(row: AfkCountdownDemoRow, show_after: bool) -> Html {
+    let displayed_cell = if show_after { row.after } else { row.before };
+    html! {
+        <div class="afk-countdown-row">
+            {render_countdown_context_board(displayed_cell)}
+            <div class="afk-countdown-command">{row.command}</div>
+            <div class="afk-countdown-description">{row.description}</div>
+        </div>
+    }
+}
+
+fn render_countdown_overlay(overlay: AfkCountdownOverlay, show_after: bool) -> Html {
+    html! {
+        <div
+            class="afk-countdown-overlay"
+            role="img"
+            aria-label={overlay.aria_label}
+        >
+            <div class="afk-countdown-guide">
+                <div class="afk-countdown-title">{overlay.title}</div>
+                <div class="afk-countdown-rows" aria-hidden="true">
+                    {for overlay.rows.into_iter().map(|row| render_countdown_overlay_row(row, show_after))}
+                </div>
+            </div>
+        </div>
+    }
 }
 
 fn render_afk_board(
     session: &AfkSessionSnapshot,
     interactive: bool,
-    on_cell_action: Callback<AfkActionRequest>,
+    pointer_state: Option<AfkCellPointerState>,
+    on_cell_event: Callback<AfkCellMsg>,
 ) -> Html {
     let width = usize::from(session.board.width);
     let height = usize::from(session.board.height);
@@ -1135,7 +1416,14 @@ fn render_afk_board(
                         {
                             for (0..width).map(|x| {
                                 let cell = session.board.cells[y * width + x];
-                                render_afk_cell(session, (x, y), cell, interactive, on_cell_action.clone())
+                                render_afk_cell(
+                                    session,
+                                    (x, y),
+                                    cell,
+                                    interactive,
+                                    pointer_state,
+                                    on_cell_event.clone(),
+                                )
                             })
                         }
                     </tr>
@@ -1166,7 +1454,11 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
     let idle_refresh_tick = use_state_eq(|| 0_u64);
     let idle_refresh_timeout = use_mut_ref(|| None::<Timeout>);
     let last_error = use_state_eq(|| None::<String>);
+    let current_cell_state = use_state_eq(|| None::<AfkCellPointerState>);
+    let held_cell_preview = use_state_eq(|| None::<AfkHeldCellPreview>);
     let start_transition_in_progress = use_state_eq(|| false);
+    let countdown_demo_show_after = use_state_eq(|| false);
+    let countdown_demo_timeout = use_mut_ref(|| None::<Timeout>);
     let socket_connected = use_state_eq(|| false);
     let socket_reconnecting = use_state_eq(|| false);
     let socket_retry_deadline_ms = use_state_eq(|| None::<i64>);
@@ -1175,14 +1467,36 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
     let socket_retry_version = use_state_eq(|| 0_u64);
     let socket_retry_timeout = use_mut_ref(|| None::<Timeout>);
     let socket_retry_attempt = use_mut_ref(|| 0_u32);
+    let socket_notice_started_at_ms = use_state_eq(|| None::<i64>);
+    let socket_notice_tick = use_state_eq(|| 0_u64);
+    let socket_notice_timeout = use_mut_ref(|| None::<Timeout>);
     let chat_reconnect_active = use_state_eq(|| false);
     let chat_reconnect_version = use_state_eq(|| 0_u64);
     let chat_reconnect_timeout = use_mut_ref(|| None::<Timeout>);
     let chat_reconnect_attempt = use_mut_ref(|| 0_u32);
+    let chat_notice_started_at_ms = use_state_eq(|| None::<i64>);
+    let chat_notice_tick = use_state_eq(|| 0_u64);
+    let chat_notice_timeout = use_mut_ref(|| None::<Timeout>);
     let socket_path = match &*status {
         LoadState::Ready(status) if status.auth.identity.is_some() => status.websocket_path.clone(),
         _ => None,
     };
+    let socket_notice_active = (*socket_retry_deadline_ms).is_some() || *socket_reconnecting;
+    let chat_notice_active = *chat_reconnect_active
+        || matches!(
+            &*status,
+            LoadState::Ready(status)
+                if status.session.is_some()
+                    && matches!(status.chat_connection, AfkChatConnectionState::Connecting)
+        );
+    let countdown_overlay_active = matches!(
+        (&*status, *screen),
+        (LoadState::Ready(status), AfkScreen::Board)
+            if status
+                .session
+                .as_ref()
+                .is_some_and(|session| matches!(session.phase, AfkRoundPhase::Countdown))
+    );
 
     let clear_face_notification = {
         let face_notification = face_notification.clone();
@@ -1285,6 +1599,36 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
     }
 
     {
+        let countdown_demo_show_after = countdown_demo_show_after.clone();
+        let countdown_demo_timeout = countdown_demo_timeout.clone();
+        use_effect_with(
+            (countdown_overlay_active, *countdown_demo_show_after),
+            move |(countdown_overlay_active, countdown_demo_show_after_value)| {
+                countdown_demo_timeout.borrow_mut().take();
+                if *countdown_overlay_active {
+                    let next_value = !*countdown_demo_show_after_value;
+                    let countdown_demo_show_after = countdown_demo_show_after.clone();
+                    let countdown_demo_timeout_for_store = countdown_demo_timeout.clone();
+                    let countdown_demo_timeout_for_callback = countdown_demo_timeout.clone();
+                    *countdown_demo_timeout_for_store.borrow_mut() = Some(Timeout::new(
+                        countdown_demo_step_ms(*countdown_demo_show_after_value),
+                        move || {
+                            countdown_demo_show_after.set(next_value);
+                            countdown_demo_timeout_for_callback.borrow_mut().take();
+                        },
+                    ));
+                } else if *countdown_demo_show_after_value {
+                    countdown_demo_show_after.set(false);
+                }
+                let countdown_demo_timeout = countdown_demo_timeout.clone();
+                move || {
+                    countdown_demo_timeout.borrow_mut().take();
+                }
+            },
+        );
+    }
+
+    {
         let idle_refresh_tick = idle_refresh_tick.clone();
         let idle_refresh_timeout = idle_refresh_timeout.clone();
         let last_user_activity_at_ms = match &*status {
@@ -1338,8 +1682,7 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                     if remaining_ms > 0 {
                         let delay_ms = (remaining_ms as u32).min(AFK_WEBSOCKET_RECONNECT_TICK_MS);
                         let socket_retry_tick = socket_retry_tick.clone();
-                        let socket_retry_tick_timeout_for_store =
-                            socket_retry_tick_timeout.clone();
+                        let socket_retry_tick_timeout_for_store = socket_retry_tick_timeout.clone();
                         let socket_retry_tick_timeout_for_callback =
                             socket_retry_tick_timeout.clone();
                         *socket_retry_tick_timeout_for_store.borrow_mut() =
@@ -1352,6 +1695,49 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                 let socket_retry_tick_timeout = socket_retry_tick_timeout.clone();
                 move || {
                     socket_retry_tick_timeout.borrow_mut().take();
+                }
+            },
+        );
+    }
+
+    {
+        let socket_notice_started_at_ms = socket_notice_started_at_ms.clone();
+        use_effect_with(socket_notice_active, move |active| {
+            if *active {
+                if (*socket_notice_started_at_ms).is_none() {
+                    socket_notice_started_at_ms.set(Some(browser_now_ms()));
+                }
+            } else if (*socket_notice_started_at_ms).is_some() {
+                socket_notice_started_at_ms.set(None);
+            }
+            || ()
+        });
+    }
+
+    {
+        let socket_notice_tick = socket_notice_tick.clone();
+        let socket_notice_timeout = socket_notice_timeout.clone();
+        let notice_started_at_ms = *socket_notice_started_at_ms;
+        let notice_tick_version = *socket_notice_tick;
+        use_effect_with(
+            (notice_started_at_ms, notice_tick_version),
+            move |(notice_started_at_ms, _)| {
+                socket_notice_timeout.borrow_mut().take();
+                if let Some(delay_ms) =
+                    next_connection_notice_refresh_delay_ms(*notice_started_at_ms, browser_now_ms())
+                {
+                    let socket_notice_tick = socket_notice_tick.clone();
+                    let socket_notice_timeout_for_store = socket_notice_timeout.clone();
+                    let socket_notice_timeout_for_callback = socket_notice_timeout.clone();
+                    *socket_notice_timeout_for_store.borrow_mut() =
+                        Some(Timeout::new(delay_ms, move || {
+                            socket_notice_tick.set((*socket_notice_tick).saturating_add(1));
+                            socket_notice_timeout_for_callback.borrow_mut().take();
+                        }));
+                }
+                let socket_notice_timeout = socket_notice_timeout.clone();
+                move || {
+                    socket_notice_timeout.borrow_mut().take();
                 }
             },
         );
@@ -1626,7 +2012,8 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                             };
                             let delay_ms = next_afk_reconnect_delay_ms(attempt);
                             let chat_reconnect_timeout_for_store = chat_reconnect_timeout.clone();
-                            let chat_reconnect_timeout_for_callback = chat_reconnect_timeout.clone();
+                            let chat_reconnect_timeout_for_callback =
+                                chat_reconnect_timeout.clone();
                             let chat_reconnect_version = chat_reconnect_version.clone();
                             *chat_reconnect_timeout_for_store.borrow_mut() =
                                 Some(Timeout::new(delay_ms, move || {
@@ -1684,6 +2071,49 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                 move || {
                     cancelled.set(true);
                     chat_reconnect_timeout.borrow_mut().take();
+                }
+            },
+        );
+    }
+
+    {
+        let chat_notice_started_at_ms = chat_notice_started_at_ms.clone();
+        use_effect_with(chat_notice_active, move |active| {
+            if *active {
+                if (*chat_notice_started_at_ms).is_none() {
+                    chat_notice_started_at_ms.set(Some(browser_now_ms()));
+                }
+            } else if (*chat_notice_started_at_ms).is_some() {
+                chat_notice_started_at_ms.set(None);
+            }
+            || ()
+        });
+    }
+
+    {
+        let chat_notice_tick = chat_notice_tick.clone();
+        let chat_notice_timeout = chat_notice_timeout.clone();
+        let notice_started_at_ms = *chat_notice_started_at_ms;
+        let notice_tick_version = *chat_notice_tick;
+        use_effect_with(
+            (notice_started_at_ms, notice_tick_version),
+            move |(notice_started_at_ms, _)| {
+                chat_notice_timeout.borrow_mut().take();
+                if let Some(delay_ms) =
+                    next_connection_notice_refresh_delay_ms(*notice_started_at_ms, browser_now_ms())
+                {
+                    let chat_notice_tick = chat_notice_tick.clone();
+                    let chat_notice_timeout_for_store = chat_notice_timeout.clone();
+                    let chat_notice_timeout_for_callback = chat_notice_timeout.clone();
+                    *chat_notice_timeout_for_store.borrow_mut() =
+                        Some(Timeout::new(delay_ms, move || {
+                            chat_notice_tick.set((*chat_notice_tick).saturating_add(1));
+                            chat_notice_timeout_for_callback.borrow_mut().take();
+                        }));
+                }
+                let chat_notice_timeout = chat_notice_timeout.clone();
+                move || {
+                    chat_notice_timeout.borrow_mut().take();
                 }
             },
         );
@@ -2212,22 +2642,31 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
         })
     };
 
+    let now_ms = browser_now_ms();
+    let socket_notice_visible =
+        socket_notice_active && connection_notice_visible(*socket_notice_started_at_ms, now_ms);
+    let chat_notice_visible =
+        chat_notice_active && connection_notice_visible(*chat_notice_started_at_ms, now_ms);
     let idle_state = match &*status {
-        LoadState::Ready(status) => afk_idle_state(status.session.as_ref(), browser_now_ms()),
+        LoadState::Ready(status) => afk_idle_state(status.session.as_ref(), now_ms),
         _ => None,
     };
-    let websocket_status_notice = if let Some(retry_deadline_ms) = *socket_retry_deadline_ms {
-        Some(AttrValue::from(afk_websocket_reconnect_notice(
-            retry_deadline_ms.saturating_sub(browser_now_ms()),
-        )))
-    } else if *socket_reconnecting {
-        Some(AttrValue::from(afk_websocket_connecting_notice()))
+    let websocket_status_notice = if socket_notice_visible {
+        if let Some(retry_deadline_ms) = *socket_retry_deadline_ms {
+            Some(AttrValue::from(afk_websocket_reconnect_notice(
+                retry_deadline_ms.saturating_sub(now_ms),
+            )))
+        } else if *socket_reconnecting {
+            Some(AttrValue::from(afk_websocket_connecting_notice()))
+        } else {
+            None
+        }
     } else {
         None
     };
     let chat_status_notice = match &*status {
         LoadState::Ready(status) => {
-            status_chat_notice(status, *chat_reconnect_active).map(AttrValue::from)
+            status_chat_notice(status, chat_notice_visible).map(AttrValue::from)
         }
         _ => None,
     };
@@ -2245,6 +2684,30 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
     let face_button_locked = current_overlay
         .as_ref()
         .is_some_and(|overlay| matches!(overlay, AfkFaceOverlay::Prompt(_)));
+    let board_interactive = match &*status {
+        LoadState::Ready(status) => status.session.as_ref().is_some_and(|session| {
+            matches!(
+                session.phase,
+                AfkRoundPhase::Countdown | AfkRoundPhase::Active
+            ) && !session.paused
+                && !face_button_locked
+        }),
+        _ => false,
+    };
+
+    {
+        let current_cell_state = current_cell_state.clone();
+        let held_cell_preview = held_cell_preview.clone();
+        use_effect_with(board_interactive, move |interactive| {
+            if !*interactive && (*current_cell_state).is_some() {
+                current_cell_state.set(None);
+            }
+            if !*interactive && (*held_cell_preview).is_some() {
+                held_cell_preview.set(None);
+            }
+            || ()
+        });
+    }
 
     let on_face_button = {
         let manual_face_prompt = manual_face_prompt.clone();
@@ -2322,18 +2785,69 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
         })
     };
 
-    let on_streamer_action = {
+    let on_streamer_cell_event = {
+        let current_cell_state = current_cell_state.clone();
+        let held_cell_preview = held_cell_preview.clone();
         let status = status.clone();
         let last_error = last_error.clone();
-        Callback::from(move |request: AfkActionRequest| {
-            let status = status.clone();
-            let last_error = last_error.clone();
-            spawn_local(async move {
-                match post_board_action(request).await {
-                    Ok(response) => status.set(LoadState::Ready(response)),
-                    Err(error) => last_error.set(Some(error)),
+        Callback::from(move |cell_msg: AfkCellMsg| {
+            if !board_interactive {
+                if (*current_cell_state).is_some() {
+                    current_cell_state.set(None);
                 }
+                if (*held_cell_preview).is_some() {
+                    held_cell_preview.set(None);
+                }
+                return;
+            }
+
+            let mut next_cell_state = *current_cell_state;
+            let mut next_held_cell_preview = match cell_msg {
+                AfkCellMsg::Update(AfkCellPointerState { buttons, .. }) if !buttons.is_empty() => {
+                    None
+                }
+                _ => (*held_cell_preview).clone(),
+            };
+            let mut pending_request = None;
+            update_cell_pointer_state(&mut next_cell_state, cell_msg, |pointer_state| {
+                pending_request = match &*status {
+                    LoadState::Ready(status) => status.session.as_ref().and_then(|session| {
+                        request_for_streamer_pointer_release(
+                            session,
+                            pointer_state.pos,
+                            pointer_state.buttons,
+                        )
+                    }),
+                    _ => None,
+                };
+                next_held_cell_preview = pending_request.and_then(|_| match &*status {
+                    LoadState::Ready(status) => {
+                        held_afk_press_preview(status.session.as_ref(), pointer_state)
+                    }
+                    _ => None,
+                });
+                pending_request.is_some()
             });
+            if next_cell_state != *current_cell_state {
+                current_cell_state.set(next_cell_state);
+            }
+            if next_held_cell_preview != *held_cell_preview {
+                held_cell_preview.set(next_held_cell_preview);
+            }
+            if let Some(request) = pending_request {
+                let status = status.clone();
+                let held_cell_preview = held_cell_preview.clone();
+                let last_error = last_error.clone();
+                spawn_local(async move {
+                    match post_board_action(request).await {
+                        Ok(response) => status.set(LoadState::Ready(response)),
+                        Err(error) => {
+                            held_cell_preview.set(None);
+                            last_error.set(Some(error));
+                        }
+                    }
+                });
+            }
         })
     };
 
@@ -2419,7 +2933,6 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                                         set_board_size_large.clone(),
                                     ),
                                 )}
-                                {menu_section_gap()}
                             </>
                         }
                     } else if matches!(*menu_page, AfkMenuPage::ConfirmBoardSize)
@@ -2550,6 +3063,7 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                 LoadState::Ready(status) => status.session.as_ref(),
                 _ => None,
             };
+            let countdown_overlay = active_countdown_overlay(session);
             let mines_left = mines_counter_text(session);
             let timer = board_counter_text(session);
             let displayed_idle_state = if face_button_locked { None } else { idle_state };
@@ -2569,13 +3083,12 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                 "Open AFK submenu"
             };
             let timer_class = classes!("countdown-timer", afk_timer_phase_class(session));
-            let board_interactive = session.is_some_and(|session| {
-                matches!(
-                    session.phase,
-                    AfkRoundPhase::Countdown | AfkRoundPhase::Active
-                ) && !session.paused
-                    && !face_button_locked
-            });
+            let board_pointer_state = if board_interactive {
+                (*current_cell_state)
+                    .or_else(|| held_afk_pointer_state((*held_cell_preview).as_ref(), session))
+            } else {
+                None
+            };
 
             html! {
                 <div
@@ -2615,7 +3128,12 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                     <div class="board-shell">
                         {
                             if let Some(session) = session {
-                                render_afk_board(session, board_interactive, on_streamer_action)
+                                render_afk_board(
+                                    session,
+                                    board_interactive,
+                                    board_pointer_state,
+                                    on_streamer_cell_event,
+                                )
                             } else if *start_transition_in_progress {
                                 html! { <div class="afk-board-note">{"Starting..."}</div> }
                             } else if matches!(&*status, LoadState::Loading | LoadState::Idle) {
@@ -2623,6 +3141,11 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                             } else {
                                 Html::default()
                             }
+                        }
+                        {
+                            countdown_overlay
+                                .map(|overlay| render_countdown_overlay(overlay, *countdown_demo_show_after))
+                                .unwrap_or_default()
                         }
                     </div>
                     {
@@ -2789,6 +3312,27 @@ mod tests {
         }
     }
 
+    fn countdown_test_session(board_size: AfkBoardSize) -> AfkSessionSnapshot {
+        let (width, height, live_mines_left) = match board_size {
+            AfkBoardSize::Tiny => (9, 9, 9),
+            AfkBoardSize::Small => (16, 16, 20),
+            AfkBoardSize::Medium => (24, 18, 36),
+            AfkBoardSize::Large => (30, 20, 50),
+        };
+        AfkSessionSnapshot {
+            phase: AfkRoundPhase::Countdown,
+            board: AfkBoardSnapshot {
+                width,
+                height,
+                cells: vec![AfkCellSnapshot::Hidden; usize::from(width) * usize::from(height)],
+            },
+            phase_countdown_secs: Some(5),
+            current_level: 1,
+            live_mines_left,
+            ..active_test_session(1_000)
+        }
+    }
+
     fn ready_status(session: AfkSessionSnapshot) -> LoadState<AfkStatusResponse> {
         LoadState::Ready(AfkStatusResponse {
             runtime: FrontendRuntimeConfig { afk_enabled: true },
@@ -2945,6 +3489,98 @@ mod tests {
     }
 
     #[test]
+    fn countdown_overlay_shows_only_during_countdown() {
+        assert_eq!(
+            active_countdown_overlay(Some(&countdown_test_session(AfkBoardSize::Medium))),
+            Some(AFK_COUNTDOWN_OVERLAY)
+        );
+
+        for phase in [
+            AfkRoundPhase::Active,
+            AfkRoundPhase::Won,
+            AfkRoundPhase::TimedOut,
+            AfkRoundPhase::Stopped,
+        ] {
+            let mut session = active_test_session(1_000);
+            session.phase = phase;
+            assert_eq!(active_countdown_overlay(Some(&session)), None);
+        }
+
+        assert_eq!(active_countdown_overlay(None), None);
+    }
+
+    #[test]
+    fn countdown_demo_target_state_lasts_twice_as_long() {
+        assert_eq!(countdown_demo_step_ms(false), AFK_COUNTDOWN_DEMO_BEFORE_MS);
+        assert_eq!(countdown_demo_step_ms(true), AFK_COUNTDOWN_DEMO_AFTER_MS);
+        assert_eq!(
+            countdown_demo_step_ms(true),
+            countdown_demo_step_ms(false) * 2
+        );
+    }
+
+    #[test]
+    fn countdown_overlay_uses_expected_fixed_rows() {
+        let overlay = active_countdown_overlay(Some(&countdown_test_session(AfkBoardSize::Medium)))
+            .expect("countdown overlay should exist");
+
+        assert_eq!(overlay.title, "How to play");
+        assert_eq!(
+            overlay.rows,
+            [
+                AfkCountdownDemoRow {
+                    before: AfkCountdownDemoCell {
+                        state: AfkCellSnapshot::Hidden,
+                        code: Some("1A"),
+                    },
+                    after: AfkCountdownDemoCell {
+                        state: AfkCellSnapshot::Revealed(0),
+                        code: None,
+                    },
+                    command: "1a",
+                    description: "open",
+                },
+                AfkCountdownDemoRow {
+                    before: AfkCountdownDemoCell {
+                        state: AfkCellSnapshot::Hidden,
+                        code: Some("5C"),
+                    },
+                    after: AfkCountdownDemoCell {
+                        state: AfkCellSnapshot::Flagged,
+                        code: None,
+                    },
+                    command: "!f 5c",
+                    description: "flag",
+                },
+                AfkCountdownDemoRow {
+                    before: AfkCountdownDemoCell {
+                        state: AfkCellSnapshot::Flagged,
+                        code: Some("2E"),
+                    },
+                    after: AfkCountdownDemoCell {
+                        state: AfkCellSnapshot::Hidden,
+                        code: None,
+                    },
+                    command: "!u 2e",
+                    description: "unflag",
+                },
+            ]
+        );
+        assert_eq!(
+            overlay.aria_label,
+            "Chat commands: 1a opens, !f 5c flags, !u 2e unflags. Letter case does not matter."
+        );
+    }
+
+    #[test]
+    fn countdown_overlay_keeps_same_copy_on_tiny_boards() {
+        assert_eq!(
+            active_countdown_overlay(Some(&countdown_test_session(AfkBoardSize::Tiny))),
+            Some(AFK_COUNTDOWN_OVERLAY)
+        );
+    }
+
+    #[test]
     fn should_show_cell_code_uses_snapshot_label_mask_when_present() {
         let session = AfkSessionSnapshot {
             streamer: None,
@@ -3065,6 +3701,181 @@ mod tests {
     }
 
     #[test]
+    fn streamer_release_actions_follow_normal_mouseup_mapping() {
+        let session = AfkSessionSnapshot {
+            streamer: None,
+            phase: AfkRoundPhase::Active,
+            paused: false,
+            board: AfkBoardSnapshot {
+                width: 2,
+                height: 2,
+                cells: vec![
+                    AfkCellSnapshot::Hidden,
+                    AfkCellSnapshot::Flagged,
+                    AfkCellSnapshot::Revealed(1),
+                    AfkCellSnapshot::Hidden,
+                ],
+            },
+            labeled_cells: Vec::new(),
+            timer_profile: AfkTimerProfileSnapshot {
+                start_secs: 120,
+                safe_reveal_bonus_secs: 1,
+                mine_penalty_secs: 15,
+                start_delay_secs: 5,
+                win_continue_delay_secs: 30,
+                loss_continue_delay_secs: 60,
+            },
+            timer_remaining_secs: 120,
+            phase_countdown_secs: None,
+            current_level: 1,
+            live_mines_left: 1,
+            crater_count: 0,
+            loss_reason: None,
+            timeout_enabled: true,
+            ignored_users: Vec::new(),
+            recent_penalties: Vec::new(),
+            activity: Vec::new(),
+            last_action: None,
+            last_user_activity_at_ms: 1,
+        };
+
+        assert_eq!(
+            request_for_streamer_pointer_release(&session, (0, 0), MouseButtons::LEFT),
+            Some(AfkActionRequest {
+                kind: AfkActionKind::Reveal,
+                x: 0,
+                y: 0,
+            })
+        );
+        assert_eq!(
+            request_for_streamer_pointer_release(&session, (1, 0), MouseButtons::RIGHT),
+            Some(AfkActionRequest {
+                kind: AfkActionKind::ToggleFlag,
+                x: 1,
+                y: 0,
+            })
+        );
+        assert_eq!(
+            request_for_streamer_pointer_release(&session, (0, 1), MouseButtons::LEFT),
+            Some(AfkActionRequest {
+                kind: AfkActionKind::Chord,
+                x: 0,
+                y: 1,
+            })
+        );
+        assert_eq!(
+            request_for_streamer_pointer_release(&session, (0, 1), MouseButtons::RIGHT),
+            Some(AfkActionRequest {
+                kind: AfkActionKind::ChordFlag,
+                x: 0,
+                y: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn afk_pressed_preview_matches_left_button_feedback() {
+        let session = AfkSessionSnapshot {
+            streamer: None,
+            phase: AfkRoundPhase::Active,
+            paused: false,
+            board: AfkBoardSnapshot {
+                width: 3,
+                height: 1,
+                cells: vec![
+                    AfkCellSnapshot::Hidden,
+                    AfkCellSnapshot::Revealed(1),
+                    AfkCellSnapshot::Flagged,
+                ],
+            },
+            labeled_cells: Vec::new(),
+            timer_profile: AfkTimerProfileSnapshot {
+                start_secs: 120,
+                safe_reveal_bonus_secs: 1,
+                mine_penalty_secs: 15,
+                start_delay_secs: 5,
+                win_continue_delay_secs: 30,
+                loss_continue_delay_secs: 60,
+            },
+            timer_remaining_secs: 120,
+            phase_countdown_secs: None,
+            current_level: 1,
+            live_mines_left: 1,
+            crater_count: 0,
+            loss_reason: None,
+            timeout_enabled: true,
+            ignored_users: Vec::new(),
+            recent_penalties: Vec::new(),
+            activity: Vec::new(),
+            last_action: None,
+            last_user_activity_at_ms: 1,
+        };
+
+        assert!(afk_is_pressed(
+            &session,
+            (0, 0),
+            AfkCellSnapshot::Hidden,
+            Some(AfkCellPointerState {
+                pos: (1, 0),
+                buttons: MouseButtons::LEFT,
+            }),
+        ));
+        assert!(!afk_is_pressed(
+            &session,
+            (0, 0),
+            AfkCellSnapshot::Hidden,
+            Some(AfkCellPointerState {
+                pos: (1, 0),
+                buttons: MouseButtons::RIGHT,
+            }),
+        ));
+    }
+
+    #[test]
+    fn held_press_preview_only_survives_while_session_is_unchanged() {
+        let session = active_test_session(1_000);
+        let preview = held_afk_press_preview(
+            Some(&session),
+            AfkCellPointerState {
+                pos: (3, 4),
+                buttons: MouseButtons::LEFT,
+            },
+        )
+        .expect("left-button release should create a held preview");
+
+        assert_eq!(
+            held_afk_pointer_state(Some(&preview), Some(&session)),
+            Some(AfkCellPointerState {
+                pos: (3, 4),
+                buttons: MouseButtons::LEFT,
+            })
+        );
+
+        let mut next_session = session.clone();
+        next_session.current_level = next_session.current_level.saturating_add(1);
+        assert_eq!(
+            held_afk_pointer_state(Some(&preview), Some(&next_session)),
+            None
+        );
+    }
+
+    #[test]
+    fn held_press_preview_is_not_kept_for_right_clicks() {
+        let session = active_test_session(1_000);
+
+        assert_eq!(
+            held_afk_press_preview(
+                Some(&session),
+                AfkCellPointerState {
+                    pos: (0, 0),
+                    buttons: MouseButtons::RIGHT,
+                },
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn face_icon_uses_sleeping_face_for_timer_losses() {
         let status = LoadState::Ready(AfkStatusResponse {
             runtime: FrontendRuntimeConfig { afk_enabled: true },
@@ -3111,6 +3922,16 @@ mod tests {
         });
 
         assert_eq!(afk_face_icon(&status, None, None, false), "sleeping");
+    }
+
+    #[test]
+    fn countdown_face_icon_uses_upside_down_face() {
+        let session = countdown_test_session(AfkBoardSize::Medium);
+
+        assert_eq!(
+            afk_face_icon(&ready_status(session), None, None, false),
+            "starting-soon"
+        );
     }
 
     #[test]
@@ -3279,7 +4100,33 @@ mod tests {
 
     #[test]
     fn websocket_reconnect_notice_uses_plain_count() {
-        assert_eq!(afk_websocket_reconnect_notice(4_000), "Reconnecting in 4...");
+        assert_eq!(
+            afk_websocket_reconnect_notice(4_000),
+            "Reconnecting in 4..."
+        );
+    }
+
+    #[test]
+    fn connection_notice_visibility_waits_for_two_second_grace_period() {
+        assert!(!connection_notice_visible(None, 3_000));
+        assert!(!connection_notice_visible(Some(1_000), 2_999));
+        assert!(connection_notice_visible(Some(1_000), 3_000));
+    }
+
+    #[test]
+    fn connection_notice_refresh_delay_counts_down_to_grace_period() {
+        assert_eq!(
+            next_connection_notice_refresh_delay_ms(Some(1_000), 1_500),
+            Some(1_500)
+        );
+        assert_eq!(
+            next_connection_notice_refresh_delay_ms(Some(1_000), 2_999),
+            Some(1)
+        );
+        assert_eq!(
+            next_connection_notice_refresh_delay_ms(Some(1_000), 3_000),
+            None
+        );
     }
 
     #[test]
@@ -3439,6 +4286,33 @@ mod tests {
                 message: "Chat reconnecting...".into(),
                 status: Some("Level 3".into()),
             })
+        );
+    }
+
+    #[test]
+    fn chat_reconnect_notice_waits_for_grace_period() {
+        let status = AfkStatusResponse {
+            chat_connection: AfkChatConnectionState::Connecting,
+            ..base_status(Some(active_test_session(1_000)))
+        };
+
+        assert_eq!(status_chat_notice(&status, false), None);
+        assert_eq!(
+            status_chat_notice(&status, true),
+            Some("Chat reconnecting...".into())
+        );
+    }
+
+    #[test]
+    fn chat_error_notice_is_not_delayed() {
+        let status = AfkStatusResponse {
+            chat_connection: AfkChatConnectionState::Error,
+            ..base_status(Some(active_test_session(1_000)))
+        };
+
+        assert_eq!(
+            status_chat_notice(&status, false),
+            Some("Chat unavailable.".into())
         );
     }
 

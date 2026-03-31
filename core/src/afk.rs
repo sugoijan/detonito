@@ -28,7 +28,7 @@ impl AfkTimerProfile {
             start_secs: 120,
             safe_reveal_bonus_secs: 1,
             mine_penalty_secs: 15,
-            start_delay_secs: 5,
+            start_delay_secs: 8,
             win_continue_delay_secs: 30,
             loss_continue_delay_secs: 60,
         }

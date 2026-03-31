@@ -7,6 +7,7 @@ mod afk;
 #[path = "afk_disabled.rs"]
 mod afk;
 mod app;
+mod board_input;
 mod game;
 mod menu;
 mod no_guess_worker;

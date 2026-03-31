@@ -1,8 +1,11 @@
+use crate::board_input::{
+    CellMsg as BoardCellMsg, CellPointerCallbacks, CellPointerState as BoardCellPointerState,
+    MouseButtons, cell_pointer_callbacks, update_cell_pointer_state,
+};
 use crate::no_guess_worker;
 use crate::settings;
 use crate::sprites::{Glyph, GlyphRun, GlyphSet, Icon, IconCrop, SpriteDefs};
 use crate::utils::*;
-use bitflags::bitflags;
 use chrono::prelude::*;
 use clap::Args;
 use detonito_core as game;
@@ -257,28 +260,8 @@ impl<E> HasUpdate for Result<game::RevealOutcome, E> {
     }
 }
 
-bitflags! {
-    #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
-    struct MouseButtons: u16 {
-        const LEFT    = 1;
-        const RIGHT   = 1 << 1;
-        const MIDDLE  = 1 << 2;
-        const BACK    = 1 << 3;
-        const FORWARD = 1 << 4;
-    }
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub(crate) struct CellPointerState {
-    pos: (game::Coord, game::Coord),
-    buttons: MouseButtons,
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub(crate) enum CellMsg {
-    Update(CellPointerState),
-    Leave,
-}
+type CellPointerState = BoardCellPointerState<game::Coord2>;
+type CellMsg = BoardCellMsg<game::Coord2>;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) enum Msg {
@@ -420,53 +403,12 @@ fn cell_component(props: &CellProps) -> Html {
         Misflagged => html! { <Icon name="flag" class={classes!("cell-icon")}/> },
     };
 
-    let onmousedown = {
-        let callback = callback.clone();
-        Callback::from(move |e: MouseEvent| {
-            let buttons = MouseButtons::from_bits_truncate(e.buttons());
-            let pointer_state = CellPointerState {
-                pos: (x, y),
-                buttons,
-            };
-            callback.emit(CellMsg::Update(pointer_state));
-            log::trace!("({}, {}) mouse down ({:?})", x, y, buttons);
-        })
-    };
-
-    let onmouseup = {
-        let callback = callback.clone();
-        Callback::from(move |e: MouseEvent| {
-            let buttons = MouseButtons::from_bits_truncate(e.buttons());
-            let pointer_state = CellPointerState {
-                pos: (x, y),
-                buttons,
-            };
-            callback.emit(CellMsg::Update(pointer_state));
-            log::trace!("({}, {}) mouse up ({:?})", x, y, buttons);
-        })
-    };
-
-    let onmouseenter = {
-        let callback = callback.clone();
-        Callback::from(move |e: MouseEvent| {
-            let buttons = MouseButtons::from_bits_truncate(e.buttons());
-            let pointer_state = CellPointerState {
-                pos: (x, y),
-                buttons,
-            };
-            callback.emit(CellMsg::Update(pointer_state));
-            log::trace!("({}, {}) mouse enter ({:?})", x, y, buttons);
-        })
-    };
-
-    let onmouseleave = {
-        let callback = callback.clone();
-        Callback::from(move |e: MouseEvent| {
-            let buttons = MouseButtons::from_bits_truncate(e.buttons());
-            callback.emit(CellMsg::Leave);
-            log::trace!("({}, {}) mouse leave ({:?})", x, y, buttons);
-        })
-    };
+    let CellPointerCallbacks {
+        onmousedown,
+        onmouseup,
+        onmouseenter,
+        onmouseleave,
+    } = cell_pointer_callbacks((x, y), callback);
 
     html! {
         <td {class} {onmousedown} {onmouseup} {onmouseenter} {onmouseleave}>
@@ -997,71 +939,51 @@ impl Component for GameView {
     }
 
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
-        use CellMsg::*;
         use Msg::*;
 
         let updated = match msg {
-            CellEvent(Leave) => {
+            CellEvent(cell_msg) => {
                 if self.is_generating_layout || self.board_interaction_locked_by_prompt() {
                     self.current_cell_state = None;
                     false
                 } else {
-                    log::trace!("cell leave");
-                    self.current_cell_state.take().is_some()
-                }
-            }
-            CellEvent(Update(cell_state)) => {
-                if self.is_generating_layout || self.board_interaction_locked_by_prompt() {
-                    self.current_cell_state = None;
-                    false
-                } else {
-                    let prompt_cleared = self
-                        .should_auto_dismiss_prompt_for_cell_event(CellMsg::Update(cell_state))
+                    let prompt_cleared = self.should_auto_dismiss_prompt_for_cell_event(cell_msg)
                         && self.clear_face_prompt();
-                    log::trace!("cell update: {:?}", cell_state);
-                    let board_updated = if cell_state.buttons.is_empty() {
-                        match self.current_cell_state.take() {
-                            None => false,
-                            Some(CellPointerState { pos, buttons }) => match buttons {
-                                MouseButtons::LEFT => {
-                                    log::debug!("reveal cell: {:?}", pos);
-                                    if self.game.is_none()
-                                        && matches!(
-                                            self.settings.generator,
-                                            settings::Generator::NoGuess
-                                        )
-                                    {
-                                        self.begin_no_guess_generation(ctx, pos)
-                                    } else {
-                                        self.reveal_cell(pos)
-                                    }
+                    let mut next_cell_state = self.current_cell_state;
+                    let board_updated = update_cell_pointer_state(
+                        &mut next_cell_state,
+                        cell_msg,
+                        |CellPointerState { pos, buttons }| match buttons {
+                            MouseButtons::LEFT => {
+                                log::debug!("reveal cell: {:?}", pos);
+                                if self.game.is_none()
+                                    && matches!(
+                                        self.settings.generator,
+                                        settings::Generator::NoGuess
+                                    )
+                                {
+                                    self.begin_no_guess_generation(ctx, pos)
+                                } else {
+                                    self.reveal_cell(pos)
                                 }
-                                MouseButtons::RIGHT => {
-                                    log::debug!("mark cell: {:?}", pos);
-                                    if self.game.is_none()
-                                        && matches!(
-                                            self.settings.generator,
-                                            settings::Generator::NoGuess
-                                        )
-                                    {
-                                        false
-                                    } else {
-                                        self.mark_cell(pos)
-                                    }
-                                }
-                                _ => true,
-                            },
-                        }
-                    } else {
-                        match self.current_cell_state.replace(cell_state) {
-                            None => true,
-                            Some(CellPointerState { pos, buttons }) => {
-                                (pos != cell_state.pos)
-                                    && ((buttons & MouseButtons::LEFT)
-                                        != (cell_state.buttons & MouseButtons::LEFT))
                             }
-                        }
-                    };
+                            MouseButtons::RIGHT => {
+                                log::debug!("mark cell: {:?}", pos);
+                                if self.game.is_none()
+                                    && matches!(
+                                        self.settings.generator,
+                                        settings::Generator::NoGuess
+                                    )
+                                {
+                                    false
+                                } else {
+                                    self.mark_cell(pos)
+                                }
+                            }
+                            _ => true,
+                        },
+                    );
+                    self.current_cell_state = next_cell_state;
                     prompt_cleared || board_updated
                 }
             }

@@ -12,6 +12,10 @@ dirty = false
 source = "upstream"
 upstream = "1F636.svg"
 
+[icons.starting-soon]
+source = "upstream"
+upstream = "1F913.svg"
+
 [icons.mid-open]
 source = "upstream"
 upstream = "1F62E.svg"

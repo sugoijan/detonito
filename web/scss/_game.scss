@@ -742,6 +742,108 @@ main {
     margin: auto;
   }
 
+  .afk-countdown-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    display: grid;
+    place-items: center;
+    padding: 4px;
+    margin: 2.9px; // XXX: value that perfectly matches the edge of the overlay background with the cells
+    overflow: hidden;
+    pointer-events: none;
+    background: repeating-linear-gradient(
+      var(#{$css-var-prefix}overlay-backdrop),
+      var(#{$css-var-prefix}overlay-backdrop) 3.1px,
+      var(#{$css-var-prefix}shadow) 3.1px,
+      var(#{$css-var-prefix}shadow) 3.671px
+    )
+  }
+
+  .afk-countdown-guide,
+  .afk-countdown-command,
+  .afk-countdown-description,
+  .afk-countdown-title {
+    font-family: "Iosevka", "SFMono-Regular", "Cascadia Mono", "Segoe UI Mono", monospace;
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  .afk-countdown-guide {
+    $bg-color: var(#{$css-var-prefix}highlight);
+    $border-color: var(#{$css-var-prefix}text);
+
+    display: grid;
+    gap: 5px;
+    width: min(calc(100% - 8px), 124px);
+    justify-items: start;
+    padding: 5px 7px;
+    color: var(#{$css-var-prefix}text);
+    background-color: $bg-color;
+    border: solid 1px $border-color;
+    border-radius: 3px;
+  }
+
+  .afk-countdown-title {
+    font-size: 9px;
+    color: var(#{$css-var-prefix}text);
+  }
+
+  .afk-countdown-rows {
+    display: grid;
+    gap: 7px;
+    width: 100%;
+  }
+
+  .afk-countdown-row {
+    display: grid;
+    grid-template-columns: 32px max-content max-content;
+    align-items: center;
+    justify-content: start;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .afk-countdown-board-window {
+    width: 32px;
+    min-width: 32px;
+    max-width: 32px;
+    height: 32px;
+    min-height: 32px;
+    max-height: 32px;
+    overflow: hidden;
+    position: relative;
+  }
+
+  .afk-countdown-board-preview {
+    margin: 0;
+    border: 0;
+    transform: translate(-8px, -8px);
+  }
+
+  .afk-countdown-board-preview td:hover:not(.locked) {
+    border-color: var(#{$css-var-prefix}shadow);
+  }
+
+  .afk-countdown-command {
+    display: inline-flex;
+    align-items: center;
+    min-height: $size-cell;
+    padding: 0 4px;
+    background-color: var(#{$css-var-prefix}shadow);
+    color: var(#{$css-var-prefix}highlight);
+    border-radius: 2px;
+    font-size: 8px;
+    letter-spacing: -0.01em;
+    text-transform: lowercase;
+  }
+
+  .afk-countdown-description {
+    color: var(#{$css-var-prefix}text);
+    font-size: 8px;
+    text-transform: lowercase;
+  }
+
   .afk-cell-code,
   .afk-cell-tag,
   .afk-board-note {

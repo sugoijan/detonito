@@ -41,6 +41,7 @@
   #{$css-var-prefix}background: $gray-semilight;
   #{$css-var-prefix}background-hover: darken($gray-semilight, $hover);
   #{$css-var-prefix}text: $black;
+  #{$css-var-prefix}overlay-backdrop: rgba($gray-semidark, 0.5);
   #{$css-var-prefix}counter-text: $red-shade;
   #{$css-var-prefix}counter-bg1: $black;
   #{$css-var-prefix}counter-bg2: $red-shade2;

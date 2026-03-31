@@ -57,7 +57,9 @@ impl Settings {
     pub(crate) const DEFAULT_ZOOM_PERCENT: u16 = 175;
     pub(crate) const MIN_ZOOM_PERCENT: u16 = 50;
     pub(crate) const MAX_ZOOM_PERCENT: u16 = 500;
-    pub(crate) const ZOOM_STEP_PERCENT: u16 = 5;
+    const ZOOM_LEVELS: [u16; 14] = [
+        50, 60, 70, 80, 90, 100, 125, 150, 175, 200, 250, 300, 400, 500,
+    ];
     const ZOOM_CSS_VAR_NAME: &'static str = "--detonito-zoom";
 
     const fn default_zoom_percent() -> u16 {
@@ -65,7 +67,44 @@ impl Settings {
     }
 
     pub(crate) fn normalize_zoom_percent(value: u16) -> u16 {
-        value.clamp(Self::MIN_ZOOM_PERCENT, Self::MAX_ZOOM_PERCENT)
+        let next_index = Self::ZOOM_LEVELS.partition_point(|&level| level < value);
+
+        if next_index == 0 {
+            return Self::MIN_ZOOM_PERCENT;
+        }
+
+        if next_index == Self::ZOOM_LEVELS.len() {
+            return Self::MAX_ZOOM_PERCENT;
+        }
+
+        let lower = Self::ZOOM_LEVELS[next_index - 1];
+        let upper = Self::ZOOM_LEVELS[next_index];
+        if value - lower <= upper - value {
+            lower
+        } else {
+            upper
+        }
+    }
+
+    fn increase_zoom_percent(value: u16) -> u16 {
+        let value = Self::normalize_zoom_percent(value);
+        let index = Self::ZOOM_LEVELS
+            .binary_search(&value)
+            .expect("normalized zoom percent should match a supported preset");
+
+        Self::ZOOM_LEVELS.get(index + 1).copied().unwrap_or(value)
+    }
+
+    fn decrease_zoom_percent(value: u16) -> u16 {
+        let value = Self::normalize_zoom_percent(value);
+        let index = Self::ZOOM_LEVELS
+            .binary_search(&value)
+            .expect("normalized zoom percent should match a supported preset");
+
+        index
+            .checked_sub(1)
+            .map(|prev| Self::ZOOM_LEVELS[prev])
+            .unwrap_or(value)
     }
 
     pub(crate) fn zoom_percent(&self) -> u16 {
@@ -182,16 +221,10 @@ impl Settings {
                     .clamp(1, settings.game_config.total_cells());
             }
             IncreaseZoom => {
-                settings.zoom_percent = settings
-                    .zoom_percent()
-                    .saturating_add(Self::ZOOM_STEP_PERCENT);
-                settings.zoom_percent = Self::normalize_zoom_percent(settings.zoom_percent);
+                settings.zoom_percent = Self::increase_zoom_percent(settings.zoom_percent());
             }
             DecreaseZoom => {
-                settings.zoom_percent = settings
-                    .zoom_percent()
-                    .saturating_sub(Self::ZOOM_STEP_PERCENT);
-                settings.zoom_percent = Self::normalize_zoom_percent(settings.zoom_percent);
+                settings.zoom_percent = Self::decrease_zoom_percent(settings.zoom_percent());
             }
         }
         settings
@@ -794,7 +827,7 @@ mod tests {
     }
 
     #[test]
-    fn zoom_percent_is_clamped_to_supported_range() {
+    fn zoom_percent_is_snapped_to_supported_levels() {
         let mut settings = Settings::default();
 
         settings.zoom_percent = 0;
@@ -802,6 +835,9 @@ mod tests {
 
         settings.zoom_percent = 999;
         assert_eq!(settings.zoom_percent(), Settings::MAX_ZOOM_PERCENT);
+
+        settings.zoom_percent = 119;
+        assert_eq!(settings.zoom_percent(), 125);
     }
 
     #[test]
@@ -810,9 +846,24 @@ mod tests {
         let next = settings.applying(SettingsAction::IncreaseZoom);
 
         assert_eq!(settings.zoom_percent(), Settings::DEFAULT_ZOOM_PERCENT);
+        assert_eq!(next.zoom_percent(), 200);
+    }
+
+    #[test]
+    fn zoom_actions_follow_supported_progression() {
+        let settings = Settings::default();
+
         assert_eq!(
-            next.zoom_percent(),
-            Settings::DEFAULT_ZOOM_PERCENT + Settings::ZOOM_STEP_PERCENT
+            settings
+                .applying(SettingsAction::DecreaseZoom)
+                .zoom_percent(),
+            150
+        );
+        assert_eq!(
+            settings
+                .applying(SettingsAction::SetZoom(119))
+                .zoom_percent(),
+            125
         );
     }
 
