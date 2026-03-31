@@ -9,6 +9,7 @@ mod afk;
 mod app;
 mod board_input;
 mod game;
+mod hazard_variant;
 mod menu;
 mod no_guess_worker;
 mod normal;

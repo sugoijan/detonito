@@ -82,6 +82,24 @@ changes = "TODO: document the exact upstream icon source(s) and modification sum
 source = "upstream"
 upstream = "1F4A5.svg"
 
+[icons.rose]
+source = "upstream"
+upstream = "1F339.svg"
+
+[icons.rose.transform]
+scale = 1.5
+translate_x = -7
+translate_y = -2
+
+[icons.wilted-flower]
+source = "upstream"
+upstream = "1F940.svg"
+
+[icons.wilted-flower.transform]
+scale = 1.45
+translate_x = -6
+translate_y = -4
+
 [icons.question]
 source = "upstream"
 upstream = "2754.svg"

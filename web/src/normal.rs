@@ -1,3 +1,4 @@
+use crate::hazard_variant::HazardVariant;
 use crate::menu::{
     menu_copy_row, menu_header_row, menu_icon_button, menu_nav_enter_button,
     menu_number_stepper_row, menu_primary_row, menu_section_gap, menu_wide_detail_row,
@@ -67,6 +68,7 @@ fn plan_normal_settings_change(
 #[function_component]
 pub(crate) fn NormalMenuView(props: &NormalMenuProps) -> Html {
     let settings = use_state_eq(Settings::local_or_default);
+    let hazard_variant = HazardVariant::local_or_default();
     let page = use_state_eq(|| NormalMenuPage::Root);
     let pending_change = use_state_eq(|| None::<PendingSettingsChange>);
     let can_resume = props.can_resume;
@@ -556,7 +558,7 @@ pub(crate) fn NormalMenuView(props: &NormalMenuProps) -> Html {
                     inc_size_y,
                 )}
                 {menu_number_stepper_row(
-                    "Mines",
+                    hazard_variant.label(),
                     settings.game_config.mines,
                     1,
                     settings.game_config.total_cells(),

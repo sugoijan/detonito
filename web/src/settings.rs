@@ -1,3 +1,4 @@
+use crate::hazard_variant::HazardVariant;
 use crate::menu::{
     menu_copy_row, menu_header_row, menu_icon_button, menu_nav_enter_button,
     menu_number_stepper_row_with_suffix, menu_section_gap, menu_title_row, menu_wide_detail_row,
@@ -349,6 +350,10 @@ fn theme_label(theme: Option<Theme>) -> &'static str {
     }
 }
 
+fn variant_label(variant: HazardVariant) -> &'static str {
+    variant.label()
+}
+
 #[derive(Properties, PartialEq)]
 pub(crate) struct SettingsProps {
     #[prop_or_default]
@@ -381,6 +386,7 @@ impl SettingsEntryPoint {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum SettingsMenuPage {
     Root,
+    Variant,
     Theme,
 }
 
@@ -581,6 +587,7 @@ fn child_credit_rows(entry: &CreditEntry) -> Vec<Html> {
 #[function_component]
 pub(crate) fn SettingsView(props: &SettingsProps) -> Html {
     let settings = use_state_eq(Settings::local_or_default);
+    let hazard_variant = use_state_eq(HazardVariant::local_or_default);
     let theme = use_state_eq(|| Option::<Theme>::local_or_default());
     let page = use_state_eq(|| SettingsMenuPage::Root);
 
@@ -597,6 +604,14 @@ pub(crate) fn SettingsView(props: &SettingsProps) -> Html {
         Callback::from(move |next_theme: Option<Theme>| {
             theme.set(next_theme);
             Theme::apply(next_theme);
+        })
+    };
+
+    let commit_variant = {
+        let hazard_variant = hazard_variant.clone();
+        Callback::from(move |next_variant: HazardVariant| {
+            hazard_variant.set(next_variant);
+            next_variant.apply();
         })
     };
 
@@ -649,6 +664,21 @@ pub(crate) fn SettingsView(props: &SettingsProps) -> Html {
         Callback::from(move |_| commit_theme.emit(None))
     };
 
+    let set_variant_mines = {
+        let commit_variant = commit_variant.clone();
+        Callback::from(move |_| commit_variant.emit(HazardVariant::Mines))
+    };
+
+    let set_variant_flowers = {
+        let commit_variant = commit_variant.clone();
+        Callback::from(move |_| commit_variant.emit(HazardVariant::Flowers))
+    };
+
+    let open_variant = {
+        let page = page.clone();
+        Callback::from(move |_| page.set(SettingsMenuPage::Variant))
+    };
+
     let open_theme = {
         let page = page.clone();
         Callback::from(move |_| page.set(SettingsMenuPage::Theme))
@@ -660,6 +690,7 @@ pub(crate) fn SettingsView(props: &SettingsProps) -> Html {
     };
 
     let current_theme_label = theme_label(*theme);
+    let current_variant_label = variant_label(*hazard_variant);
 
     let menu_body = match *page {
         SettingsMenuPage::Root => html! {
@@ -686,9 +717,45 @@ pub(crate) fn SettingsView(props: &SettingsProps) -> Html {
                 )}
                 {menu_section_gap()}
                 {menu_wide_detail_row(
+                    "Variant",
+                    current_variant_label,
+                    menu_nav_enter_button("Open variant menu", false, open_variant),
+                )}
+                {menu_section_gap()}
+                {menu_wide_detail_row(
                     "Theme",
                     current_theme_label,
                     menu_nav_enter_button("Open theme menu", false, open_theme),
+                )}
+                {menu_section_gap()}
+            </>
+        },
+        SettingsMenuPage::Variant => html! {
+            <>
+                {menu_section_gap()}
+                {menu_header_row("Variant", back_to_root.clone())}
+                {menu_section_gap()}
+                {menu_wide_detail_row(
+                    "Mines",
+                    "War visuals",
+                    menu_icon_button(
+                        "mine",
+                        "Use mine visuals and wording",
+                        matches!(*hazard_variant, HazardVariant::Mines),
+                        false,
+                        set_variant_mines,
+                    ),
+                )}
+                {menu_wide_detail_row(
+                    "Flowers",
+                    "Peace visuals",
+                    menu_icon_button(
+                        "rose",
+                        "Use flower visuals and wording",
+                        matches!(*hazard_variant, HazardVariant::Flowers),
+                        false,
+                        set_variant_flowers,
+                    ),
                 )}
                 {menu_section_gap()}
             </>

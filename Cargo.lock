@@ -462,6 +462,7 @@ dependencies = [
  "js-sys",
  "log",
  "ndarray",
+ "roxmltree",
  "serde",
  "serde_json",
  "toml",

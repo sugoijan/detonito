@@ -1,10 +1,14 @@
+use crate::hazard_variant::HazardVariant;
 use crate::utils::*;
+use roxmltree::Document;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 
 const AUTO_THEME_QUERY: &str = "(prefers-color-scheme: dark)";
 const FAVICON_SELECTOR: &str = r#"link[data-dtn-favicon]"#;
+const OPENMOJI_SYMBOLS: &str = include_str!("../generated/openmoji-symbols.svg");
+const FAVICON_ICON_BOX_SIZE: f64 = 40.0;
 
 thread_local! {
     static AUTO_THEME_LISTENER: RefCell<Option<AutoThemeListener>> = const { RefCell::new(None) };
@@ -15,13 +19,54 @@ struct AutoThemeListener {
     _onchange: Closure<dyn FnMut(JsValue)>,
 }
 
+#[derive(Clone, Copy)]
 struct FaviconPalette {
     highlight: &'static str,
     primary: &'static str,
     shadow: &'static str,
-    mine: &'static str,
-    mine_glint: &'static str,
+    sprite_gray_light: &'static str,
+    sprite_gray: &'static str,
+    sprite_gray_dark: &'static str,
+    sprite_red: &'static str,
+    sprite_red_shade: &'static str,
+    sprite_green: &'static str,
+    sprite_green_shade: &'static str,
     ink: &'static str,
+}
+
+struct FaviconIcon {
+    view_box: SvgViewBox,
+    markup: String,
+}
+
+#[derive(Clone, Copy)]
+struct SvgViewBox {
+    min_x: f64,
+    min_y: f64,
+    width: f64,
+    height: f64,
+}
+
+impl SvgViewBox {
+    fn parse(value: &str) -> Option<Self> {
+        let mut numbers = value
+            .split(|ch: char| ch == ',' || ch.is_ascii_whitespace())
+            .filter(|part| !part.is_empty())
+            .map(str::parse::<f64>);
+        let min_x = numbers.next()?.ok()?;
+        let min_y = numbers.next()?.ok()?;
+        let width = numbers.next()?.ok()?;
+        let height = numbers.next()?.ok()?;
+        if numbers.next().is_some() || width <= 0.0 || height <= 0.0 {
+            return None;
+        }
+        Some(Self {
+            min_x,
+            min_y,
+            width,
+            height,
+        })
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
@@ -88,22 +133,61 @@ impl Theme {
                 highlight: "#e1e5e7",
                 primary: "#b0b6ba",
                 shadow: "#73787b",
-                mine: "#383838",
-                mine_glint: "#b0b6ba",
+                sprite_gray_light: "#e1e5e7",
+                sprite_gray: "#b0b6ba",
+                sprite_gray_dark: "#383838",
+                sprite_red: "#ff554d",
+                sprite_red_shade: "#e51308",
+                sprite_green: "#47ab3d",
+                sprite_green_shade: "#188f0d",
                 ink: "#040404",
             },
             Self::Dark => FaviconPalette {
                 highlight: "#5f5c5c",
                 primary: "#404142",
                 shadow: "#202121",
-                mine: "#202121",
-                mine_glint: "#5f5c5c",
+                sprite_gray_light: "#aaabab",
+                sprite_gray: "#5f5c5c",
+                sprite_gray_dark: "#202121",
+                sprite_red: "#c35560",
+                sprite_red_shade: "#c72727",
+                sprite_green: "#47ab3d",
+                sprite_green_shade: "#188f0d",
                 ink: "#040404",
             },
         }
     }
 
-    fn favicon_svg(self) -> String {
+    fn favicon_svg(self, hazard_variant: HazardVariant) -> String {
+        let palette = self.favicon_palette();
+        let Some(icon_group) =
+            favicon_icon_group(hazard_variant.hidden_hazard_icon_name(), palette)
+        else {
+            log::error!(
+                "failed to build favicon icon for hazard variant {:?}",
+                hazard_variant
+            );
+            return self.legacy_favicon_svg();
+        };
+
+        format!(
+            concat!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">"#,
+                r#"<rect width="64" height="64" fill="{shadow}"/>"#,
+                r#"<rect x="6" y="6" width="52" height="52" fill="{primary}"/>"#,
+                r#"<path fill="{highlight}" d="M0 0h64l-6 6H6v52L0 64V0z"/>"#,
+                r#"<path fill="{shadow}" d="M64 0v64l-6-6V6zM0 64h64l-6-6H6L0 64z"/>"#,
+                r#"{icon_group}"#,
+                r#"</svg>"#
+            ),
+            highlight = palette.highlight,
+            primary = palette.primary,
+            shadow = palette.shadow,
+            icon_group = icon_group,
+        )
+    }
+
+    fn legacy_favicon_svg(self) -> String {
         let palette = self.favicon_palette();
 
         format!(
@@ -131,16 +215,16 @@ impl Theme {
             highlight = palette.highlight,
             primary = palette.primary,
             shadow = palette.shadow,
-            mine = palette.mine,
-            mine_glint = palette.mine_glint,
+            mine = palette.sprite_gray_dark,
+            mine_glint = palette.sprite_gray,
             ink = palette.ink,
         )
     }
 
-    fn favicon_data_url(self) -> String {
+    fn favicon_data_url(self, hazard_variant: HazardVariant) -> String {
         format!(
             "data:image/svg+xml,{}",
-            js_sys::encode_uri_component(&self.favicon_svg())
+            js_sys::encode_uri_component(&self.favicon_svg(hazard_variant))
         )
     }
 
@@ -189,7 +273,8 @@ impl Theme {
         };
 
         let resolved = Self::resolved(theme);
-        if let Err(err) = link.set_attribute("href", &resolved.favicon_data_url()) {
+        let hazard_variant = HazardVariant::local_or_default();
+        if let Err(err) = link.set_attribute("href", &resolved.favicon_data_url(hazard_variant)) {
             log::error!("failed to set favicon href: {:?}", err);
         }
     }
@@ -209,7 +294,7 @@ impl Theme {
             let onchange = Closure::<dyn FnMut(JsValue)>::new(move |_event: JsValue| {
                 let theme: Option<Theme> = LocalOrDefault::local_or_default();
                 if theme.is_none() {
-                    Theme::update_favicon(None);
+                    Theme::refresh_favicon();
                 }
             });
 
@@ -233,19 +318,87 @@ impl Theme {
         Self::update_html(theme);
         Self::update_favicon(theme);
     }
+
+    pub(crate) fn refresh_favicon() {
+        let theme: Option<Self> = LocalOrDefault::local_or_default();
+        Self::update_favicon(theme);
+    }
 }
 
 impl StorageKey for Theme {
     const KEY: &'static str = "detonito:theme";
 }
 
+fn favicon_icon_group(icon_name: &str, palette: FaviconPalette) -> Option<String> {
+    let icon = favicon_icon(icon_name)?;
+    let scale = FAVICON_ICON_BOX_SIZE / icon.view_box.width.max(icon.view_box.height);
+    let x = 32.0 - ((icon.view_box.width * scale) / 2.0) - (icon.view_box.min_x * scale);
+    let y = 32.0 - ((icon.view_box.height * scale) / 2.0) - (icon.view_box.min_y * scale);
+
+    Some(format!(
+        r#"<g transform="translate({x} {y}) scale({scale})">{markup}</g>"#,
+        x = format_svg_number(x),
+        y = format_svg_number(y),
+        scale = format_svg_number(scale),
+        markup = recolor_favicon_icon(icon.markup, palette),
+    ))
+}
+
+fn favicon_icon(icon_name: &str) -> Option<FaviconIcon> {
+    let document = Document::parse(OPENMOJI_SYMBOLS).ok()?;
+    let symbol_id = format!("dtn-icon-{icon_name}");
+    let symbol = document.descendants().find(|node| {
+        node.has_tag_name("symbol") && node.attribute("id") == Some(symbol_id.as_str())
+    })?;
+    let view_box = SvgViewBox::parse(symbol.attribute("viewBox")?)?;
+
+    let mut markup = String::new();
+    for child in symbol.children().filter(|child| child.is_element()) {
+        markup.push_str(&OPENMOJI_SYMBOLS[child.range()]);
+    }
+
+    Some(FaviconIcon { view_box, markup })
+}
+
+fn recolor_favicon_icon(mut markup: String, palette: FaviconPalette) -> String {
+    for (token, value) in [
+        ("var(--dtn-sprite-gray-light)", palette.sprite_gray_light),
+        ("var(--dtn-sprite-gray)", palette.sprite_gray),
+        ("var(--dtn-sprite-gray-dark)", palette.sprite_gray_dark),
+        ("var(--dtn-sprite-red)", palette.sprite_red),
+        ("var(--dtn-sprite-red-shade)", palette.sprite_red_shade),
+        ("var(--dtn-sprite-green)", palette.sprite_green),
+        ("var(--dtn-sprite-green-shade)", palette.sprite_green_shade),
+        ("var(--dtn-sprite-ink)", palette.ink),
+    ] {
+        markup = markup.replace(token, value);
+    }
+    markup
+}
+
+fn format_svg_number(value: f64) -> String {
+    let mut formatted = format!("{value:.4}");
+    while formatted.contains('.') && formatted.ends_with('0') {
+        formatted.pop();
+    }
+    if formatted.ends_with('.') {
+        formatted.pop();
+    }
+    if formatted == "-0" {
+        "0".to_string()
+    } else {
+        formatted
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::Theme;
+    use crate::hazard_variant::HazardVariant;
 
     #[test]
     fn light_favicon_uses_closed_cell_palette() {
-        let svg = Theme::Light.favicon_svg();
+        let svg = Theme::Light.favicon_svg(HazardVariant::Mines);
         assert!(svg.contains("#e1e5e7"));
         assert!(svg.contains("#b0b6ba"));
         assert!(svg.contains("#73787b"));
@@ -254,9 +407,18 @@ mod tests {
 
     #[test]
     fn dark_favicon_uses_closed_cell_palette() {
-        let svg = Theme::Dark.favicon_svg();
+        let svg = Theme::Dark.favicon_svg(HazardVariant::Mines);
         assert!(svg.contains("#5f5c5c"));
         assert!(svg.contains("#404142"));
         assert!(svg.contains("#202121"));
+    }
+
+    #[test]
+    fn flower_favicon_uses_processed_rose_icon() {
+        let svg = Theme::Light.favicon_svg(HazardVariant::Flowers);
+        assert!(svg.contains("translate("));
+        assert!(svg.contains("#ff554d"));
+        assert!(svg.contains("#47ab3d"));
+        assert!(!svg.contains("var(--dtn-sprite-red)"));
     }
 }

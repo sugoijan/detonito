@@ -1266,6 +1266,97 @@
       
     
     </symbol>
+    <symbol id="dtn-icon-rose" viewBox="0 0 72 72">
+      
+      
+      <g transform="matrix(1.5 0 0 1.5 -25 -20)">
+        
+        
+        <g class="dtn-openmoji-layer dtn-openmoji-layer-color">
+          
+          
+          <path class="dtn-openmoji-layer dtn-openmoji-layer-color dtn-palette-fill-red" d="M38.1631,16.8246c0,0-5.1901-0.5135-5.8625,3.0442s1.757,6.4979,2.9313,6.6556 c0,0-2.5562,6.2939,1.8725,9.6935s9.1611,1.1911,10.9752-2.1216c0,0,8.0846,0.9665,8.4396-6.4577c0,0-0.9641-6.4239-5.8652-6.2931 c0,0,1.3634-6.9761-3.8985-8.4706S38.1631,16.8246,38.1631,16.8246z" fill="var(--dtn-sprite-red)" stroke="none"/>
+          
+          
+          <path class="dtn-openmoji-layer dtn-openmoji-layer-color dtn-palette-fill-green" d="M25.9293,32.6035c3.992,4.886,2.805,12.462,2.805,12.462s-7.66-0.347-11.653-5.233 s-2.805-12.462-2.805-12.462S21.9373,27.7215,25.9293,32.6035z" fill="var(--dtn-sprite-green)" stroke="none"/>
+          
+          
+          <path class="dtn-openmoji-layer dtn-openmoji-layer-color dtn-palette-fill-red-shade" d="M44.4122,38.2369c0.9095,1.9758,1.874,3.7171,3.4969,4.5633c1.7075,0.8903,3.6834,0.6758,5.1278-0.1255 c1.5266-0.8468,2.6551-2.5099,2.6972-4.5946c0.0355-1.7625-1.1056-3.5236-2.1483-5.4034l-5.0366,2.4325L44.4122,38.2369z" fill="var(--dtn-sprite-red-shade)" stroke="none"/>
+          
+          
+          <path class="dtn-openmoji-layer dtn-openmoji-layer-color dtn-palette-fill-red-shade" d="M51.9515,20.0738c0,0,0.1963-3.2744-0.3034-4.0737c0,0,1.1424-1.6739,3.088-1.3169 c1.4815,0.2718,2.3317,3.3174,2.653,4.7549c0.1124,0.5031,0.2884,0.7228-0.0498,1.1118c-0.5455,0.6274-1.8031,1.8051-2.9605,2.0586 L51.9515,20.0738z" fill="var(--dtn-sprite-red-shade)" stroke="none"/>
+          
+          
+          <path class="dtn-openmoji-layer dtn-openmoji-layer-color dtn-palette-fill-red" d="M48.3664,22.704c0,1.6312-2.0931,2.9535-4.6751,2.9535s-4.6751-1.3223-4.6751-2.9535" fill="var(--dtn-sprite-red)" stroke="none"/>
+          
+          
+          <path class="dtn-openmoji-layer dtn-openmoji-layer-color dtn-palette-fill-red-shade" d="M50.5245,31.1699c-0.5009,0.6863-1.4235,1.1037-2.2859,1.3551c-1.1433,0.3333-2.3619,0.4293-3.543,0.2537 c-2.1134-0.3143-4.0049-1.2693-5.4503-2.6508c-1.3591-1.2989-2.3237-2.9748-2.7075-4.8494c0,0-0.0062-0.0313-0.0135-0.0891 c-0.0513-0.4042-0.1594-2.1031,1.3907-3.4133c0.6559-0.5544,1.5837-0.882,2.4763-1.0041c1.1833-0.1618,2.4028-0.0781,3.5418,0.2685 c2.038,0.6203,3.7539,1.8412,4.9606,3.4181c1.1346,1.4827,1.819,3.2801,1.8975,5.1888" fill="var(--dtn-sprite-red-shade)" stroke="none"/>
+          
+          
+          <path class="dtn-openmoji-layer dtn-openmoji-layer-color dtn-palette-fill-red" d="M39.0161,22.8385c-0.0018,1.6129,1.9173,2.6679,4.5145,2.7789s4.7591-1.1201,4.8288-2.7498l-0.0008-0.3155 c-0.0191-1.632-2.1412-2.9744-4.7397-2.9983C41.0203,19.5299,38.997,21.2065,39.0161,22.8385" fill="var(--dtn-sprite-red)" stroke="none"/>
+          
+          
+          <path class="dtn-openmoji-layer dtn-openmoji-layer-color dtn-palette-fill-red-shade" d="M43.174,24.8175c-0.6105-1.4165,0.3289-3.1838,2.0983-3.9475c0.9179-0.3962,1.9603-0.3538,2.8746-0.035 c1.4172,0.4941,2.4105,1.8808,2.3753,3.3822c-0.0051,0.2183-0.0355,0.4264-0.1035,0.6054" fill="var(--dtn-sprite-red-shade)" stroke="none"/>
+          
+          
+          <path class="dtn-openmoji-layer dtn-openmoji-layer-color dtn-palette-fill-red-shade" d="M43.174,23.8299c-0.6105,1.4165,0.3289,3.1838,2.0983,3.9475c0.9179,0.3962,1.9603,0.3538,2.8746,0.035 c1.4172-0.4941,2.4105-1.8808,2.3753-3.3822c-0.0051-0.2183-0.0355-0.4264-0.1035-0.6054" fill="var(--dtn-sprite-red-shade)" stroke="none"/>
+          
+        
+        </g>
+        
+        
+        <g class="dtn-openmoji-layer dtn-openmoji-layer-hair"/>
+        
+        
+        <g class="dtn-openmoji-layer dtn-openmoji-layer-skin"/>
+        
+        
+        <g class="dtn-openmoji-layer dtn-openmoji-layer-skin-shadow"/>
+        
+        
+        <g class="dtn-openmoji-layer dtn-openmoji-layer-line">
+          
+          
+          <path class="dtn-openmoji-layer dtn-openmoji-layer-line dtn-palette-stroke-ink" d="M49.8675,30.3979c-0.4428,0.6348-1.2583,1.0208-2.0207,1.2533c-1.0107,0.3083-2.0878,0.3971-3.1319,0.2346 c-1.8682-0.2907-3.5402-1.174-4.8179-2.4517c-1.2014-1.2014-2.0541-2.7514-2.3933-4.4853" fill="none" stroke="var(--dtn-sprite-ink)" stroke-linecap="round" stroke-linejoin="round" stroke-miterlimit="10" stroke-width="2"/>
+          
+          
+          <path class="dtn-openmoji-layer dtn-openmoji-layer-line dtn-palette-stroke-ink" d="M40.0032,22.8224c0-1.6312,1.6529-2.9535,3.6919-2.9535c2.039,0,3.6919,1.3223,3.6919,2.9535" fill="none" stroke="var(--dtn-sprite-ink)" stroke-linecap="round" stroke-linejoin="round" stroke-miterlimit="10" stroke-width="2"/>
+          
+          
+          <path class="dtn-openmoji-layer dtn-openmoji-layer-line dtn-palette-stroke-ink" d="M49.4103,24.9866c0,1.1609-1.1763,2.1019-2.6274,2.1019c-0.7528,0-1.4609-0.3402-1.9982-0.8332 c-0.8327-0.7641-1.1063-2.0186-0.6344-3.0455c0.0686-0.1493,0.1516-0.284,0.252-0.3874" fill="none" stroke="var(--dtn-sprite-ink)" stroke-linecap="round" stroke-linejoin="round" stroke-miterlimit="10" stroke-width="2"/>
+          
+          
+          <path class="dtn-openmoji-layer dtn-openmoji-layer-line dtn-palette-stroke-ink" d="M53.3083,15.9025c0.9791-0.6237,2.4048-0.1371,3.1844,1.0868c0.7796,1.2239,0.6178,2.7216-0.3613,3.3453" fill="none" stroke="var(--dtn-sprite-ink)" stroke-linecap="round" stroke-linejoin="round" stroke-miterlimit="10" stroke-width="2"/>
+          
+          
+          <path class="dtn-openmoji-layer dtn-openmoji-layer-line dtn-palette-stroke-ink" d="M54.1952,35.9239c1.1689,2.1072,0.4082,4.7631-1.699,5.932c-2.1072,1.1689-4.7631,0.4082-5.932-1.699" fill="none" stroke="var(--dtn-sprite-ink)" stroke-linecap="round" stroke-linejoin="round" stroke-miterlimit="10" stroke-width="2"/>
+          
+          
+          <path class="dtn-openmoji-layer dtn-openmoji-layer-line dtn-palette-stroke-ink" d="M38.1631,16.1932c-2.253-0.8548-5.9182,1.2312-6.5125,3.6757c-0.5693,2.3415,0.9006,6.2141,3.1536,7.0689" fill="none" stroke="var(--dtn-sprite-ink)" stroke-linecap="round" stroke-linejoin="round" stroke-miterlimit="10" stroke-width="2"/>
+          
+          
+          <path class="dtn-openmoji-layer dtn-openmoji-layer-line dtn-palette-stroke-ink" d="M50.8669,20.8344c5.4159,0.6272,6.3961,6.4611,5.8024,8.7734c-0.8819,3.4349-5.3899,5.4013-8.1201,4.6907" fill="none" stroke="var(--dtn-sprite-ink)" stroke-linecap="round" stroke-linejoin="round" stroke-miterlimit="10" stroke-width="2"/>
+          
+          
+          <path class="dtn-openmoji-layer dtn-openmoji-layer-line dtn-palette-stroke-ink" d="M50.8669,20.8344c1.2816-3.5081-0.5232-7.3909-4.0313-8.6725c-3.5081-1.2816-7.3909,0.5232-8.6725,4.0313" fill="none" stroke="var(--dtn-sprite-ink)" stroke-linecap="round" stroke-linejoin="round" stroke-miterlimit="10" stroke-width="2"/>
+          
+          
+          <path class="dtn-openmoji-layer dtn-openmoji-layer-line dtn-palette-stroke-ink" d="M34.8042,26.9378c-2.0326,3.7956-0.6035,8.5203,3.1921,10.5529s8.5203,0.6035,10.5529-3.1921" fill="none" stroke="var(--dtn-sprite-ink)" stroke-linecap="round" stroke-linejoin="round" stroke-miterlimit="10" stroke-width="2"/>
+          
+          
+          <path class="dtn-openmoji-layer dtn-openmoji-layer-line dtn-palette-stroke-ink" d="M25.9293,32.3094 c3.992,4.886,2.805,12.462,2.805,12.462s-7.66-0.347-11.653-5.233s-2.805-12.462-2.805-12.462S21.9373,27.4274,25.9293,32.3094z" fill="none" stroke="var(--dtn-sprite-ink)" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/>
+          
+          
+          <path class="dtn-openmoji-layer dtn-openmoji-layer-line dtn-palette-stroke-ink" d="M37.1043,40.8644 c-3.438,3.548-7.676,10.246-5.829,20.735" fill="none" stroke="var(--dtn-sprite-ink)" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/>
+          
+        
+        </g>
+        
+      
+      </g>
+      
+    
+    </symbol>
     <symbol id="dtn-icon-sleeping" viewBox="0 0 72 72">
       
       
@@ -1620,6 +1711,97 @@
         
         
         <path class="dtn-openmoji-layer dtn-openmoji-layer-line dtn-palette-stroke-ink" d="M40.2252,23.0042c0,0,4.7748-2.6003,9.5496,1.6523" fill="none" stroke="var(--dtn-sprite-ink)" stroke-linecap="round" stroke-linejoin="round" stroke-miterlimit="10" stroke-width="2"/>
+        
+      
+      </g>
+      
+    
+    </symbol>
+    <symbol id="dtn-icon-wilted-flower" viewBox="0 0 72 72">
+      
+      
+      <g transform="matrix(1.45 0 0 1.45 -22.2 -20.2)">
+        
+        
+        <g class="dtn-openmoji-layer dtn-openmoji-layer-color">
+          
+          
+          <path class="dtn-openmoji-layer dtn-openmoji-layer-color dtn-palette-fill-red" d="M55.0652,36.2595c0,0,4.0331-3.3068,1.9928-6.298c-2.0402-2.9912-5.8371-3.3523-6.7789-2.6335 c0,0-2.643-6.2579-8.1784-5.5303c-5.5354,0.7276-7.3202,5.6356-6.2605,9.2608c0,0-6.4001,5.0333-1.4014,10.534 c0,0,5.2241,3.8607,8.5972,0.3025c0,0,3.9688,5.8969,8.7463,3.233C56.5597,42.464,55.0652,36.2595,55.0652,36.2595z" fill="var(--dtn-sprite-red)" stroke="none"/>
+          
+          
+          <path class="dtn-openmoji-layer dtn-openmoji-layer-color dtn-palette-fill-red-shade" d="M35.8681,25.7396c-2.0403-0.754-3.9535-1.3032-5.6994-0.754c-1.8369,0.5778-3.0824,2.1267-3.5372,3.7146 c-0.4807,1.6782-0.1027,3.6523,1.3417,5.1561c1.2212,1.2714,3.2734,1.7098,5.3399,2.3017l1.8414-5.2814L35.8681,25.7396z" fill="var(--dtn-sprite-red-shade)" stroke="none"/>
+          
+          
+          <path class="dtn-openmoji-layer dtn-openmoji-layer-color dtn-palette-fill-red" d="M44.0555,39.519c-1.1534-1.1534-0.6084-3.5685,1.2174-5.3943c1.8258-1.8258,4.2409-2.3708,5.3943-1.2173" fill="var(--dtn-sprite-red)" stroke="none"/>
+          
+          
+          <path class="dtn-openmoji-layer dtn-openmoji-layer-color dtn-palette-fill-red-shade" d="M36.5432,35.0587c-0.1311-0.8395,0.2261-1.787,0.6582-2.5746c0.5728-1.0441,1.3665-1.9737,2.3259-2.6846 c1.7166-1.2721,3.7295-1.9343,5.7283-1.9796c1.8795-0.0425,3.7466,0.4604,5.3435,1.5146c0,0,0.0265,0.0178,0.0725,0.0534 c0.3221,0.2496,1.5999,1.3744,1.4302,3.397c-0.0718,0.8558-0.4962,1.7435-1.041,2.461c-0.7223,0.9511-1.6438,1.7543-2.6943,2.3146 c-1.8797,1.0025-3.9563,1.3525-5.9246,1.0908c-1.8507-0.2461-3.6056-1.0331-5.0108-2.3273" fill="var(--dtn-sprite-red-shade)" stroke="none"/>
+          
+          
+          <path class="dtn-openmoji-layer dtn-openmoji-layer-color dtn-palette-fill-red" d="M50.1567,32.8122c-1.1392-1.1417-3.2422-0.5308-5.1572,1.2272s-2.5732,4.1572-1.47,5.3589l0.2237,0.2225 c1.1675,1.1405,3.6173,0.5892,5.4716-1.2313C51.0791,36.569,51.3243,33.9527,50.1567,32.8122" fill="var(--dtn-sprite-red)" stroke="none"/>
+          
+          
+          <path class="dtn-openmoji-layer dtn-openmoji-layer-color dtn-palette-fill-red-shade" d="M45.6369,34.2811c1.4333,0.5699,2.0187,2.4839,1.3076,4.275c-0.3689,0.9292-1.136,1.6363-2.0079,2.0574 c-1.3515,0.6528-3.0345,0.3746-4.0712-0.712c-0.1508-0.158-0.2764-0.3266-0.3549-0.5012" fill="var(--dtn-sprite-red-shade)" stroke="none"/>
+          
+          
+          <path class="dtn-openmoji-layer dtn-openmoji-layer-color dtn-palette-fill-red-shade" d="M46.3352,34.9794c-0.5699-1.4333-2.4839-2.0187-4.275-1.3076c-0.9292,0.3689-1.6363,1.136-2.0574,2.0079 c-0.6528,1.3515-0.3746,3.0345,0.712,4.0712c0.158,0.1508,0.3266,0.2764,0.5012,0.3549" fill="var(--dtn-sprite-red-shade)" stroke="none"/>
+          
+          
+          <path class="dtn-openmoji-layer dtn-openmoji-layer-color dtn-palette-fill-green" d="M10.3745,37.4322c1.542-3.1814,5.6727-4.3649,5.6727-4.3649s1.6302,3.9753,0.0885,7.1572 c-1.5417,3.1819-5.6727,4.3649-5.6727,4.3649S8.8345,40.6127,10.3745,37.4322z" fill="var(--dtn-sprite-green)" stroke="none"/>
+          
+          
+          <path class="dtn-openmoji-layer dtn-openmoji-layer-color dtn-palette-fill-red" d="M43.571,54.8601c-0.1839,0.9828-1.4893,1.5632-2.9156,1.2963c-1.4263-0.2669-2.4335-1.28-2.2496-2.2628 l1.3835-2.6208c0.8878-1.5173,0.9261-1.5282,1.8709-1.3342l0.2962,0.0552c0.9513,0.159,0.9831,0.1831,1.2663,1.9184l0.3492,2.9434" fill="var(--dtn-sprite-red)" stroke="none"/>
+          
+        
+        </g>
+        
+        
+        <g class="dtn-openmoji-layer dtn-openmoji-layer-hair"/>
+        
+        
+        <g class="dtn-openmoji-layer dtn-openmoji-layer-skin"/>
+        
+        
+        <g class="dtn-openmoji-layer dtn-openmoji-layer-skin-shadow"/>
+        
+        
+        <g class="dtn-openmoji-layer dtn-openmoji-layer-line">
+          
+          
+          <path class="dtn-openmoji-layer dtn-openmoji-layer-line dtn-palette-stroke-ink" d="M55.2397,36.7939c2.1976-0.9887,3.0946-4.581,1.7864-6.7298c-1.2531-2.0583-4.8113-4.2316-7.0089-3.2429" fill="none" stroke="var(--dtn-sprite-ink)" stroke-linecap="round" stroke-linejoin="round" stroke-miterlimit="10" stroke-width="2"/>
+          
+          
+          <path class="dtn-openmoji-layer dtn-openmoji-layer-line dtn-palette-stroke-ink" d="M38.4804,31.213c1.7039-1.7039,3.9372-2.5559,6.1705-2.5559c2.2333,0,4.4666,0.852,6.1705,2.5559" fill="none" stroke="var(--dtn-sprite-ink)" stroke-linecap="round" stroke-linejoin="round" stroke-miterlimit="10" stroke-width="2"/>
+          
+          
+          <path class="dtn-openmoji-layer dtn-openmoji-layer-line dtn-palette-stroke-ink" d="M42.9749,42.495c-4.2731,3.3861-9.0856,0.1496-9.9358-1.9156c-1.35-3.2794-0.379-7.8158,2.0541-9.2439" fill="none" stroke="var(--dtn-sprite-ink)" stroke-linecap="round" stroke-linejoin="round" stroke-miterlimit="10" stroke-width="2"/>
+          
+          
+          <path class="dtn-openmoji-layer dtn-openmoji-layer-line dtn-palette-stroke-ink" d="M49.251,33.4074c1.1534,1.1534,0.9197,3.2573-0.5221,4.6991c-1.4418,1.4418-3.5456,1.6755-4.6991,0.5221" fill="none" stroke="var(--dtn-sprite-ink)" stroke-linecap="round" stroke-linejoin="round" stroke-miterlimit="10" stroke-width="2"/>
+          
+          
+          <path class="dtn-openmoji-layer dtn-openmoji-layer-line dtn-palette-stroke-ink" d="M41.0689,38.529c-0.8209-0.8209-0.6545-2.3181,0.3716-3.3441c0.5323-0.5323,1.2736-0.7925,2.002-0.8238 c1.1291-0.0485,2.2096,0.6451,2.6021,1.7049c0.0571,0.1541,0.0936,0.3081,0.0958,0.4521" fill="none" stroke="var(--dtn-sprite-ink)" stroke-linecap="round" stroke-linejoin="round" stroke-miterlimit="10" stroke-width="2"/>
+          
+          
+          <path class="dtn-openmoji-layer dtn-openmoji-layer-line dtn-palette-stroke-ink" d="M43.571,54.8601c-0.1839,0.9828-1.4893,1.5632-2.9156,1.2963c-1.4263-0.2669-2.4335-1.28-2.2496-2.2628l1.3835-2.6208 c0.8878-1.5173,0.9261-1.5282,1.8709-1.3342l0.2962,0.0552c0.9513,0.159,0.9831,0.1831,1.2663,1.9184l0.3492,2.9434" fill="none" stroke="var(--dtn-sprite-ink)" stroke-linecap="round" stroke-linejoin="round" stroke-miterlimit="10" stroke-width="2"/>
+          
+          
+          <path class="dtn-openmoji-layer dtn-openmoji-layer-line dtn-palette-stroke-ink" d="M29.9516,34.1785c-2.3166-0.6635-3.6566-3.0794-2.9931-5.3959c0.6635-2.3166,3.0793-3.6566,5.3959-2.9931" fill="none" stroke="var(--dtn-sprite-ink)" stroke-linecap="round" stroke-linejoin="round" stroke-miterlimit="10" stroke-width="2"/>
+          
+          
+          <path class="dtn-openmoji-layer dtn-openmoji-layer-line dtn-palette-stroke-ink" d="M55.2397,36.7939c1.5743,3.3868,0.105,7.4086-3.2819,8.9829c-3.3868,1.5743-7.4086,0.105-8.9829-3.2819" fill="none" stroke="var(--dtn-sprite-ink)" stroke-linecap="round" stroke-linejoin="round" stroke-miterlimit="10" stroke-width="2"/>
+          
+          
+          <path class="dtn-openmoji-layer dtn-openmoji-layer-line dtn-palette-stroke-ink" d="M50.0172,26.8212c-1.2466-4.1212-5.598-6.4515-9.7192-5.2049c-4.1212,1.2466-6.4515,5.598-5.2049,9.7192" fill="none" stroke="var(--dtn-sprite-ink)" stroke-linecap="round" stroke-linejoin="round" stroke-miterlimit="10" stroke-width="2"/>
+          
+          
+          <path class="dtn-openmoji-layer dtn-openmoji-layer-line dtn-palette-stroke-ink" d="M10.3745,37.4322 c1.542-3.1814,5.6727-4.3649,5.6727-4.3649s1.6302,3.9753,0.0885,7.1572c-1.5417,3.1819-5.6727,4.3649-5.6727,4.3649 S8.8345,40.6127,10.3745,37.4322z" fill="none" stroke="var(--dtn-sprite-ink)" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/>
+          
+          
+          <path class="dtn-openmoji-layer dtn-openmoji-layer-line dtn-palette-stroke-ink" d="M40.4402,17.1482 c-2.6414-6.3782-9.9533-9.4076-16.3315-6.7661s-9.4076,9.9533-6.7661,16.3315c0,0,10.6575,22.1929,9.6575,32.1929" fill="none" stroke="var(--dtn-sprite-ink)" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/>
+          
+        
+        </g>
         
       
       </g>

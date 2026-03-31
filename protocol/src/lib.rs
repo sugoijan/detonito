@@ -121,6 +121,8 @@ pub struct AfkActivityRow {
     pub kind: AfkActivityKind,
     #[serde(default)]
     pub actor: Option<AfkIdentity>,
+    #[serde(default)]
+    pub coord: Option<AfkCoordSnapshot>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -133,11 +135,30 @@ pub enum AfkBoardSize {
     Large,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AfkHazardVariant {
+    #[default]
+    Mines,
+    Flowers,
+}
+
+impl AfkHazardVariant {
+    pub const fn timeout_reason(self) -> &'static str {
+        match self {
+            Self::Mines => "BOOM! You found a mine.",
+            Self::Flowers => "D: You stepped on a flower.",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AfkSessionSnapshot {
     pub streamer: Option<AfkIdentity>,
     pub phase: AfkRoundPhase,
     pub paused: bool,
+    #[serde(default)]
+    pub hazard_variant: AfkHazardVariant,
     pub board: AfkBoardSnapshot,
     #[serde(default)]
     pub labeled_cells: Vec<bool>,
@@ -204,4 +225,79 @@ pub struct AfkActionRequest {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AfkClientMessage {
     Ping,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn activity_row_deserialization_defaults_coord_to_none() {
+        let row: AfkActivityRow = serde_json::from_value(json!({
+            "at_ms": 1234,
+            "text": "Jan hit a mine at 1A",
+            "kind": "mine_hit",
+            "actor": {
+                "user_id": "1",
+                "login": "jan",
+                "display_name": "Jan"
+            }
+        }))
+        .expect("activity row should deserialize");
+
+        assert_eq!(row.coord, None);
+    }
+
+    #[test]
+    fn activity_row_supports_embedded_coords() {
+        let row = AfkActivityRow {
+            at_ms: 1234,
+            text: "Jan hit a mine at 1A".into(),
+            kind: AfkActivityKind::MineHit,
+            actor: Some(AfkIdentity::new("1", "jan", "Jan")),
+            coord: Some(AfkCoordSnapshot { x: 0, y: 0 }),
+        };
+
+        let value = serde_json::to_value(&row).expect("activity row should serialize");
+        assert_eq!(value["coord"], json!({ "x": 0, "y": 0 }));
+    }
+
+    #[test]
+    fn session_snapshot_deserialization_defaults_hazard_variant_to_mines() {
+        let session: AfkSessionSnapshot = serde_json::from_value(json!({
+            "streamer": null,
+            "phase": "active",
+            "paused": false,
+            "board": {
+                "width": 1,
+                "height": 1,
+                "cells": ["Hidden"]
+            },
+            "labeled_cells": [],
+            "timer_profile": {
+                "start_secs": 120,
+                "safe_reveal_bonus_secs": 1,
+                "mine_penalty_secs": 15,
+                "start_delay_secs": 5,
+                "win_continue_delay_secs": 30,
+                "loss_continue_delay_secs": 60
+            },
+            "timer_remaining_secs": 120,
+            "phase_countdown_secs": null,
+            "current_level": 1,
+            "live_mines_left": 1,
+            "crater_count": 0,
+            "loss_reason": null,
+            "timeout_enabled": true,
+            "ignored_users": [],
+            "recent_penalties": [],
+            "activity": [],
+            "last_action": null,
+            "last_user_activity_at_ms": 0
+        }))
+        .expect("session snapshot should deserialize");
+
+        assert_eq!(session.hazard_variant, AfkHazardVariant::Mines);
+    }
 }

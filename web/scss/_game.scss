@@ -540,6 +540,9 @@ main {
 
     &.oops {
       background-color: var(#{$css-var-prefix}exploded);
+      &.hazard-flowers {
+        background-color: var(#{$css-var-prefix}wilted);
+      }
     }
 
     @for $i from 0 through 9 {

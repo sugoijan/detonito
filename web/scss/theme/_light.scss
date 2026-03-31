@@ -48,6 +48,7 @@
 
   // tile modifiers
   #{$css-var-prefix}exploded: $red-shade;
+  #{$css-var-prefix}wilted: $brown;
   $slight-red: #ffa0a0;
   #{$css-var-prefix}incorrect: $slight-red;
   #{$css-var-prefix}incorrect-highlight: desaturate(lighten($slight-red, 13.5%), 12%);

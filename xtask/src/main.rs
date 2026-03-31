@@ -176,6 +176,87 @@ struct ManifestEntry {
     icon_name: String,
     source: IconSource,
     filename: String,
+    transform: Option<ManifestTransform>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ManifestTransform {
+    scale: f64,
+    translate_x: f64,
+    translate_y: f64,
+}
+
+impl ManifestTransform {
+    fn is_identity(self) -> bool {
+        approx_eq(self.scale, 1.0)
+            && approx_eq(self.translate_x, 0.0)
+            && approx_eq(self.translate_y, 0.0)
+    }
+
+    fn svg_matrix(self, view_box: SvgViewBox) -> String {
+        let center_x = view_box.min_x + (view_box.width / 2.0);
+        let center_y = view_box.min_y + (view_box.height / 2.0);
+        let transform = AffineTransform {
+            e: self.translate_x,
+            f: self.translate_y,
+            ..AffineTransform::identity()
+        }
+        .compose(AffineTransform {
+            e: center_x,
+            f: center_y,
+            ..AffineTransform::identity()
+        })
+        .compose(AffineTransform {
+            a: self.scale,
+            d: self.scale,
+            ..AffineTransform::identity()
+        })
+        .compose(AffineTransform {
+            e: -center_x,
+            f: -center_y,
+            ..AffineTransform::identity()
+        });
+
+        format!(
+            "matrix({} {} {} {} {} {})",
+            fmt_f64(transform.a),
+            fmt_f64(transform.b),
+            fmt_f64(transform.c),
+            fmt_f64(transform.d),
+            fmt_f64(transform.e),
+            fmt_f64(transform.f),
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SvgViewBox {
+    min_x: f64,
+    min_y: f64,
+    width: f64,
+    height: f64,
+}
+
+impl SvgViewBox {
+    fn parse(value: &str) -> Result<Self> {
+        let numbers = parse_transform_numbers(value)?;
+        if numbers.len() != 4 {
+            bail!("viewBox requires 4 numbers, got {:?}", numbers);
+        }
+        if numbers[2] <= 0.0 || numbers[3] <= 0.0 {
+            bail!(
+                "viewBox must have positive width and height, got {:?}",
+                numbers
+            );
+        }
+
+        Ok(Self {
+            min_x: numbers[0],
+            min_y: numbers[1],
+            width: numbers[2],
+            height: numbers[3],
+        })
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1174,14 +1255,59 @@ fn load_openmoji_manifest(paths: &AssetPaths) -> Result<Vec<ManifestEntry>> {
         if !filename.ends_with(".svg") {
             bail!("Icon {:?} must point at an .svg file", icon_name);
         }
+        let transform = load_openmoji_manifest_transform(icon_name, icon_table)?;
         manifest.push(ManifestEntry {
             icon_name: icon_name.to_string(),
             source,
             filename: filename.to_string(),
+            transform,
         });
     }
 
     Ok(manifest)
+}
+
+fn load_openmoji_manifest_transform(
+    icon_name: &str,
+    icon_table: &toml::map::Map<String, toml::Value>,
+) -> Result<Option<ManifestTransform>> {
+    let Some(transform_value) = icon_table.get("transform") else {
+        return Ok(None);
+    };
+    let transform_table = transform_value
+        .as_table()
+        .with_context(|| format!("Expected [icons.{icon_name}.transform] to be a table"))?;
+
+    let scale = manifest_number(transform_table, "scale")?.unwrap_or(1.0);
+    if !scale.is_finite() || scale <= 0.0 {
+        bail!(
+            "Icon {:?} transform scale must be a finite positive number, got {:?}",
+            icon_name,
+            scale
+        );
+    }
+
+    let translate_x = manifest_number(transform_table, "translate_x")?.unwrap_or(0.0);
+    let translate_y = manifest_number(transform_table, "translate_y")?.unwrap_or(0.0);
+    let transform = ManifestTransform {
+        scale,
+        translate_x,
+        translate_y,
+    };
+
+    Ok((!transform.is_identity()).then_some(transform))
+}
+
+fn manifest_number(table: &toml::map::Map<String, toml::Value>, key: &str) -> Result<Option<f64>> {
+    let Some(value) = table.get(key) else {
+        return Ok(None);
+    };
+
+    value
+        .as_float()
+        .or_else(|| value.as_integer().map(|value| value as f64))
+        .map(Some)
+        .with_context(|| format!("Expected {:?} to be a number, got {:?}", key, value))
 }
 
 fn write_openmoji_symbols(paths: &AssetPaths, manifest: &[ManifestEntry]) -> Result<()> {
@@ -1205,15 +1331,25 @@ fn write_openmoji_symbols(paths: &AssetPaths, manifest: &[ManifestEntry]) -> Res
         let view_box = root
             .attribute("viewBox")
             .with_context(|| format!("OpenMoji icon {:?} is missing a viewBox", entry.icon_name))?;
+        let parsed_view_box = SvgViewBox::parse(view_box)
+            .with_context(|| format!("Invalid viewBox for OpenMoji icon {:?}", entry.icon_name))?;
 
         writer.start_element("symbol");
         writer.write_attribute("id", &format!("dtn-icon-{}", entry.icon_name));
         writer.write_attribute("viewBox", view_box);
 
+        if let Some(transform) = entry.transform {
+            writer.start_element("g");
+            writer.write_attribute("transform", &transform.svg_matrix(parsed_view_box));
+        }
+
         for child in root.children().filter(|child| child.is_element()) {
             write_normalized_openmoji_node(&mut writer, child, &entry.icon_name, None)?;
         }
 
+        if entry.transform.is_some() {
+            writer.end_element();
+        }
         writer.end_element();
     }
 

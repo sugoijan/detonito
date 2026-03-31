@@ -2,6 +2,7 @@ use crate::board_input::{
     CellMsg as BoardCellMsg, CellPointerCallbacks, CellPointerState as BoardCellPointerState,
     MouseButtons, cell_pointer_callbacks, update_cell_pointer_state,
 };
+use crate::hazard_variant::HazardVariant;
 use crate::no_guess_worker;
 use crate::settings;
 use crate::sprites::{Glyph, GlyphRun, GlyphSet, Icon, IconCrop, SpriteDefs};
@@ -341,6 +342,7 @@ struct CellProps {
     x: game::Coord,
     y: game::Coord,
     cell_state: ViewCellState,
+    hazard_variant: HazardVariant,
     #[prop_or_default]
     pressed: bool,
     #[prop_or_default]
@@ -358,6 +360,7 @@ fn cell_component(props: &CellProps) -> Html {
         x,
         y,
         cell_state,
+        hazard_variant,
         pressed,
         loading,
         locked,
@@ -385,6 +388,9 @@ fn cell_component(props: &CellProps) -> Html {
     if locked {
         class.push("locked");
     }
+    if matches!(cell_state, TriggeredMine | Mine) {
+        class.push(hazard_variant.cell_class());
+    }
 
     let content = match cell_state {
         Hidden => Html::default(),
@@ -398,8 +404,12 @@ fn cell_component(props: &CellProps) -> Html {
         },
         Flagged => html! { <Icon name="flag" class={classes!("cell-icon")}/> },
         QuestionMarked => html! { <Icon name="question" class={classes!("cell-icon")}/> },
-        TriggeredMine => html! { <Icon name="mine-exploded" class={classes!("cell-icon")}/> },
-        Mine => html! { <Icon name="mine" class={classes!("cell-icon")}/> },
+        TriggeredMine => html! {
+            <Icon name={hazard_variant.triggered_hazard_icon_name()} class={classes!("cell-icon")}/>
+        },
+        Mine => html! {
+            <Icon name={hazard_variant.hidden_hazard_icon_name()} class={classes!("cell-icon")}/>
+        },
         Misflagged => html! { <Icon name="flag" class={classes!("cell-icon")}/> },
     };
 
@@ -434,6 +444,7 @@ pub(crate) struct GameProps {
 #[derive(Debug)]
 pub(crate) struct GameView {
     settings: settings::Settings,
+    hazard_variant: HazardVariant,
     game: Option<GameSession>,
     seed: u64,
     prev_time: u32,
@@ -923,6 +934,7 @@ impl Component for GameView {
     fn create(ctx: &Context<Self>) -> Self {
         Self {
             settings: LocalOrDefault::local_or_default(),
+            hazard_variant: LocalOrDefault::local_or_default(),
             game: LocalOrDefault::local_or_default(),
             seed: Self::initial_seed(&ctx.props().init),
             prev_time: 0,
@@ -1098,7 +1110,16 @@ impl Component for GameView {
                                             let pressed = loading_cell || self.is_pressed(pos, cell_state);
                                             let callback = ctx.link().callback(Msg::CellEvent);
                                             html! {
-                                                <CellView {x} {y} {cell_state} {callback} {pressed} loading={loading_cell} {locked}/>
+                                                <CellView
+                                                    {x}
+                                                    {y}
+                                                    {cell_state}
+                                                    hazard_variant={self.hazard_variant}
+                                                    {callback}
+                                                    {pressed}
+                                                    loading={loading_cell}
+                                                    {locked}
+                                                />
                                             }
                                         })
                                     }
@@ -1139,6 +1160,7 @@ mod tests {
     fn test_game_view_with_session(session: GameSession) -> GameView {
         GameView {
             settings: settings::Settings::default(),
+            hazard_variant: HazardVariant::default(),
             game: Some(session),
             seed: 0,
             prev_time: 0,

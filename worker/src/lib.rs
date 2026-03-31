@@ -29,9 +29,9 @@ use detonito_core::{
 use detonito_protocol::{
     AfkActionKind, AfkActionRequest, AfkActivityKind, AfkActivityRow,
     AfkBoardSize as ProtocolAfkBoardSize, AfkBoardSnapshot, AfkCellSnapshot,
-    AfkChatConnectionState, AfkClientMessage, AfkIdentity, AfkLossReason, AfkPenaltySnapshot,
-    AfkRoundPhase, AfkServerMessage, AfkSessionSnapshot, AfkStatusResponse,
-    AfkTimerProfileSnapshot, FrontendRuntimeConfig, StreamerAuthStatus,
+    AfkChatConnectionState, AfkClientMessage, AfkCoordSnapshot, AfkHazardVariant, AfkIdentity,
+    AfkLossReason, AfkPenaltySnapshot, AfkRoundPhase, AfkServerMessage, AfkSessionSnapshot,
+    AfkStatusResponse, AfkTimerProfileSnapshot, FrontendRuntimeConfig, StreamerAuthStatus,
 };
 use futures_channel::mpsc::{UnboundedReceiver, unbounded};
 use futures_util::StreamExt;
@@ -103,6 +103,8 @@ struct PersistedAfkSession {
     activity: Vec<AfkActivityRow>,
     last_action: Option<AfkActivityRow>,
     timeout_enabled: bool,
+    #[serde(default = "default_protocol_hazard_variant")]
+    hazard_variant: AfkHazardVariant,
     #[serde(default)]
     last_user_activity_at_ms: i64,
     #[serde(default)]
@@ -110,7 +112,12 @@ struct PersistedAfkSession {
 }
 
 impl PersistedAfkSession {
-    fn new(board_size: CoreAfkBoardSize, timeout_enabled: bool, now_ms: i64) -> Self {
+    fn new(
+        board_size: CoreAfkBoardSize,
+        timeout_enabled: bool,
+        hazard_variant: AfkHazardVariant,
+        now_ms: i64,
+    ) -> Self {
         let mut session = Self {
             engine: AfkEngine::new(random_seed(), AfkPreset::for_board_size(board_size), now_ms),
             ignored_users: Vec::new(),
@@ -119,6 +126,7 @@ impl PersistedAfkSession {
             activity: Vec::new(),
             last_action: None,
             timeout_enabled,
+            hazard_variant,
             last_user_activity_at_ms: now_ms,
             frontend_missing_since_at_ms: None,
         };
@@ -208,7 +216,7 @@ impl PersistedAfkSession {
     }
 
     fn push_activity(&mut self, text: impl Into<String>, now_ms: i64) -> AfkActivityRow {
-        self.push_activity_with_details(text, now_ms, AfkActivityKind::Generic, None)
+        self.push_activity_with_details(text, now_ms, AfkActivityKind::Generic, None, None)
     }
 
     fn push_activity_with_details(
@@ -217,12 +225,14 @@ impl PersistedAfkSession {
         now_ms: i64,
         kind: AfkActivityKind,
         actor: Option<AfkIdentity>,
+        coord: Option<AfkCoordSnapshot>,
     ) -> AfkActivityRow {
         let row = AfkActivityRow {
             at_ms: now_ms,
             text: text.into(),
             kind,
             actor,
+            coord,
         };
         self.activity.push(row.clone());
         if self.activity.len() > MAX_ACTIVITY_ROWS {
@@ -277,6 +287,7 @@ impl PersistedAfkSession {
                 CoreAfkRoundPhase::TimedOut => AfkRoundPhase::TimedOut,
             },
             paused: self.engine.is_paused(),
+            hazard_variant: self.hazard_variant,
             board: AfkBoardSnapshot {
                 width,
                 height,
@@ -462,6 +473,12 @@ struct SetBoardSizePreferenceRequest {
     board_size: ProtocolAfkBoardSize,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct SetHazardVariantPreferenceRequest {
+    #[serde(default)]
+    hazard_variant: AfkHazardVariant,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct EventSubWebSocketMessageRequest {
     connection_id: String,
@@ -539,6 +556,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         (Method::Post, "/api/afk/board-size") => handle_afk_action(req, env).await,
         (Method::Post, "/api/afk/chat-reconnect") => handle_afk_action(req, env).await,
         (Method::Post, "/api/afk/timeout") => handle_afk_action(req, env).await,
+        (Method::Post, "/api/afk/variant") => handle_afk_action(req, env).await,
         (Method::Post, "/api/afk/pause") | (Method::Post, "/api/afk/resume") => {
             handle_afk_action(req, env).await
         }
@@ -1121,7 +1139,13 @@ impl AfkSessionDO {
                     "data": {
                         "user_id": chatter_user_id,
                         "duration": state.timeout_duration_secs,
-                        "reason": "BOOM! You found a mine.",
+                        "reason": twitch_timeout_reason(
+                            state
+                                .session
+                                .as_ref()
+                                .map(|session| session.hazard_variant)
+                                .unwrap_or_default(),
+                        ),
                     }
                 })
                 .to_string(),
@@ -1266,6 +1290,10 @@ impl AfkSessionDO {
                     now,
                     AfkActivityKind::MineHit,
                     Some(actor),
+                    Some(AfkCoordSnapshot {
+                        x: parsed.coords.0,
+                        y: parsed.coords.1,
+                    }),
                 )
             } else if outcome.won {
                 session.push_activity(format!("{actor_label} cleared {coord_label}"), now)
@@ -1412,6 +1440,7 @@ impl AfkSessionDO {
                             now,
                             AfkActivityKind::OutForRound,
                             Some(actor),
+                            None,
                         );
                     vec![row]
                 } else {
@@ -1540,6 +1569,10 @@ impl AfkSessionDO {
                 now,
                 AfkActivityKind::MineHit,
                 Some(streamer.clone()),
+                Some(AfkCoordSnapshot {
+                    x: coords.0,
+                    y: coords.1,
+                }),
             )
         } else if outcome.won {
             session.push_activity(format!("{actor_label} cleared {coord_label}"), now)
@@ -2040,11 +2073,14 @@ impl DurableObject for AfkSessionDO {
                 Response::from_json(&self.status_response(&state))
             }
             (Method::Post, "/api/afk/start") => {
+                let payload: SetHazardVariantPreferenceRequest =
+                    read_json_or_default(&mut req).await?;
                 let mut state = self.load().await?;
                 self.release_round_timeouts(&mut state).await?;
                 let mut session = PersistedAfkSession::new(
                     protocol_board_size_to_core(state.board_size),
                     state.timeout_enabled && state.timeout_supported(),
+                    payload.hazard_variant,
                     now_ms(),
                 );
                 if !self.has_frontend_websockets_excluding(None) {
@@ -2075,6 +2111,23 @@ impl DurableObject for AfkSessionDO {
                 state.board_size = normalize_protocol_board_size(payload.board_size);
                 self.persist(&state).await?;
                 self.broadcast_status(&state);
+                Response::from_json(&self.status_response(&state))
+            }
+            (Method::Post, "/api/afk/variant") => {
+                let payload: SetHazardVariantPreferenceRequest = read_json(&mut req).await?;
+                let mut state = self.load().await?;
+                let changed = state.session.as_mut().is_some_and(|session| {
+                    if session.hazard_variant == payload.hazard_variant {
+                        false
+                    } else {
+                        session.hazard_variant = payload.hazard_variant;
+                        true
+                    }
+                });
+                self.persist(&state).await?;
+                if changed {
+                    self.broadcast_snapshot(&state);
+                }
                 Response::from_json(&self.status_response(&state))
             }
             (Method::Post, "/api/afk/chat-reconnect") => {
@@ -2404,8 +2457,16 @@ const fn default_timeout_duration_secs() -> u32 {
     DEFAULT_TIMEOUT_DURATION_SECS
 }
 
+const fn default_protocol_hazard_variant() -> AfkHazardVariant {
+    AfkHazardVariant::Mines
+}
+
 const fn default_protocol_board_size() -> ProtocolAfkBoardSize {
     ProtocolAfkBoardSize::Medium
+}
+
+const fn twitch_timeout_reason(hazard_variant: AfkHazardVariant) -> &'static str {
+    hazard_variant.timeout_reason()
 }
 
 fn normalize_timeout_duration_secs(value: u32) -> u32 {
@@ -2812,6 +2873,7 @@ mod tests {
             activity: Vec::new(),
             last_action: None,
             timeout_enabled: true,
+            hazard_variant: AfkHazardVariant::Mines,
             last_user_activity_at_ms: 1,
             frontend_missing_since_at_ms: None,
         }
@@ -2830,6 +2892,53 @@ mod tests {
             1_000,
         );
         session
+    }
+
+    #[test]
+    fn mine_hit_activity_rows_store_coords() {
+        let actor = AfkIdentity::new("1", "jan", "Jan");
+        let mut session = test_session();
+
+        let row = session.push_activity_with_details(
+            "Jan hit a mine at 1A",
+            1_000,
+            AfkActivityKind::MineHit,
+            Some(actor),
+            Some(AfkCoordSnapshot { x: 0, y: 0 }),
+        );
+
+        assert_eq!(row.coord, Some(AfkCoordSnapshot { x: 0, y: 0 }));
+        assert_eq!(
+            session.last_action.as_ref().and_then(|row| row.coord),
+            Some(AfkCoordSnapshot { x: 0, y: 0 })
+        );
+    }
+
+    #[test]
+    fn twitch_timeout_reason_matches_mines_variant() {
+        assert_eq!(
+            twitch_timeout_reason(AfkHazardVariant::Mines),
+            "BOOM! You found a mine."
+        );
+    }
+
+    #[test]
+    fn twitch_timeout_reason_matches_flowers_variant() {
+        assert_eq!(
+            twitch_timeout_reason(AfkHazardVariant::Flowers),
+            "D: You stepped on a flower."
+        );
+    }
+
+    #[test]
+    fn session_snapshot_exposes_hazard_variant() {
+        let mut session = test_session();
+        session.hazard_variant = AfkHazardVariant::Flowers;
+
+        assert_eq!(
+            session.snapshot(None, true, 1_000).hazard_variant,
+            AfkHazardVariant::Flowers
+        );
     }
 
     #[test]

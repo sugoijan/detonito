@@ -27,6 +27,7 @@ gloo.workspace = true
 js-sys.workspace = true
 log.workspace = true
 ndarray.workspace = true
+roxmltree.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true

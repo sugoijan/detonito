@@ -4,10 +4,11 @@ use crate::board_input::{
     CellMsg as BoardCellMsg, CellPointerCallbacks, CellPointerState as BoardCellPointerState,
     MouseButtons, cell_pointer_callbacks, update_cell_pointer_state,
 };
+use crate::hazard_variant::HazardVariant;
 use detonito_protocol::{
     AfkActionKind, AfkActionRequest, AfkActivityKind, AfkActivityRow, AfkBoardSize,
-    AfkCellSnapshot, AfkChatConnectionState, AfkClientMessage, AfkLossReason, AfkRoundPhase,
-    AfkServerMessage, AfkSessionSnapshot, AfkStatusResponse,
+    AfkCellSnapshot, AfkChatConnectionState, AfkClientMessage, AfkCoordSnapshot, AfkLossReason,
+    AfkRoundPhase, AfkServerMessage, AfkSessionSnapshot, AfkStatusResponse,
 };
 use gloo::timers::callback::Timeout;
 use js_sys::encode_uri_component;
@@ -139,7 +140,7 @@ const AFK_TIMEOUT_DURATION_OPTIONS_SECS: [u32; 12] =
     [1, 5, 10, 15, 30, 45, 60, 90, 120, 180, 240, 300];
 const AFK_DEFAULT_TIMEOUT_DURATION_INDEX: usize = 4;
 const AFK_COUNTDOWN_DEMO_BEFORE_MS: u32 = 600;
-const AFK_COUNTDOWN_DEMO_AFTER_MS: u32 = AFK_COUNTDOWN_DEMO_BEFORE_MS / 2;
+const AFK_COUNTDOWN_DEMO_AFTER_MS: u32 = AFK_COUNTDOWN_DEMO_BEFORE_MS * 2;
 const AFK_COUNTDOWN_OVERLAY: AfkCountdownOverlay = AfkCountdownOverlay {
     title: "How to play",
     rows: [
@@ -796,14 +797,25 @@ fn has_active_face_prompt(
     )
 }
 
-fn face_notification_event(row: &AfkActivityRow) -> Option<AfkFaceNotificationEvent> {
-    let actor = row.actor.as_ref()?;
+fn afk_activity_text(row: &AfkActivityRow, hazard_variant: HazardVariant) -> AttrValue {
+    match (row.kind, row.actor.as_ref(), row.coord) {
+        (AfkActivityKind::MineHit, Some(actor), Some(coord)) => hazard_variant
+            .mine_hit_message(&actor.display_name, &format_afk_coord_snapshot(coord))
+            .into(),
+        _ => row.text.clone().into(),
+    }
+}
+
+fn face_notification_event(
+    row: &AfkActivityRow,
+    hazard_variant: HazardVariant,
+) -> Option<AfkFaceNotificationEvent> {
     match row.kind {
         AfkActivityKind::MineHit => Some(AfkFaceNotificationEvent {
-            message: format!("{} found a mine! o7", actor.display_name).into(),
+            message: afk_activity_text(row, hazard_variant),
             timeout_ms: AFK_FACE_NOTIFICATION_MS,
         }),
-        AfkActivityKind::OutForRound => Some(AfkFaceNotificationEvent {
+        AfkActivityKind::OutForRound => row.actor.as_ref().map(|actor| AfkFaceNotificationEvent {
             message: format!("{} is out for the rest of the round.", actor.display_name).into(),
             timeout_ms: AFK_OUT_FOR_ROUND_NOTIFICATION_MS,
         }),
@@ -1021,6 +1033,10 @@ fn format_cell_code((x, y): (usize, usize)) -> String {
     code
 }
 
+fn format_afk_coord_snapshot(coord: AfkCoordSnapshot) -> String {
+    format_cell_code((usize::from(coord.x), usize::from(coord.y)))
+}
+
 fn display_afk_label_char(label: char) -> char {
     match label {
         'a'..='z' if label != 'o' => label.to_ascii_uppercase(),
@@ -1196,7 +1212,12 @@ fn afk_is_pressed(
         && afk_can_chord_reveal_at(session, pos)
 }
 
-fn afk_cell_classes(cell: AfkCellSnapshot, interactive: bool, pressed: bool) -> Classes {
+fn afk_cell_classes(
+    cell: AfkCellSnapshot,
+    hazard_variant: HazardVariant,
+    interactive: bool,
+    pressed: bool,
+) -> Classes {
     let mut class = match cell {
         AfkCellSnapshot::Hidden => classes!(
             "cell",
@@ -1217,6 +1238,7 @@ fn afk_cell_classes(cell: AfkCellSnapshot, interactive: bool, pressed: bool) -> 
             (!interactive).then_some("locked"),
             "open",
             "mine",
+            hazard_variant.cell_class(),
             "oops",
             "afk-cell"
         ),
@@ -1225,6 +1247,7 @@ fn afk_cell_classes(cell: AfkCellSnapshot, interactive: bool, pressed: bool) -> 
             (!interactive).then_some("locked"),
             "open",
             "mine",
+            hazard_variant.cell_class(),
             "afk-cell"
         ),
         AfkCellSnapshot::Misflagged => classes!(
@@ -1250,7 +1273,12 @@ fn afk_cell_classes(cell: AfkCellSnapshot, interactive: bool, pressed: bool) -> 
     class
 }
 
-fn afk_cell_content(cell: AfkCellSnapshot, code: Option<AttrValue>, show_code: bool) -> Html {
+fn afk_cell_content(
+    cell: AfkCellSnapshot,
+    code: Option<AttrValue>,
+    show_code: bool,
+    hazard_variant: HazardVariant,
+) -> Html {
     match cell {
         AfkCellSnapshot::Hidden => show_code
             .then(|| {
@@ -1272,10 +1300,10 @@ fn afk_cell_content(cell: AfkCellSnapshot, code: Option<AttrValue>, show_code: b
             </>
         },
         AfkCellSnapshot::Crater => html! {
-            <Icon name="mine-exploded" class={classes!("cell-icon")}/>
+            <Icon name={hazard_variant.triggered_hazard_icon_name()} class={classes!("cell-icon")}/>
         },
         AfkCellSnapshot::Mine => html! {
-            <Icon name="mine" class={classes!("cell-icon")}/>
+            <Icon name={hazard_variant.hidden_hazard_icon_name()} class={classes!("cell-icon")}/>
         },
         AfkCellSnapshot::Misflagged => html! {
             <Icon name="flag" class={classes!("cell-icon")}/>
@@ -1295,6 +1323,7 @@ fn render_afk_cell(
     session: &AfkSessionSnapshot,
     (x, y): (usize, usize),
     cell: AfkCellSnapshot,
+    hazard_variant: HazardVariant,
     interactive: bool,
     pointer_state: Option<AfkCellPointerState>,
     on_cell_event: Callback<AfkCellMsg>,
@@ -1302,8 +1331,8 @@ fn render_afk_cell(
     let code: AttrValue = format_cell_code((x, y)).into();
     let show_code = should_show_cell_code(session, x, y, cell);
     let pressed = interactive && afk_is_pressed(session, (x, y), cell, pointer_state);
-    let class = afk_cell_classes(cell, interactive, pressed);
-    let content = afk_cell_content(cell, Some(code), show_code);
+    let class = afk_cell_classes(cell, hazard_variant, interactive, pressed);
+    let content = afk_cell_content(cell, Some(code), show_code, hazard_variant);
     let CellPointerCallbacks {
         onmousedown,
         onmouseup,
@@ -1336,8 +1365,13 @@ fn countdown_demo_step_ms(show_after: bool) -> u32 {
 
 fn render_countdown_demo_board_cell(cell: AfkCountdownDemoCell) -> Html {
     html! {
-        <td class={afk_cell_classes(cell.state, false, false)}>
-            {afk_cell_content(cell.state, cell.code.map(AttrValue::from), cell.code.is_some())}
+        <td class={afk_cell_classes(cell.state, HazardVariant::default(), false, false)}>
+            {afk_cell_content(
+                cell.state,
+                cell.code.map(AttrValue::from),
+                cell.code.is_some(),
+                HazardVariant::default(),
+            )}
         </td>
     }
 }
@@ -1402,6 +1436,7 @@ fn render_countdown_overlay(overlay: AfkCountdownOverlay, show_after: bool) -> H
 
 fn render_afk_board(
     session: &AfkSessionSnapshot,
+    hazard_variant: HazardVariant,
     interactive: bool,
     pointer_state: Option<AfkCellPointerState>,
     on_cell_event: Callback<AfkCellMsg>,
@@ -1420,6 +1455,7 @@ fn render_afk_board(
                                     session,
                                     (x, y),
                                     cell,
+                                    hazard_variant,
                                     interactive,
                                     pointer_state,
                                     on_cell_event.clone(),
@@ -1436,7 +1472,16 @@ fn render_afk_board(
 #[function_component]
 pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
     let runtime = frontend_runtime_config();
+    let local_hazard_variant = HazardVariant::local_or_default();
     let status = use_state_eq(|| LoadState::<AfkStatusResponse>::Idle);
+    let hazard_variant = match &*status {
+        LoadState::Ready(status) => status
+            .session
+            .as_ref()
+            .map(|session| HazardVariant::from_afk_protocol(session.hazard_variant))
+            .unwrap_or(local_hazard_variant),
+        _ => local_hazard_variant,
+    };
     let screen = use_state_eq({
         let restore_view_state = props.restore_view_state;
         move || initial_afk_screen(restore_view_state)
@@ -1477,6 +1522,7 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
     let chat_notice_started_at_ms = use_state_eq(|| None::<i64>);
     let chat_notice_tick = use_state_eq(|| 0_u64);
     let chat_notice_timeout = use_mut_ref(|| None::<Timeout>);
+    let live_hazard_variant = use_mut_ref(|| hazard_variant);
     let socket_path = match &*status {
         LoadState::Ready(status) if status.auth.identity.is_some() => status.websocket_path.clone(),
         _ => None,
@@ -1539,6 +1585,41 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                 }));
         })
     };
+
+    {
+        let live_hazard_variant = live_hazard_variant.clone();
+        use_effect_with(hazard_variant, move |hazard_variant| {
+            *live_hazard_variant.borrow_mut() = *hazard_variant;
+            || ()
+        });
+    }
+
+    {
+        let status_handle = status.clone();
+        use_effect_with(
+            ((*status_handle).clone(), local_hazard_variant),
+            move |(status_snapshot, hazard_variant)| {
+                let variant_mismatch = matches!(
+                    status_snapshot,
+                    LoadState::Ready(AfkStatusResponse {
+                        session: Some(session),
+                        ..
+                    }) if HazardVariant::from_afk_protocol(session.hazard_variant) != *hazard_variant
+                );
+                if variant_mismatch {
+                    let status_handle = status_handle.clone();
+                    let hazard_variant = *hazard_variant;
+                    spawn_local(async move {
+                        match post_hazard_variant_status(hazard_variant).await {
+                            Ok(response) => status_handle.set(LoadState::Ready(response)),
+                            Err(error) => status_handle.set(LoadState::Error(error)),
+                        }
+                    });
+                }
+                || ()
+            },
+        );
+    }
 
     {
         let status = status.clone();
@@ -1748,6 +1829,7 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
         let last_error = last_error.clone();
         let screen = screen.clone();
         let show_face_notification = show_face_notification.clone();
+        let live_hazard_variant = live_hazard_variant.clone();
         let socket_connected = socket_connected.clone();
         let socket_reconnecting = socket_reconnecting.clone();
         let socket_retry_deadline_ms = socket_retry_deadline_ms.clone();
@@ -1834,8 +1916,10 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                                         }
                                         Ok(AfkServerMessage::Activity { row }) => {
                                             if matches!(*screen_for_message, AfkScreen::Board)
-                                                && let Some(notification) =
-                                                    face_notification_event(&row)
+                                                && let Some(notification) = face_notification_event(
+                                                    &row,
+                                                    *live_hazard_variant.borrow(),
+                                                )
                                             {
                                                 show_face_notification(notification);
                                             }
@@ -2165,7 +2249,12 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                     let last_error = last_error.clone();
                     let start_transition_in_progress = start_transition_in_progress.clone();
                     spawn_local(async move {
-                        match apply_preferences_and_start(preferences).await {
+                        match apply_preferences_and_start(
+                            preferences,
+                            HazardVariant::local_or_default(),
+                        )
+                        .await
+                        {
                             Ok(response) => {
                                 handle_started_status(
                                     &status,
@@ -2302,7 +2391,7 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
             let start_transition_in_progress = start_transition_in_progress.clone();
             spawn_local(async move {
                 last_error.set(None);
-                match post_empty_status("/api/afk/start").await {
+                match post_start_status(HazardVariant::local_or_default()).await {
                     Ok(response) => {
                         handle_started_status(
                             &status,
@@ -2480,7 +2569,7 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                         last_error.set(None);
                         start_transition_in_progress.set(true);
                         screen.set(AfkScreen::Board);
-                        match post_empty_status("/api/afk/start").await {
+                        match post_start_status(HazardVariant::local_or_default()).await {
                             Ok(response) => {
                                 handle_started_status(
                                     &status,
@@ -3131,6 +3220,7 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                             if let Some(session) = session {
                                 render_afk_board(
                                     session,
+                                    hazard_variant,
                                     board_interactive,
                                     board_pointer_state,
                                     on_streamer_cell_event,
@@ -3208,6 +3298,7 @@ async fn post_board_action(request_body: AfkActionRequest) -> Result<AfkStatusRe
 
 async fn apply_preferences_and_start(
     preferences: AfkMenuPreferences,
+    hazard_variant: HazardVariant,
 ) -> Result<AfkStatusResponse, String> {
     post_json_status(
         "/api/afk/timeout",
@@ -3222,7 +3313,29 @@ async fn apply_preferences_and_start(
         &serde_json::json!({ "board_size": preferences.board_size }),
     )
     .await?;
-    post_empty_status("/api/afk/start").await
+    post_start_status(hazard_variant).await
+}
+
+async fn post_start_status(hazard_variant: HazardVariant) -> Result<AfkStatusResponse, String> {
+    post_json_status(
+        "/api/afk/start",
+        &serde_json::json!({
+            "hazard_variant": hazard_variant.to_afk_protocol(),
+        }),
+    )
+    .await
+}
+
+async fn post_hazard_variant_status(
+    hazard_variant: HazardVariant,
+) -> Result<AfkStatusResponse, String> {
+    post_json_status(
+        "/api/afk/variant",
+        &serde_json::json!({
+            "hazard_variant": hazard_variant.to_afk_protocol(),
+        }),
+    )
+    .await
 }
 
 async fn post_json_status<T>(path: &str, request_body: &T) -> Result<AfkStatusResponse, String>
@@ -3277,8 +3390,9 @@ fn js_error(error: impl core::fmt::Debug) -> String {
 mod tests {
     use super::*;
     use detonito_protocol::{
-        AfkActivityKind, AfkBoardSize, AfkBoardSnapshot, AfkChatConnectionState, AfkIdentity,
-        AfkLossReason, AfkTimerProfileSnapshot, FrontendRuntimeConfig, StreamerAuthStatus,
+        AfkActivityKind, AfkBoardSize, AfkBoardSnapshot, AfkChatConnectionState, AfkHazardVariant,
+        AfkIdentity, AfkLossReason, AfkTimerProfileSnapshot, FrontendRuntimeConfig,
+        StreamerAuthStatus,
     };
 
     fn active_test_session(last_user_activity_at_ms: i64) -> AfkSessionSnapshot {
@@ -3286,6 +3400,7 @@ mod tests {
             streamer: None,
             phase: AfkRoundPhase::Active,
             paused: false,
+            hazard_variant: AfkHazardVariant::Mines,
             board: AfkBoardSnapshot {
                 width: 24,
                 height: 18,
@@ -3602,6 +3717,7 @@ mod tests {
             streamer: None,
             phase: AfkRoundPhase::Active,
             paused: false,
+            hazard_variant: AfkHazardVariant::Mines,
             board: AfkBoardSnapshot {
                 width: 3,
                 height: 1,
@@ -3670,6 +3786,7 @@ mod tests {
             streamer: None,
             phase: AfkRoundPhase::Active,
             paused: false,
+            hazard_variant: AfkHazardVariant::Mines,
             board: AfkBoardSnapshot {
                 width: 3,
                 height: 1,
@@ -3722,6 +3839,7 @@ mod tests {
             streamer: None,
             phase: AfkRoundPhase::Active,
             paused: false,
+            hazard_variant: AfkHazardVariant::Mines,
             board: AfkBoardSnapshot {
                 width: 2,
                 height: 2,
@@ -3795,6 +3913,7 @@ mod tests {
             streamer: None,
             phase: AfkRoundPhase::Active,
             paused: false,
+            hazard_variant: AfkHazardVariant::Mines,
             board: AfkBoardSnapshot {
                 width: 3,
                 height: 1,
@@ -3908,6 +4027,7 @@ mod tests {
                 streamer: None,
                 phase: AfkRoundPhase::TimedOut,
                 paused: false,
+                hazard_variant: AfkHazardVariant::Mines,
                 board: AfkBoardSnapshot {
                     width: 0,
                     height: 0,
@@ -3956,6 +4076,7 @@ mod tests {
             streamer: None,
             phase: AfkRoundPhase::TimedOut,
             paused: false,
+            hazard_variant: AfkHazardVariant::Mines,
             board: AfkBoardSnapshot {
                 width: 0,
                 height: 0,
@@ -3993,6 +4114,7 @@ mod tests {
             streamer: None,
             phase: AfkRoundPhase::TimedOut,
             paused: false,
+            hazard_variant: AfkHazardVariant::Mines,
             board: AfkBoardSnapshot {
                 width: 0,
                 height: 0,
@@ -4214,12 +4336,32 @@ mod tests {
             text: "Jan hit a mine at 1A".into(),
             kind: AfkActivityKind::MineHit,
             actor: Some(AfkIdentity::new("1", "jan", "Jan")),
+            coord: Some(AfkCoordSnapshot { x: 0, y: 0 }),
         };
 
         assert_eq!(
-            face_notification_event(&row),
+            face_notification_event(&row, HazardVariant::Mines),
             Some(AfkFaceNotificationEvent {
-                message: "Jan found a mine! o7".into(),
+                message: "Jan hit a mine at 1A".into(),
+                timeout_ms: AFK_FACE_NOTIFICATION_MS,
+            })
+        );
+    }
+
+    #[test]
+    fn mine_hit_activity_formats_flower_notification() {
+        let row = AfkActivityRow {
+            at_ms: 1_234,
+            text: "Jan hit a mine at 1A".into(),
+            kind: AfkActivityKind::MineHit,
+            actor: Some(AfkIdentity::new("1", "jan", "Jan")),
+            coord: Some(AfkCoordSnapshot { x: 0, y: 0 }),
+        };
+
+        assert_eq!(
+            face_notification_event(&row, HazardVariant::Flowers),
+            Some(AfkFaceNotificationEvent {
+                message: "Jan stepped on a flower at 1A".into(),
                 timeout_ms: AFK_FACE_NOTIFICATION_MS,
             })
         );
@@ -4232,10 +4374,11 @@ mod tests {
             text: "Jan is out for the rest of the round.".into(),
             kind: AfkActivityKind::OutForRound,
             actor: Some(AfkIdentity::new("1", "jan", "Jan")),
+            coord: None,
         };
 
         assert_eq!(
-            face_notification_event(&row),
+            face_notification_event(&row, HazardVariant::Mines),
             Some(AfkFaceNotificationEvent {
                 message: "Jan is out for the rest of the round.".into(),
                 timeout_ms: AFK_OUT_FOR_ROUND_NOTIFICATION_MS,
@@ -4249,6 +4392,7 @@ mod tests {
             streamer: None,
             phase: AfkRoundPhase::Won,
             paused: false,
+            hazard_variant: AfkHazardVariant::Mines,
             board: AfkBoardSnapshot {
                 width: 0,
                 height: 0,
@@ -4338,6 +4482,7 @@ mod tests {
             streamer: None,
             phase: AfkRoundPhase::Won,
             paused: false,
+            hazard_variant: AfkHazardVariant::Mines,
             board: AfkBoardSnapshot {
                 width: 0,
                 height: 0,
@@ -4376,6 +4521,7 @@ mod tests {
             streamer: None,
             phase: AfkRoundPhase::Won,
             paused: false,
+            hazard_variant: AfkHazardVariant::Mines,
             board: AfkBoardSnapshot {
                 width: 0,
                 height: 0,
@@ -4427,6 +4573,7 @@ mod tests {
                     streamer: None,
                     phase: AfkRoundPhase::Active,
                     paused: false,
+                    hazard_variant: AfkHazardVariant::Mines,
                     board: AfkBoardSnapshot {
                         width: 24,
                         height: 18,
@@ -4483,6 +4630,7 @@ mod tests {
                     streamer: None,
                     phase: AfkRoundPhase::Active,
                     paused: false,
+                    hazard_variant: AfkHazardVariant::Mines,
                     board: AfkBoardSnapshot {
                         width: 9,
                         height: 9,
@@ -4539,6 +4687,7 @@ mod tests {
                     streamer: None,
                     phase: AfkRoundPhase::Active,
                     paused: false,
+                    hazard_variant: AfkHazardVariant::Mines,
                     board: AfkBoardSnapshot {
                         width: 24,
                         height: 18,
@@ -4604,6 +4753,7 @@ mod tests {
                     streamer: None,
                     phase: AfkRoundPhase::TimedOut,
                     paused: false,
+                    hazard_variant: AfkHazardVariant::Mines,
                     board: AfkBoardSnapshot {
                         width: 0,
                         height: 0,
