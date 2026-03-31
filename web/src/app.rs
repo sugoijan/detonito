@@ -58,6 +58,7 @@ pub(crate) fn AppShell(props: &AppShellProps) -> Html {
     let runtime = frontend_runtime_config();
     let initial_route = use_memo((), |_| initialize_route_state());
     let initial_screen = route_to_screen(initial_route.route);
+    let restore_afk_view_state = matches!(initial_screen, ShellScreen::Afk);
     let initial_afk_err = initial_route.afk_auth_error.clone();
     let initial_afk_start_after_connect = initial_route.afk_start_after_connect;
     let screen = use_state_eq(move || initial_screen);
@@ -225,6 +226,7 @@ pub(crate) fn AppShell(props: &AppShellProps) -> Html {
                 auth_error={(*afk_auth_error).clone()}
                 start_after_connect={*afk_start_after_connect}
                 on_consume_start_after_connect={consume_afk_start_after_connect}
+                restore_view_state={restore_afk_view_state}
             />
         },
         ShellScreen::Settings(entry_point) => {

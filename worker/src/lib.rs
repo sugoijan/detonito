@@ -537,6 +537,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         (Method::Get, "/api/afk/status") => handle_afk_status(req, env).await,
         (Method::Post, "/api/afk/action") => handle_afk_action(req, env).await,
         (Method::Post, "/api/afk/board-size") => handle_afk_action(req, env).await,
+        (Method::Post, "/api/afk/chat-reconnect") => handle_afk_action(req, env).await,
         (Method::Post, "/api/afk/timeout") => handle_afk_action(req, env).await,
         (Method::Post, "/api/afk/pause") | (Method::Post, "/api/afk/resume") => {
             handle_afk_action(req, env).await
@@ -818,11 +819,75 @@ impl AfkSessionDO {
         )
     }
 
+    fn queue_eventsub_ensure(&self, broadcaster_user_id: &str, force: bool) {
+        let Ok(stub) = afk_session_stub(&self.env, broadcaster_user_id) else {
+            return;
+        };
+        self.state.wait_until(async move {
+            let _ = post_json(
+                &stub,
+                "https://internal/internal/eventsub/ensure",
+                &EnsureEventSubRequest { force },
+            )
+            .await;
+        });
+    }
+
+    fn prepare_eventsub_connecting_state(
+        &self,
+        state: &mut PersistedAfkState,
+        force: bool,
+    ) -> Option<String> {
+        if self.eventsub_runtime.borrow().is_some() {
+            return None;
+        }
+        let broadcaster_user_id = state.broadcaster.as_ref()?.user_id.clone();
+        if !force {
+            state.eventsub.reconnect_url = None;
+            state.eventsub.websocket_session_id = None;
+            state.eventsub.subscription_id = None;
+        }
+        state.eventsub.connection_status = Some(if force {
+            "reconnecting".to_string()
+        } else {
+            "connecting".to_string()
+        });
+        state.eventsub.reconnect_due_at_ms = None;
+        state.eventsub.last_error = None;
+        Some(broadcaster_user_id)
+    }
+
+    async fn request_eventsub_reconnect(&self, force: bool) -> Result<PersistedAfkState> {
+        let mut state = self.load().await?;
+        let queued_broadcaster = if state.session.is_none()
+            || self.eventsub_runtime.borrow().is_some()
+            || state.eventsub.reconnect_due_at_ms.is_some()
+            || matches!(
+                state.eventsub.connection_status.as_deref(),
+                Some("connecting" | "reconnecting")
+            ) {
+            None
+        } else {
+            self.prepare_eventsub_connecting_state(&mut state, force)
+        };
+        self.persist(&state).await?;
+        self.schedule_alarm(&state).await?;
+        if let Some(broadcaster_user_id) = queued_broadcaster.as_deref() {
+            self.broadcast_status(&state);
+            self.queue_eventsub_ensure(broadcaster_user_id, force);
+        }
+        Ok(state)
+    }
+
     async fn mark_eventsub_runtime_missing(&self, state: &mut PersistedAfkState) -> Result<bool> {
         let requires_chat = state.broadcaster.is_some() && state.session.is_some();
         if !requires_chat
             || self.eventsub_runtime.borrow().is_some()
             || state.eventsub.reconnect_due_at_ms.is_some()
+            || matches!(
+                state.eventsub.connection_status.as_deref(),
+                Some("connecting" | "reconnecting")
+            )
             || matches!(state.eventsub.connection_status.as_deref(), Some("error"))
         {
             return Ok(false);
@@ -1986,19 +2051,13 @@ impl DurableObject for AfkSessionDO {
                     session.mark_frontend_missing(now_ms());
                 }
                 state.session = Some(session);
+                let queued_broadcaster =
+                    self.prepare_eventsub_connecting_state(&mut state, false);
                 self.persist(&state).await?;
                 self.schedule_alarm(&state).await?;
                 self.broadcast_snapshot(&state);
-                if let Err(error) = self.start_eventsub_connection(false).await {
-                    state = self.load().await?;
-                    self.set_eventsub_error(
-                        &mut state,
-                        format!("Failed to connect Twitch chat: {error}"),
-                    )
-                    .await?;
-                    state = self.load().await?;
-                } else {
-                    state = self.load().await?;
+                if let Some(broadcaster_user_id) = queued_broadcaster.as_deref() {
+                    self.queue_eventsub_ensure(broadcaster_user_id, false);
                 }
                 Response::from_json(&self.status_response(&state))
             }
@@ -2017,6 +2076,10 @@ impl DurableObject for AfkSessionDO {
                 state.board_size = normalize_protocol_board_size(payload.board_size);
                 self.persist(&state).await?;
                 self.broadcast_status(&state);
+                Response::from_json(&self.status_response(&state))
+            }
+            (Method::Post, "/api/afk/chat-reconnect") => {
+                let state = self.request_eventsub_reconnect(true).await?;
                 Response::from_json(&self.status_response(&state))
             }
             (Method::Post, "/api/afk/pause") => {
@@ -2040,17 +2103,11 @@ impl DurableObject for AfkSessionDO {
                     session.record_user_activity(now);
                     session.resume(now)
                 });
+                let queued_broadcaster =
+                    self.prepare_eventsub_connecting_state(&mut state, false);
                 self.persist(&state).await?;
-                if let Err(error) = self.start_eventsub_connection(false).await {
-                    state = self.load().await?;
-                    self.set_eventsub_error(
-                        &mut state,
-                        format!("Failed to connect Twitch chat: {error}"),
-                    )
-                    .await?;
-                    state = self.load().await?;
-                } else {
-                    state = self.load().await?;
+                if let Some(broadcaster_user_id) = queued_broadcaster.as_deref() {
+                    self.queue_eventsub_ensure(broadcaster_user_id, false);
                 }
                 self.schedule_alarm(&state).await?;
                 if changed {

@@ -40,9 +40,17 @@ upstream = "1F635.svg"
 source = "upstream"
 upstream = "1F634.svg"
 
+[icons.yawning]
+source = "upstream"
+upstream = "1F971.svg"
+
 [icons.dejected]
 source = "upstream"
 upstream = "E282.svg"
+
+[icons.spiral-eyes]
+source = "upstream"
+upstream = "1F635-200D-1F4AB.svg"
 
 [icons.instant-win]
 source = "upstream"

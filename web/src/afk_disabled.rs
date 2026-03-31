@@ -12,6 +12,8 @@ pub(crate) struct AfkViewProps {
     #[prop_or_default]
     pub start_after_connect: bool,
     pub on_consume_start_after_connect: Callback<()>,
+    #[prop_or_default]
+    pub restore_view_state: bool,
 }
 
 #[function_component]

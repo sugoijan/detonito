@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::{cell::Cell, rc::Rc};
 
 use detonito_protocol::{
     AfkActionKind, AfkActionRequest, AfkActivityKind, AfkActivityRow, AfkBoardSize,
@@ -32,6 +32,8 @@ pub(crate) struct AfkViewProps {
     #[prop_or_default]
     pub start_after_connect: bool,
     pub on_consume_start_after_connect: Callback<()>,
+    #[prop_or_default]
+    pub restore_view_state: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -42,8 +44,9 @@ enum LoadState<T> {
     Error(String),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 enum AfkScreen {
+    #[default]
     Menu,
     Board,
 }
@@ -103,6 +106,9 @@ const AFK_OUT_FOR_ROUND_NOTIFICATION_MS: u32 = 10_000;
 const AFK_IDLE_SLEEPING_THRESHOLD_MS: i64 = 3 * 60 * 1_000;
 const AFK_IDLE_PROMPT_THRESHOLD_MS: i64 = 10 * 60 * 1_000;
 const AFK_IDLE_EXPIRY_THRESHOLD_MS: i64 = 60 * 60 * 1_000;
+const AFK_WEBSOCKET_RECONNECT_BASE_DELAY_MS: u32 = 1_000;
+const AFK_WEBSOCKET_RECONNECT_MAX_DELAY_MS: u32 = 60_000;
+const AFK_WEBSOCKET_RECONNECT_TICK_MS: u32 = 1_000;
 const AFK_TIMEOUT_DURATION_OPTIONS_SECS: [u32; 12] =
     [1, 5, 10, 15, 30, 45, 60, 90, 120, 180, 240, 300];
 const AFK_DEFAULT_TIMEOUT_DURATION_INDEX: usize = 4;
@@ -111,6 +117,37 @@ const AFK_DEFAULT_TIMEOUT_DURATION_INDEX: usize = 4;
 enum AfkIdleState {
     Sleeping,
     Prompt,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AfkBoardScreenResolution {
+    Keep,
+    FinishStartTransition,
+    ReturnToMenu,
+}
+
+fn initial_afk_screen(restore_view_state: bool) -> AfkScreen {
+    if restore_view_state {
+        AfkScreen::local_or_default()
+    } else {
+        AfkScreen::Menu
+    }
+}
+
+fn resolve_board_screen(
+    status: &LoadState<AfkStatusResponse>,
+    start_transition_pending: bool,
+) -> AfkBoardScreenResolution {
+    match status {
+        LoadState::Ready(status) if status.session.is_some() && start_transition_pending => {
+            AfkBoardScreenResolution::FinishStartTransition
+        }
+        LoadState::Ready(status) if status.session.is_none() && !start_transition_pending => {
+            AfkBoardScreenResolution::ReturnToMenu
+        }
+        LoadState::Error(_) if start_transition_pending => AfkBoardScreenResolution::ReturnToMenu,
+        _ => AfkBoardScreenResolution::Keep,
+    }
 }
 
 fn current_level_status_text(session: Option<&AfkSessionSnapshot>) -> Option<AttrValue> {
@@ -161,6 +198,10 @@ struct AfkConnectStartDraft {
 
 impl StorageKey for AfkConnectStartDraft {
     const KEY: &'static str = "detonito:afk:connect-start";
+}
+
+impl StorageKey for AfkScreen {
+    const KEY: &'static str = "detonito:afk:screen";
 }
 
 fn afk_menu_preferences_from_status(status: &AfkStatusResponse) -> AfkMenuPreferences {
@@ -226,33 +267,48 @@ fn afk_root_primary_action(status: &AfkStatusResponse) -> AfkRootPrimaryAction {
     }
 }
 
-fn status_chat_error(status: &AfkStatusResponse) -> Option<String> {
-    status
-        .chat_error
-        .clone()
-        .filter(|message| !message.is_empty())
+fn next_afk_reconnect_delay_ms(attempt: u32) -> u32 {
+    let shift = attempt.saturating_sub(1).min(6);
+    AFK_WEBSOCKET_RECONNECT_BASE_DELAY_MS
+        .saturating_mul(1_u32 << shift)
+        .min(AFK_WEBSOCKET_RECONNECT_MAX_DELAY_MS)
 }
 
-fn has_critical_chat_failure(status: &AfkStatusResponse) -> bool {
-    status.session.is_some() && matches!(status.chat_connection, AfkChatConnectionState::Error)
+fn afk_websocket_reconnect_notice(remaining_ms: i64) -> String {
+    let remaining_secs = (remaining_ms.max(1).saturating_add(999)) / 1_000;
+    format!("Reconnecting in {remaining_secs}...")
+}
+
+fn afk_websocket_connecting_notice() -> String {
+    "Reconnecting...".to_string()
+}
+
+fn status_chat_notice(status: &AfkStatusResponse, reconnecting: bool) -> Option<String> {
+    if status.session.is_none() {
+        return None;
+    }
+    if reconnecting || matches!(status.chat_connection, AfkChatConnectionState::Connecting) {
+        Some("Chat reconnecting...".to_string())
+    } else if matches!(status.chat_connection, AfkChatConnectionState::Error) {
+        Some("Chat unavailable.".to_string())
+    } else {
+        None
+    }
 }
 
 fn handle_started_status(
     status: &UseStateHandle<LoadState<AfkStatusResponse>>,
     screen: &UseStateHandle<AfkScreen>,
     last_error: &UseStateHandle<Option<String>>,
+    start_transition_in_progress: &UseStateHandle<bool>,
     response: AfkStatusResponse,
 ) {
     let has_session = response.session.is_some();
-    let can_open_board =
-        has_session && !matches!(response.chat_connection, AfkChatConnectionState::Error);
-    let next_error = status_chat_error(&response);
+    start_transition_in_progress.set(false);
     status.set(LoadState::Ready(response));
-    if can_open_board {
+    if has_session {
         last_error.set(None);
         screen.set(AfkScreen::Board);
-    } else if let Some(error) = next_error {
-        last_error.set(Some(error));
     }
 }
 
@@ -697,6 +753,7 @@ fn active_face_overlay(
     manual_prompt: &Option<AfkFacePrompt>,
     notification: &Option<AfkFaceNotification>,
     idle_state: Option<AfkIdleState>,
+    status_notice: Option<AttrValue>,
 ) -> Option<AfkFaceOverlay> {
     if matches!(screen, AfkScreen::Board) {
         if let Some(prompt) = manual_prompt.clone() {
@@ -707,6 +764,12 @@ fn active_face_overlay(
                 let level_status = current_level_status_text(Some(session));
                 if let Some(prompt) = automatic_face_prompt(session) {
                     return Some(AfkFaceOverlay::Prompt(prompt));
+                }
+                if let Some(message) = status_notice.clone() {
+                    return Some(AfkFaceOverlay::Message {
+                        message,
+                        status: level_status,
+                    });
                 }
                 return match session.phase {
                     AfkRoundPhase::Countdown => Some(AfkFaceOverlay::Message {
@@ -745,12 +808,16 @@ fn afk_face_icon(
     status: &LoadState<AfkStatusResponse>,
     notification: Option<&AfkFaceNotification>,
     idle_state: Option<AfkIdleState>,
+    status_notice_present: bool,
 ) -> &'static str {
+    if status_notice_present {
+        return "spiral-eyes";
+    }
     if notification.is_some() {
         return "dejected";
     }
     if idle_state.is_some() {
-        return "sleeping";
+        return "yawning";
     }
     match status {
         LoadState::Loading => "mid-open",
@@ -1082,7 +1149,10 @@ fn render_afk_board(
 pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
     let runtime = frontend_runtime_config();
     let status = use_state_eq(|| LoadState::<AfkStatusResponse>::Idle);
-    let screen = use_state_eq(|| AfkScreen::Menu);
+    let screen = use_state_eq({
+        let restore_view_state = props.restore_view_state;
+        move || initial_afk_screen(restore_view_state)
+    });
     let menu_page = use_state_eq(|| AfkMenuPage::Root);
     let pending_board_size = use_state_eq(|| None::<AfkBoardSize>);
     let pre_auth_preferences = use_state_eq(|| {
@@ -1096,6 +1166,19 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
     let idle_refresh_tick = use_state_eq(|| 0_u64);
     let idle_refresh_timeout = use_mut_ref(|| None::<Timeout>);
     let last_error = use_state_eq(|| None::<String>);
+    let start_transition_in_progress = use_state_eq(|| false);
+    let socket_connected = use_state_eq(|| false);
+    let socket_reconnecting = use_state_eq(|| false);
+    let socket_retry_deadline_ms = use_state_eq(|| None::<i64>);
+    let socket_retry_tick = use_state_eq(|| 0_u64);
+    let socket_retry_tick_timeout = use_mut_ref(|| None::<Timeout>);
+    let socket_retry_version = use_state_eq(|| 0_u64);
+    let socket_retry_timeout = use_mut_ref(|| None::<Timeout>);
+    let socket_retry_attempt = use_mut_ref(|| 0_u32);
+    let chat_reconnect_active = use_state_eq(|| false);
+    let chat_reconnect_version = use_state_eq(|| 0_u64);
+    let chat_reconnect_timeout = use_mut_ref(|| None::<Timeout>);
+    let chat_reconnect_attempt = use_mut_ref(|| 0_u32);
     let socket_path = match &*status {
         LoadState::Ready(status) if status.auth.identity.is_some() => status.websocket_path.clone(),
         _ => None,
@@ -1195,6 +1278,13 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
     }
 
     {
+        use_effect_with(*screen, move |screen| {
+            screen.local_save();
+            || ()
+        });
+    }
+
+    {
         let idle_refresh_tick = idle_refresh_tick.clone();
         let idle_refresh_timeout = idle_refresh_timeout.clone();
         let last_user_activity_at_ms = match &*status {
@@ -1234,138 +1324,369 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
     }
 
     {
+        let socket_retry_deadline_ms = socket_retry_deadline_ms.clone();
+        let socket_retry_tick = socket_retry_tick.clone();
+        let socket_retry_tick_timeout = socket_retry_tick_timeout.clone();
+        let retry_deadline_ms = *socket_retry_deadline_ms;
+        let retry_tick_version = *socket_retry_tick;
+        use_effect_with(
+            (retry_deadline_ms, retry_tick_version),
+            move |(retry_deadline_ms, _)| {
+                socket_retry_tick_timeout.borrow_mut().take();
+                if let Some(retry_deadline_ms) = *retry_deadline_ms {
+                    let remaining_ms = retry_deadline_ms.saturating_sub(browser_now_ms());
+                    if remaining_ms > 0 {
+                        let delay_ms = (remaining_ms as u32).min(AFK_WEBSOCKET_RECONNECT_TICK_MS);
+                        let socket_retry_tick = socket_retry_tick.clone();
+                        let socket_retry_tick_timeout_for_store =
+                            socket_retry_tick_timeout.clone();
+                        let socket_retry_tick_timeout_for_callback =
+                            socket_retry_tick_timeout.clone();
+                        *socket_retry_tick_timeout_for_store.borrow_mut() =
+                            Some(Timeout::new(delay_ms, move || {
+                                socket_retry_tick.set((*socket_retry_tick).saturating_add(1));
+                                socket_retry_tick_timeout_for_callback.borrow_mut().take();
+                            }));
+                    }
+                }
+                let socket_retry_tick_timeout = socket_retry_tick_timeout.clone();
+                move || {
+                    socket_retry_tick_timeout.borrow_mut().take();
+                }
+            },
+        );
+    }
+
+    {
         let status = status.clone();
         let last_error = last_error.clone();
         let screen = screen.clone();
         let show_face_notification = show_face_notification.clone();
-        use_effect_with(socket_path.clone(), move |socket_path| {
-            let mut socket = None::<WebSocket>;
-            let mut onmessage = None::<Closure<dyn FnMut(MessageEvent)>>;
-            let mut onopen = None::<Closure<dyn FnMut(Event)>>;
-            let mut onerror = None::<Closure<dyn FnMut(JsValue)>>;
+        let socket_connected = socket_connected.clone();
+        let socket_reconnecting = socket_reconnecting.clone();
+        let socket_retry_deadline_ms = socket_retry_deadline_ms.clone();
+        let socket_retry_version = socket_retry_version.clone();
+        let socket_retry_timeout = socket_retry_timeout.clone();
+        let socket_retry_attempt = socket_retry_attempt.clone();
+        use_effect_with(
+            (socket_path.clone(), *socket_retry_version),
+            move |(socket_path, _)| {
+                socket_retry_timeout.borrow_mut().take();
+                let intentionally_closed = Rc::new(Cell::new(false));
+                let reconnect_scheduled = Rc::new(Cell::new(false));
+                let schedule_reconnect = {
+                    let intentionally_closed = intentionally_closed.clone();
+                    let reconnect_scheduled = reconnect_scheduled.clone();
+                    let socket_reconnecting = socket_reconnecting.clone();
+                    let socket_retry_deadline_ms = socket_retry_deadline_ms.clone();
+                    let socket_retry_version = socket_retry_version.clone();
+                    let socket_retry_timeout = socket_retry_timeout.clone();
+                    let socket_retry_attempt = socket_retry_attempt.clone();
+                    Rc::new(move || {
+                        if intentionally_closed.get() || reconnect_scheduled.replace(true) {
+                            return;
+                        }
 
-            if let Some(socket_path) = socket_path.clone() {
-                let socket_url = websocket_path(&socket_path);
-                match WebSocket::new(&socket_url) {
-                    Ok(ws) => {
-                        let status_state = status.clone();
-                        let last_error_for_message = last_error.clone();
-                        let last_error_for_socket = last_error.clone();
-                        let screen_for_message = screen.clone();
-                        let show_face_notification = show_face_notification.clone();
+                        let attempt = {
+                            let mut current = socket_retry_attempt.borrow_mut();
+                            *current = current.saturating_add(1);
+                            *current
+                        };
+                        let delay_ms = next_afk_reconnect_delay_ms(attempt);
+                        socket_reconnecting.set(false);
+                        socket_retry_deadline_ms
+                            .set(Some(browser_now_ms().saturating_add(i64::from(delay_ms))));
 
-                        let message_handler =
-                            Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {
-                                let Some(payload) = event.data().as_string() else {
-                                    return;
-                                };
-                                match serde_json::from_str::<AfkServerMessage>(&payload) {
-                                    Ok(AfkServerMessage::Connected { status: next }) => {
-                                        last_error_for_message.set(None);
-                                        status_state.set(LoadState::Ready(next));
-                                    }
-                                    Ok(AfkServerMessage::Snapshot { session }) => {
-                                        if let LoadState::Ready(mut next) = (*status_state).clone()
-                                        {
+                        let socket_retry_timeout_for_store = socket_retry_timeout.clone();
+                        let socket_retry_timeout_for_callback = socket_retry_timeout.clone();
+                        let socket_reconnecting = socket_reconnecting.clone();
+                        let socket_retry_deadline_ms = socket_retry_deadline_ms.clone();
+                        let socket_retry_version = socket_retry_version.clone();
+                        *socket_retry_timeout_for_store.borrow_mut() =
+                            Some(Timeout::new(delay_ms, move || {
+                                socket_reconnecting.set(true);
+                                socket_retry_deadline_ms.set(None);
+                                socket_retry_version.set((*socket_retry_version).saturating_add(1));
+                                socket_retry_timeout_for_callback.borrow_mut().take();
+                            }));
+                    })
+                };
+
+                let mut socket = None::<WebSocket>;
+                let mut onmessage = None::<Closure<dyn FnMut(MessageEvent)>>;
+                let mut onopen = None::<Closure<dyn FnMut(Event)>>;
+                let mut onclose = None::<Closure<dyn FnMut(Event)>>;
+                let mut onerror = None::<Closure<dyn FnMut(JsValue)>>;
+
+                if let Some(socket_path) = socket_path.clone() {
+                    let socket_url = websocket_path(&socket_path);
+                    match WebSocket::new(&socket_url) {
+                        Ok(ws) => {
+                            let status_state = status.clone();
+                            let last_error_for_message = last_error.clone();
+                            let screen_for_message = screen.clone();
+                            let show_face_notification = show_face_notification.clone();
+
+                            let message_handler = Closure::<dyn FnMut(MessageEvent)>::new(
+                                move |event: MessageEvent| {
+                                    let Some(payload) = event.data().as_string() else {
+                                        return;
+                                    };
+                                    match serde_json::from_str::<AfkServerMessage>(&payload) {
+                                        Ok(AfkServerMessage::Connected { status: next }) => {
                                             last_error_for_message.set(None);
-                                            next.session = Some(session);
                                             status_state.set(LoadState::Ready(next));
                                         }
-                                    }
-                                    Ok(AfkServerMessage::Activity { row }) => {
-                                        if matches!(*screen_for_message, AfkScreen::Board)
-                                            && let Some(notification) =
-                                                face_notification_event(&row)
-                                        {
-                                            show_face_notification(notification);
+                                        Ok(AfkServerMessage::Snapshot { session }) => {
+                                            if let LoadState::Ready(mut next) =
+                                                (*status_state).clone()
+                                            {
+                                                last_error_for_message.set(None);
+                                                next.session = Some(session);
+                                                status_state.set(LoadState::Ready(next));
+                                            }
+                                        }
+                                        Ok(AfkServerMessage::Activity { row }) => {
+                                            if matches!(*screen_for_message, AfkScreen::Board)
+                                                && let Some(notification) =
+                                                    face_notification_event(&row)
+                                            {
+                                                show_face_notification(notification);
+                                            }
+                                        }
+                                        Ok(AfkServerMessage::Error { message }) => {
+                                            last_error_for_message.set(Some(message));
+                                        }
+                                        Err(error) => {
+                                            last_error_for_message.set(Some(error.to_string()));
                                         }
                                     }
-                                    Ok(AfkServerMessage::Error { message }) => {
-                                        last_error_for_message.set(Some(message));
+                                },
+                            );
+                            ws.set_onmessage(Some(message_handler.as_ref().unchecked_ref()));
+
+                            let onopen_socket = ws.clone();
+                            let last_error_for_open = last_error.clone();
+                            let reconnect_scheduled_for_open = reconnect_scheduled.clone();
+                            let socket_connected_for_open = socket_connected.clone();
+                            let socket_reconnecting_for_open = socket_reconnecting.clone();
+                            let socket_retry_deadline_ms_for_open =
+                                socket_retry_deadline_ms.clone();
+                            let socket_retry_timeout_for_open = socket_retry_timeout.clone();
+                            let socket_retry_attempt_for_open = socket_retry_attempt.clone();
+                            let open_handler =
+                                Closure::<dyn FnMut(Event)>::new(move |_event: Event| {
+                                    reconnect_scheduled_for_open.set(false);
+                                    socket_connected_for_open.set(true);
+                                    socket_reconnecting_for_open.set(false);
+                                    socket_retry_deadline_ms_for_open.set(None);
+                                    socket_retry_timeout_for_open.borrow_mut().take();
+                                    *socket_retry_attempt_for_open.borrow_mut() = 0;
+                                    last_error_for_open.set(None);
+                                    let _ = onopen_socket.send_with_str(
+                                        &serde_json::to_string(&AfkClientMessage::Ping)
+                                            .unwrap_or_default(),
+                                    );
+                                });
+                            ws.set_onopen(Some(open_handler.as_ref().unchecked_ref()));
+
+                            let schedule_reconnect_for_close = schedule_reconnect.clone();
+                            let intentionally_closed_for_close = intentionally_closed.clone();
+                            let socket_connected_for_close = socket_connected.clone();
+                            let close_handler =
+                                Closure::<dyn FnMut(Event)>::new(move |_event: Event| {
+                                    socket_connected_for_close.set(false);
+                                    if intentionally_closed_for_close.get() {
+                                        return;
                                     }
-                                    Err(error) => {
-                                        last_error_for_message.set(Some(error.to_string()));
+                                    schedule_reconnect_for_close();
+                                });
+                            ws.set_onclose(Some(close_handler.as_ref().unchecked_ref()));
+
+                            let schedule_reconnect_for_error = schedule_reconnect.clone();
+                            let intentionally_closed_for_error = intentionally_closed.clone();
+                            let socket_connected_for_error = socket_connected.clone();
+                            let socket_for_error = ws.clone();
+                            let error_handler =
+                                Closure::<dyn FnMut(JsValue)>::new(move |error: JsValue| {
+                                    socket_connected_for_error.set(false);
+                                    if intentionally_closed_for_error.get() {
+                                        return;
                                     }
-                                }
-                            });
-                        ws.set_onmessage(Some(message_handler.as_ref().unchecked_ref()));
+                                    log::warn!("afk websocket error: {error:?}");
+                                    let _ = socket_for_error.close();
+                                    schedule_reconnect_for_error();
+                                });
+                            ws.set_onerror(Some(error_handler.as_ref().unchecked_ref()));
 
-                        let onopen_socket = ws.clone();
-                        let last_error_for_open = last_error.clone();
-                        let open_handler =
-                            Closure::<dyn FnMut(Event)>::new(move |_event: Event| {
-                                last_error_for_open.set(None);
-                                let _ = onopen_socket.send_with_str(
-                                    &serde_json::to_string(&AfkClientMessage::Ping)
-                                        .unwrap_or_default(),
-                                );
-                            });
-                        ws.set_onopen(Some(open_handler.as_ref().unchecked_ref()));
-
-                        let error_handler =
-                            Closure::<dyn FnMut(JsValue)>::new(move |error: JsValue| {
-                                log::warn!("afk websocket error: {error:?}");
-                                last_error_for_socket
-                                    .set(Some("Live updates are unavailable right now.".into()));
-                            });
-                        ws.set_onerror(Some(error_handler.as_ref().unchecked_ref()));
-
-                        socket = Some(ws);
-                        onmessage = Some(message_handler);
-                        onopen = Some(open_handler);
-                        onerror = Some(error_handler);
+                            socket = Some(ws);
+                            onmessage = Some(message_handler);
+                            onopen = Some(open_handler);
+                            onclose = Some(close_handler);
+                            onerror = Some(error_handler);
+                        }
+                        Err(error) => {
+                            log::warn!("failed to open afk websocket: {error:?}");
+                            last_error.set(None);
+                            schedule_reconnect();
+                        }
                     }
-                    Err(error) => {
-                        log::warn!("failed to open afk websocket: {error:?}");
-                        last_error.set(Some("Live updates could not connect.".into()));
-                    }
+                } else {
+                    socket_connected.set(false);
+                    socket_reconnecting.set(false);
+                    socket_retry_deadline_ms.set(None);
+                    *socket_retry_attempt.borrow_mut() = 0;
                 }
-            }
 
-            move || {
-                if let Some(socket) = socket {
-                    socket.close().ok();
-                    socket.set_onmessage(None);
-                    socket.set_onopen(None);
-                    socket.set_onerror(None);
+                let socket_retry_timeout = socket_retry_timeout.clone();
+                move || {
+                    intentionally_closed.set(true);
+                    socket_connected.set(false);
+                    socket_retry_timeout.borrow_mut().take();
+                    if let Some(socket) = socket {
+                        socket.close().ok();
+                        socket.set_onmessage(None);
+                        socket.set_onopen(None);
+                        socket.set_onclose(None);
+                        socket.set_onerror(None);
+                    }
+                    drop(onmessage);
+                    drop(onopen);
+                    drop(onclose);
+                    drop(onerror);
                 }
-                drop(onmessage);
-                drop(onopen);
-                drop(onerror);
-            }
-        });
+            },
+        );
     }
 
     {
         let screen = screen.clone();
         let manual_face_prompt = manual_face_prompt.clone();
         let clear_face_notification = clear_face_notification.clone();
-        let last_error = last_error.clone();
-        use_effect_with(status.clone(), move |status| {
-            if matches!(*screen, AfkScreen::Board) {
-                let ready_status = match &**status {
-                    LoadState::Ready(status) => Some(status),
-                    _ => None,
-                };
-                let has_session = ready_status.is_some_and(|status| status.session.is_some());
-                if !has_session {
-                    clear_face_notification();
-                    manual_face_prompt.set(None);
-                    screen.set(AfkScreen::Menu);
-                } else if let Some(status) = ready_status {
-                    if has_critical_chat_failure(status) {
-                        clear_face_notification();
-                        manual_face_prompt.set(None);
-                        last_error.set(
-                            status_chat_error(status)
-                                .or_else(|| Some("Twitch chat is disconnected.".to_string())),
-                        );
-                        screen.set(AfkScreen::Menu);
+        let start_transition_in_progress = start_transition_in_progress.clone();
+        use_effect_with(
+            (status.clone(), *start_transition_in_progress),
+            move |(status, start_transition_pending)| {
+                if matches!(*screen, AfkScreen::Board) {
+                    match resolve_board_screen(status, *start_transition_pending) {
+                        AfkBoardScreenResolution::Keep => {}
+                        AfkBoardScreenResolution::FinishStartTransition => {
+                            start_transition_in_progress.set(false);
+                        }
+                        AfkBoardScreenResolution::ReturnToMenu => {
+                            clear_face_notification();
+                            manual_face_prompt.set(None);
+                            start_transition_in_progress.set(false);
+                            screen.set(AfkScreen::Menu);
+                        }
                     }
                 }
-            }
-            || ()
-        });
+                || ()
+            },
+        );
+    }
+
+    {
+        let status = status.clone();
+        let socket_connected = socket_connected.clone();
+        let chat_reconnect_active = chat_reconnect_active.clone();
+        let chat_reconnect_version = chat_reconnect_version.clone();
+        let chat_reconnect_timeout = chat_reconnect_timeout.clone();
+        let chat_reconnect_attempt = chat_reconnect_attempt.clone();
+        let chat_reconnect_needed = matches!(
+            &*status,
+            LoadState::Ready(status)
+                if *socket_connected
+                    && status.auth.identity.is_some()
+                    && status.session.is_some()
+                    && matches!(status.chat_connection, AfkChatConnectionState::Error)
+        );
+        use_effect_with(
+            (chat_reconnect_needed, *chat_reconnect_version),
+            move |(chat_reconnect_needed, _)| {
+                chat_reconnect_timeout.borrow_mut().take();
+                let cancelled = Rc::new(Cell::new(false));
+                if *chat_reconnect_needed {
+                    chat_reconnect_active.set(true);
+                    let schedule_retry = {
+                        let cancelled = cancelled.clone();
+                        let chat_reconnect_active = chat_reconnect_active.clone();
+                        let chat_reconnect_attempt = chat_reconnect_attempt.clone();
+                        let chat_reconnect_timeout = chat_reconnect_timeout.clone();
+                        let chat_reconnect_version = chat_reconnect_version.clone();
+                        Rc::new(move || {
+                            if cancelled.get() {
+                                return;
+                            }
+                            chat_reconnect_active.set(true);
+                            let attempt = {
+                                let mut current = chat_reconnect_attempt.borrow_mut();
+                                *current = current.saturating_add(1);
+                                *current
+                            };
+                            let delay_ms = next_afk_reconnect_delay_ms(attempt);
+                            let chat_reconnect_timeout_for_store = chat_reconnect_timeout.clone();
+                            let chat_reconnect_timeout_for_callback = chat_reconnect_timeout.clone();
+                            let chat_reconnect_version = chat_reconnect_version.clone();
+                            *chat_reconnect_timeout_for_store.borrow_mut() =
+                                Some(Timeout::new(delay_ms, move || {
+                                    chat_reconnect_version
+                                        .set((*chat_reconnect_version).saturating_add(1));
+                                    chat_reconnect_timeout_for_callback.borrow_mut().take();
+                                }));
+                        })
+                    };
+
+                    let status = status.clone();
+                    let chat_reconnect_active = chat_reconnect_active.clone();
+                    let chat_reconnect_attempt = chat_reconnect_attempt.clone();
+                    let schedule_retry_for_task = schedule_retry.clone();
+                    let cancelled_for_task = cancelled.clone();
+                    spawn_local(async move {
+                        match post_empty_status("/api/afk/chat-reconnect").await {
+                            Ok(response) => {
+                                if cancelled_for_task.get() {
+                                    return;
+                                }
+                                let should_retry = response.auth.identity.is_some()
+                                    && response.session.is_some()
+                                    && matches!(
+                                        response.chat_connection,
+                                        AfkChatConnectionState::Error
+                                    );
+                                let keep_notice = matches!(
+                                    response.chat_connection,
+                                    AfkChatConnectionState::Connecting
+                                );
+                                status.set(LoadState::Ready(response));
+                                if should_retry {
+                                    schedule_retry_for_task();
+                                } else {
+                                    chat_reconnect_active.set(keep_notice);
+                                    *chat_reconnect_attempt.borrow_mut() = 0;
+                                }
+                            }
+                            Err(error) => {
+                                if cancelled_for_task.get() {
+                                    return;
+                                }
+                                log::warn!("failed to request afk chat reconnect: {error}");
+                                schedule_retry_for_task();
+                            }
+                        }
+                    });
+                } else {
+                    chat_reconnect_active.set(false);
+                    *chat_reconnect_attempt.borrow_mut() = 0;
+                }
+
+                let chat_reconnect_timeout = chat_reconnect_timeout.clone();
+                move || {
+                    cancelled.set(true);
+                    chat_reconnect_timeout.borrow_mut().take();
+                }
+            },
+        );
     }
 
     {
@@ -1376,6 +1697,7 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
         let last_error = last_error.clone();
         let pre_auth_preferences = pre_auth_preferences.clone();
         let auto_start_in_progress = auto_start_in_progress.clone();
+        let start_transition_in_progress = start_transition_in_progress.clone();
         let on_consume_start_after_connect = props.on_consume_start_after_connect.clone();
         use_effect_with(
             (
@@ -1404,16 +1726,29 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                     manual_face_prompt.set(None);
                     menu_page.set(AfkMenuPage::Root);
                     last_error.set(None);
+                    start_transition_in_progress.set(true);
+                    screen.set(AfkScreen::Board);
 
                     let status = status.clone();
                     let screen = screen.clone();
                     let last_error = last_error.clone();
+                    let start_transition_in_progress = start_transition_in_progress.clone();
                     spawn_local(async move {
                         match apply_preferences_and_start(preferences).await {
                             Ok(response) => {
-                                handle_started_status(&status, &screen, &last_error, response);
+                                handle_started_status(
+                                    &status,
+                                    &screen,
+                                    &last_error,
+                                    &start_transition_in_progress,
+                                    response,
+                                );
                             }
-                            Err(error) => status.set(LoadState::Error(error)),
+                            Err(error) => {
+                                start_transition_in_progress.set(false);
+                                screen.set(AfkScreen::Menu);
+                                status.set(LoadState::Error(error));
+                            }
                         }
                     });
                 }
@@ -1503,17 +1838,10 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                     match fetch_status().await {
                         Ok(response) => {
                             let has_session = response.session.is_some();
-                            let can_open_board = has_session
-                                && !matches!(
-                                    response.chat_connection,
-                                    AfkChatConnectionState::Error
-                                );
-                            let next_error = status_chat_error(&response);
                             status.set(LoadState::Ready(response));
-                            if can_open_board {
+                            if has_session {
+                                last_error.set(None);
                                 screen.set(AfkScreen::Board);
-                            } else if let Some(error) = next_error {
-                                last_error.set(Some(error));
                             }
                         }
                         Err(error) => status.set(LoadState::Error(error)),
@@ -1531,19 +1859,33 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
         let menu_page = menu_page.clone();
         let manual_face_prompt = manual_face_prompt.clone();
         let last_error = last_error.clone();
+        let start_transition_in_progress = start_transition_in_progress.clone();
         Callback::from(move |_| {
             manual_face_prompt.set(None);
             menu_page.set(AfkMenuPage::Root);
+            start_transition_in_progress.set(true);
+            screen.set(AfkScreen::Board);
             let status = status.clone();
             let screen = screen.clone();
             let last_error = last_error.clone();
+            let start_transition_in_progress = start_transition_in_progress.clone();
             spawn_local(async move {
                 last_error.set(None);
                 match post_empty_status("/api/afk/start").await {
                     Ok(response) => {
-                        handle_started_status(&status, &screen, &last_error, response);
+                        handle_started_status(
+                            &status,
+                            &screen,
+                            &last_error,
+                            &start_transition_in_progress,
+                            response,
+                        );
                     }
-                    Err(error) => status.set(LoadState::Error(error)),
+                    Err(error) => {
+                        start_transition_in_progress.set(false);
+                        screen.set(AfkScreen::Menu);
+                        status.set(LoadState::Error(error));
+                    }
                 }
             });
         })
@@ -1685,6 +2027,7 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
         let menu_page = menu_page.clone();
         let pending_board_size = pending_board_size.clone();
         let last_error = last_error.clone();
+        let start_transition_in_progress = start_transition_in_progress.clone();
         Callback::from(move |_| {
             let Some(next_board_size) = *pending_board_size else {
                 return;
@@ -1694,6 +2037,7 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
             let status = status.clone();
             let screen = screen.clone();
             let last_error = last_error.clone();
+            let start_transition_in_progress = start_transition_in_progress.clone();
             spawn_local(async move {
                 let size_response = post_json_status(
                     "/api/afk/board-size",
@@ -1703,11 +2047,23 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                 match size_response {
                     Ok(_) => {
                         last_error.set(None);
+                        start_transition_in_progress.set(true);
+                        screen.set(AfkScreen::Board);
                         match post_empty_status("/api/afk/start").await {
                             Ok(response) => {
-                                handle_started_status(&status, &screen, &last_error, response);
+                                handle_started_status(
+                                    &status,
+                                    &screen,
+                                    &last_error,
+                                    &start_transition_in_progress,
+                                    response,
+                                );
                             }
-                            Err(error) => status.set(LoadState::Error(error)),
+                            Err(error) => {
+                                start_transition_in_progress.set(false);
+                                screen.set(AfkScreen::Menu);
+                                status.set(LoadState::Error(error));
+                            }
                         }
                     }
                     Err(error) => status.set(LoadState::Error(error)),
@@ -1860,12 +2216,31 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
         LoadState::Ready(status) => afk_idle_state(status.session.as_ref(), browser_now_ms()),
         _ => None,
     };
+    let websocket_status_notice = if let Some(retry_deadline_ms) = *socket_retry_deadline_ms {
+        Some(AttrValue::from(afk_websocket_reconnect_notice(
+            retry_deadline_ms.saturating_sub(browser_now_ms()),
+        )))
+    } else if *socket_reconnecting {
+        Some(AttrValue::from(afk_websocket_connecting_notice()))
+    } else {
+        None
+    };
+    let chat_status_notice = match &*status {
+        LoadState::Ready(status) => {
+            status_chat_notice(status, *chat_reconnect_active).map(AttrValue::from)
+        }
+        _ => None,
+    };
+    let face_status_notice = chat_status_notice
+        .clone()
+        .or_else(|| websocket_status_notice.clone());
     let current_overlay = active_face_overlay(
         *screen,
         &status,
         &manual_face_prompt,
         &face_notification,
         idle_state,
+        face_status_notice.clone(),
     );
     let face_button_locked = current_overlay
         .as_ref()
@@ -1921,17 +2296,10 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                     match fetch_status().await {
                         Ok(response) => {
                             let has_session = response.session.is_some();
-                            let can_open_board = has_session
-                                && !matches!(
-                                    response.chat_connection,
-                                    AfkChatConnectionState::Error
-                                );
-                            let next_error = status_chat_error(&response);
                             status.set(LoadState::Ready(response));
-                            if can_open_board {
+                            if has_session {
+                                last_error.set(None);
                                 screen.set(AfkScreen::Board);
-                            } else if let Some(error) = next_error {
-                                last_error.set(Some(error));
                             }
                         }
                         Err(error) => status.set(LoadState::Error(error)),
@@ -1970,11 +2338,10 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
     };
 
     let auth_error_html = props.auth_error.as_deref().map(render_auth_error);
-    let websocket_error = (*last_error).clone();
-    let status_error = match &*status {
-        LoadState::Ready(status) => status_chat_error(status),
-        _ => None,
-    };
+    let menu_notice = face_status_notice
+        .clone()
+        .or_else(|| (*last_error).clone().map(AttrValue::from));
+    let board_error = (*last_error).clone().map(AttrValue::from);
 
     match *screen {
         AfkScreen::Menu => {
@@ -2006,10 +2373,7 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                                 {menu_section_gap()}
                                 {afk_menu_notice_block(
                                     auth_error_html.clone(),
-                                    status_error
-                                        .clone()
-                                        .or_else(|| websocket_error.clone())
-                                        .map(AttrValue::from),
+                                    menu_notice.clone(),
                                 )}
                                 {menu_wide_detail_row(
                                     "Tiny",
@@ -2104,10 +2468,7 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                                 {menu_section_gap()}
                                 {afk_menu_notice_block(
                                     auth_error_html.clone(),
-                                    status_error
-                                        .clone()
-                                        .or_else(|| websocket_error.clone())
-                                        .map(AttrValue::from),
+                                    menu_notice.clone(),
                                 )}
                                 {afk_root_menu_rows(
                                     primary_action,
@@ -2200,6 +2561,7 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                     (*face_notification).as_ref()
                 },
                 displayed_idle_state,
+                !face_button_locked && face_status_notice.is_some(),
             );
             let face_button_title = if face_button_locked {
                 "AFK prompt open"
@@ -2254,13 +2616,17 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                         {
                             if let Some(session) = session {
                                 render_afk_board(session, board_interactive, on_streamer_action)
+                            } else if *start_transition_in_progress {
+                                html! { <div class="afk-board-note">{"Starting..."}</div> }
+                            } else if matches!(&*status, LoadState::Loading | LoadState::Idle) {
+                                html! { <div class="afk-board-note">{"Loading..."}</div> }
                             } else {
                                 Html::default()
                             }
                         }
                     </div>
                     {
-                        if let Some(error) = status_error.or(websocket_error) {
+                        if let Some(error) = board_error {
                             html! { <div class="afk-board-note error">{error}</div> }
                         } else {
                             Html::default()
@@ -2509,6 +2875,43 @@ mod tests {
     }
 
     #[test]
+    fn board_screen_defaults_to_menu_when_not_restoring_view_state() {
+        assert_eq!(initial_afk_screen(false), AfkScreen::Menu);
+    }
+
+    #[test]
+    fn board_screen_stays_open_while_status_is_loading() {
+        assert_eq!(
+            resolve_board_screen(&LoadState::<AfkStatusResponse>::Loading, false),
+            AfkBoardScreenResolution::Keep
+        );
+    }
+
+    #[test]
+    fn board_screen_finishes_start_transition_once_session_arrives() {
+        assert_eq!(
+            resolve_board_screen(&ready_status(active_test_session(1_000)), true),
+            AfkBoardScreenResolution::FinishStartTransition
+        );
+    }
+
+    #[test]
+    fn board_screen_returns_to_menu_when_ready_status_has_no_session() {
+        assert_eq!(
+            resolve_board_screen(&LoadState::Ready(base_status(None)), false),
+            AfkBoardScreenResolution::ReturnToMenu
+        );
+    }
+
+    #[test]
+    fn board_screen_keeps_restored_view_on_non_startup_errors() {
+        assert_eq!(
+            resolve_board_screen(&LoadState::<AfkStatusResponse>::Error("nope".into()), false),
+            AfkBoardScreenResolution::Keep
+        );
+    }
+
+    #[test]
     fn disconnected_preferences_use_pending_draft_values() {
         let status = base_status(None);
 
@@ -2707,7 +3110,7 @@ mod tests {
             }),
         });
 
-        assert_eq!(afk_face_icon(&status, None, None), "sleeping");
+        assert_eq!(afk_face_icon(&status, None, None, false), "sleeping");
     }
 
     #[test]
@@ -2794,20 +3197,41 @@ mod tests {
                     message: "Jan found a mine! o7".into(),
                 }),
                 None,
+                false,
             ),
             "dejected"
         );
     }
 
     #[test]
-    fn idle_state_uses_sleeping_face_after_three_minutes() {
+    fn face_icon_uses_spiral_eyes_for_status_notices() {
+        assert_eq!(
+            afk_face_icon(&LoadState::<AfkStatusResponse>::Idle, None, None, true),
+            "spiral-eyes"
+        );
+    }
+
+    #[test]
+    fn idle_state_uses_yawning_face_after_three_minutes() {
         let session = active_test_session(1_000);
         let idle_state = afk_idle_state(Some(&session), 1_000 + AFK_IDLE_SLEEPING_THRESHOLD_MS);
 
         assert_eq!(idle_state, Some(AfkIdleState::Sleeping));
         assert_eq!(
-            afk_face_icon(&ready_status(session), None, idle_state),
-            "sleeping"
+            afk_face_icon(&ready_status(session), None, idle_state, false),
+            "yawning"
+        );
+    }
+
+    #[test]
+    fn idle_prompt_uses_yawning_face_after_ten_minutes() {
+        let session = active_test_session(1_000);
+        let idle_state = afk_idle_state(Some(&session), 1_000 + AFK_IDLE_PROMPT_THRESHOLD_MS);
+
+        assert_eq!(idle_state, Some(AfkIdleState::Prompt));
+        assert_eq!(
+            afk_face_icon(&ready_status(session), None, idle_state, false),
+            "yawning"
         );
     }
 
@@ -2820,6 +3244,7 @@ mod tests {
             &None,
             &None,
             Some(AfkIdleState::Prompt),
+            None,
         );
 
         assert_eq!(
@@ -2841,6 +3266,23 @@ mod tests {
     }
 
     #[test]
+    fn websocket_reconnect_backoff_caps_at_one_minute() {
+        assert_eq!(next_afk_reconnect_delay_ms(1), 1_000);
+        assert_eq!(next_afk_reconnect_delay_ms(2), 2_000);
+        assert_eq!(next_afk_reconnect_delay_ms(3), 4_000);
+        assert_eq!(next_afk_reconnect_delay_ms(4), 8_000);
+        assert_eq!(next_afk_reconnect_delay_ms(5), 16_000);
+        assert_eq!(next_afk_reconnect_delay_ms(6), 32_000);
+        assert_eq!(next_afk_reconnect_delay_ms(7), 60_000);
+        assert_eq!(next_afk_reconnect_delay_ms(99), 60_000);
+    }
+
+    #[test]
+    fn websocket_reconnect_notice_uses_plain_count() {
+        assert_eq!(afk_websocket_reconnect_notice(4_000), "Reconnecting in 4...");
+    }
+
+    #[test]
     fn notifications_override_idle_prompt() {
         let session = active_test_session(1_000);
         let overlay = active_face_overlay(
@@ -2852,6 +3294,7 @@ mod tests {
                 message: "Jan found a mine! o7".into(),
             }),
             Some(AfkIdleState::Prompt),
+            None,
         );
 
         assert_eq!(
@@ -2878,6 +3321,7 @@ mod tests {
             &None,
             &None,
             Some(AfkIdleState::Prompt),
+            None,
         );
 
         assert_eq!(
@@ -2972,6 +3416,30 @@ mod tests {
 
         assert_eq!(win_face_icon(&session), "win-close-call");
         assert_eq!(win_prompt_message(&session), "Close call! Next level? (30)");
+    }
+
+    #[test]
+    fn status_notices_override_face_notifications() {
+        let session = active_test_session(1_000);
+        let overlay = active_face_overlay(
+            AfkScreen::Board,
+            &ready_status(session),
+            &None,
+            &Some(AfkFaceNotification {
+                id: 1,
+                message: "Jan found a mine! o7".into(),
+            }),
+            Some(AfkIdleState::Prompt),
+            Some("Chat reconnecting...".into()),
+        );
+
+        assert_eq!(
+            overlay,
+            Some(AfkFaceOverlay::Message {
+                message: "Chat reconnecting...".into(),
+                status: Some("Level 3".into()),
+            })
+        );
     }
 
     #[test]
@@ -3100,6 +3568,7 @@ mod tests {
             &None,
             &None,
             None,
+            None,
         );
 
         assert_eq!(overlay, Some(AfkFaceOverlay::Status("Level 3".into())));
@@ -3154,6 +3623,7 @@ mod tests {
             }),
             &None,
             &None,
+            None,
             None,
         );
 
@@ -3212,6 +3682,7 @@ mod tests {
                 id: 7,
                 message: "Jan found a mine! o7".into(),
             }),
+            None,
             None,
         );
 
@@ -3276,6 +3747,7 @@ mod tests {
                 id: 7,
                 message: "Jan found a mine! o7".into(),
             }),
+            None,
             None,
         );
 
