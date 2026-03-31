@@ -1951,9 +1951,10 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
         let clear_face_notification = clear_face_notification.clone();
         let start_transition_in_progress = start_transition_in_progress.clone();
         use_effect_with(
-            (status.clone(), *start_transition_in_progress),
-            move |(status, start_transition_pending)| {
-                if matches!(*screen, AfkScreen::Board) {
+            // Depend on the snapshot value so session teardown reruns this effect.
+            ((*status).clone(), *screen, *start_transition_in_progress),
+            move |(status, screen_value, start_transition_pending)| {
+                if matches!(*screen_value, AfkScreen::Board) {
                     match resolve_board_screen(status, *start_transition_pending) {
                         AfkBoardScreenResolution::Keep => {}
                         AfkBoardScreenResolution::FinishStartTransition => {
@@ -3138,6 +3139,8 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                                 html! { <div class="afk-board-note">{"Starting..."}</div> }
                             } else if matches!(&*status, LoadState::Loading | LoadState::Idle) {
                                 html! { <div class="afk-board-note">{"Loading..."}</div> }
+                            } else if matches!(&*status, LoadState::Ready(_)) {
+                                html! { <div class="afk-board-note">{"Returning to menu..."}</div> }
                             } else {
                                 Html::default()
                             }
@@ -3444,6 +3447,19 @@ mod tests {
         assert_eq!(
             resolve_board_screen(&LoadState::Ready(base_status(None)), false),
             AfkBoardScreenResolution::ReturnToMenu
+        );
+    }
+
+    #[test]
+    fn board_screen_stays_open_when_connection_issue_keeps_session_alive() {
+        let status = AfkStatusResponse {
+            chat_connection: AfkChatConnectionState::Error,
+            ..base_status(Some(active_test_session(1_000)))
+        };
+
+        assert_eq!(
+            resolve_board_screen(&LoadState::Ready(status), false),
+            AfkBoardScreenResolution::Keep
         );
     }
 
