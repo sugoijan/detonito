@@ -4,6 +4,14 @@ fn default_afk_current_level() -> u16 {
     1
 }
 
+fn default_afk_lives_remaining() -> u8 {
+    3
+}
+
+fn default_afk_max_lives() -> u8 {
+    3
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrontendRuntimeConfig {
     pub afk_enabled: bool,
@@ -104,6 +112,41 @@ pub struct AfkPenaltySnapshot {
     pub timeout_succeeded: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AfkUserStatsSnapshot {
+    pub chatter: AfkIdentity,
+    #[serde(default)]
+    pub opened_cells: u32,
+    #[serde(default)]
+    pub correct_flags: u32,
+    #[serde(default)]
+    pub incorrect_flags: u32,
+    #[serde(default)]
+    pub correct_unflags: u32,
+    #[serde(default)]
+    pub died_this_round: bool,
+    #[serde(default)]
+    pub died_before_this_round: bool,
+    #[serde(default)]
+    pub died_every_round: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AfkStatsGroupSnapshot {
+    #[serde(default)]
+    pub users: Vec<AfkUserStatsSnapshot>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AfkRoundReportSnapshot {
+    #[serde(default)]
+    pub round_loser: Option<AfkIdentity>,
+    #[serde(default)]
+    pub round: AfkStatsGroupSnapshot,
+    #[serde(default)]
+    pub run: AfkStatsGroupSnapshot,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AfkActivityKind {
@@ -168,6 +211,14 @@ pub struct AfkSessionSnapshot {
     pub phase_countdown_secs: Option<i32>,
     #[serde(default = "default_afk_current_level")]
     pub current_level: u16,
+    #[serde(default = "default_afk_lives_remaining")]
+    pub lives_remaining: u8,
+    #[serde(default = "default_afk_max_lives")]
+    pub max_lives: u8,
+    #[serde(default)]
+    pub game_over: bool,
+    #[serde(default)]
+    pub round_report: Option<AfkRoundReportSnapshot>,
     pub live_mines_left: i32,
     pub crater_count: u16,
     #[serde(default)]
@@ -299,5 +350,66 @@ mod tests {
         .expect("session snapshot should deserialize");
 
         assert_eq!(session.hazard_variant, AfkHazardVariant::Mines);
+    }
+
+    #[test]
+    fn session_snapshot_deserialization_defaults_lives_and_report_fields() {
+        let session: AfkSessionSnapshot = serde_json::from_value(json!({
+            "streamer": null,
+            "phase": "active",
+            "paused": false,
+            "board": {
+                "width": 1,
+                "height": 1,
+                "cells": ["Hidden"]
+            },
+            "labeled_cells": [],
+            "timer_profile": {
+                "start_secs": 120,
+                "safe_reveal_bonus_secs": 1,
+                "mine_penalty_secs": 15,
+                "start_delay_secs": 5,
+                "win_continue_delay_secs": 30,
+                "loss_continue_delay_secs": 60
+            },
+            "timer_remaining_secs": 120,
+            "phase_countdown_secs": null,
+            "current_level": 1,
+            "live_mines_left": 1,
+            "crater_count": 0,
+            "loss_reason": null,
+            "timeout_enabled": true,
+            "ignored_users": [],
+            "recent_penalties": [],
+            "activity": [],
+            "last_action": null,
+            "last_user_activity_at_ms": 0
+        }))
+        .expect("session snapshot should deserialize");
+
+        assert_eq!(session.lives_remaining, 3);
+        assert_eq!(session.max_lives, 3);
+        assert!(!session.game_over);
+        assert_eq!(session.round_report, None);
+    }
+
+    #[test]
+    fn user_stats_deserialization_defaults_death_flags_to_false() {
+        let user: AfkUserStatsSnapshot = serde_json::from_value(json!({
+            "chatter": {
+                "user_id": "1",
+                "login": "jan",
+                "display_name": "Jan"
+            },
+            "opened_cells": 2,
+            "correct_flags": 1,
+            "incorrect_flags": 0,
+            "correct_unflags": 0
+        }))
+        .expect("user stats snapshot should deserialize");
+
+        assert!(!user.died_this_round);
+        assert!(!user.died_before_this_round);
+        assert!(!user.died_every_round);
     }
 }

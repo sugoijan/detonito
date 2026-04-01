@@ -8,14 +8,17 @@ use crate::hazard_variant::HazardVariant;
 use detonito_protocol::{
     AfkActionKind, AfkActionRequest, AfkActivityKind, AfkActivityRow, AfkBoardSize,
     AfkCellSnapshot, AfkChatConnectionState, AfkClientMessage, AfkCoordSnapshot, AfkLossReason,
-    AfkRoundPhase, AfkServerMessage, AfkSessionSnapshot, AfkStatusResponse,
+    AfkRoundPhase, AfkRoundReportSnapshot, AfkServerMessage, AfkSessionSnapshot,
+    AfkStatsGroupSnapshot, AfkStatusResponse, AfkUserStatsSnapshot,
 };
-use gloo::timers::callback::Timeout;
-use js_sys::encode_uri_component;
+use gloo::{render::request_animation_frame, timers::callback::Timeout};
+use js_sys::{Reflect, encode_uri_component};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 use wasm_bindgen_futures::{JsFuture, spawn_local};
-use web_sys::{Event, MessageEvent, Request, RequestCredentials, RequestInit, Response, WebSocket};
+use web_sys::{
+    Element, Event, MessageEvent, Request, RequestCredentials, RequestInit, Response, WebSocket,
+};
 use yew::prelude::*;
 
 use crate::menu::{
@@ -127,6 +130,19 @@ struct AfkCountdownOverlay {
     aria_label: &'static str,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AfkRoundReportLayout {
+    SideBySide,
+    Stacked,
+    TotalOnly,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AfkRoundReportScope {
+    Round,
+    Total,
+}
+
 const AFK_FACE_NOTIFICATION_MS: u32 = 5_000;
 const AFK_OUT_FOR_ROUND_NOTIFICATION_MS: u32 = 10_000;
 const AFK_IDLE_SLEEPING_THRESHOLD_MS: i64 = 3 * 60 * 1_000;
@@ -234,6 +250,20 @@ fn current_level_status_text(session: Option<&AfkSessionSnapshot>) -> Option<Att
     session
         .filter(|session| session.board.width >= 15)
         .map(|session| format!("Level {}", session.current_level).into())
+}
+
+fn visible_lives_count(session: Option<&AfkSessionSnapshot>) -> Option<u8> {
+    session
+        .filter(|session| session.board.width >= 15 && session.lives_remaining > 0)
+        .map(|session| session.lives_remaining)
+}
+
+fn round_report_layout(session: &AfkSessionSnapshot) -> AfkRoundReportLayout {
+    match session.board.width {
+        0..=9 => AfkRoundReportLayout::TotalOnly,
+        10..=14 => AfkRoundReportLayout::Stacked,
+        _ => AfkRoundReportLayout::SideBySide,
+    }
 }
 
 fn board_size_label(board_size: AfkBoardSize) -> &'static str {
@@ -390,6 +420,31 @@ fn status_chat_notice(
     } else {
         None
     }
+}
+
+fn afk_board_is_interactive(
+    status: &LoadState<AfkStatusResponse>,
+    socket_connected: bool,
+    face_button_locked: bool,
+) -> bool {
+    let LoadState::Ready(status) = status else {
+        return false;
+    };
+
+    if status.auth.identity.is_none()
+        || !socket_connected
+        || !matches!(status.chat_connection, AfkChatConnectionState::Connected)
+    {
+        return false;
+    }
+
+    status.session.as_ref().is_some_and(|session| {
+        matches!(
+            session.phase,
+            AfkRoundPhase::Countdown | AfkRoundPhase::Active
+        ) && !session.paused
+            && !face_button_locked
+    })
 }
 
 fn handle_started_status(
@@ -738,10 +793,12 @@ fn win_continue_prompt(session: &AfkSessionSnapshot) -> AfkFacePrompt {
 }
 
 fn loss_prompt_message(session: &AfkSessionSnapshot) -> AttrValue {
-    let prompt = if session.loss_reason == Some(AfkLossReason::Timer) {
-        "Too slow! Play again?"
+    let prompt = if session.game_over {
+        "Game over. Start over?"
+    } else if session.loss_reason == Some(AfkLossReason::Timer) {
+        "Too slow! Retry level?"
     } else {
-        "Too bad. Play again?"
+        "Too bad. Retry level?"
     };
     format!(
         "{prompt} ({})",
@@ -756,7 +813,11 @@ fn loss_continue_prompt(session: &AfkSessionSnapshot) -> AfkFacePrompt {
         choices: vec![
             AfkFaceChoice {
                 label: "Yes (!continue)".into(),
-                title: "Start the next round now".into(),
+                title: if session.game_over {
+                    "Start a new run from level 1".into()
+                } else {
+                    "Retry the current level".into()
+                },
                 action: AfkFaceAction::ContinueRound,
             },
             AfkFaceChoice {
@@ -773,6 +834,313 @@ fn automatic_face_prompt(session: &AfkSessionSnapshot) -> Option<AfkFacePrompt> 
         AfkRoundPhase::Won => Some(win_continue_prompt(session)),
         AfkRoundPhase::TimedOut => Some(loss_continue_prompt(session)),
         _ => None,
+    }
+}
+
+fn active_round_report(session: Option<&AfkSessionSnapshot>) -> Option<&AfkRoundReportSnapshot> {
+    session.and_then(|session| match session.phase {
+        AfkRoundPhase::Won | AfkRoundPhase::TimedOut => session.round_report.as_ref(),
+        AfkRoundPhase::Countdown | AfkRoundPhase::Active | AfkRoundPhase::Stopped => None,
+    })
+}
+
+fn round_report_max_rows(session: &AfkSessionSnapshot) -> usize {
+    match session.board.width {
+        0..=9 => 2,
+        10..=16 => 3,
+        17..=24 => 4,
+        _ => 5,
+    }
+}
+
+fn displayed_report_users(
+    group: &AfkStatsGroupSnapshot,
+    target_rows: usize,
+) -> Vec<AfkUserStatsSnapshot> {
+    group
+        .users
+        .iter()
+        .filter(|user| user.opened_cells > 0 || user.correct_flags > 0 || user.incorrect_flags > 0)
+        .cloned()
+        .take(target_rows)
+        .collect()
+}
+
+fn report_user_has_wrong_flags_only(user: &AfkUserStatsSnapshot) -> bool {
+    user.incorrect_flags > 0
+        && user.opened_cells == 0
+        && user.correct_flags == 0
+        && user.correct_unflags == 0
+}
+
+fn round_report_user_icon_name(user: &AfkUserStatsSnapshot) -> &'static str {
+    if user.died_this_round {
+        "lose"
+    } else if report_user_has_wrong_flags_only(user) {
+        "woozy"
+    } else if user.incorrect_flags > 0 {
+        "win-decent"
+    } else {
+        "win"
+    }
+}
+
+fn total_report_user_icon_name(game_over: bool, user: &AfkUserStatsSnapshot) -> &'static str {
+    if game_over && user.died_every_round {
+        "instant-loss"
+    } else if user.died_this_round {
+        "lose"
+    } else if user.died_before_this_round {
+        "in-progress"
+    } else if report_user_has_wrong_flags_only(user) {
+        "woozy"
+    } else {
+        "win"
+    }
+}
+
+fn round_report_user_icon_name_for_scope(
+    scope: AfkRoundReportScope,
+    game_over: bool,
+    user: &AfkUserStatsSnapshot,
+) -> &'static str {
+    match scope {
+        AfkRoundReportScope::Round => round_report_user_icon_name(user),
+        AfkRoundReportScope::Total => total_report_user_icon_name(game_over, user),
+    }
+}
+
+fn render_round_report_header_cell(cell: AfkCellSnapshot) -> Html {
+    html! {
+        <span class="afk-round-report-header-icon-stack" aria-hidden="true">
+            {render_demo_context_board(
+                AfkCountdownDemoCell {
+                    state: cell,
+                    code: None,
+                },
+                "afk-round-report-header-window",
+                "afk-round-report-header-board",
+            )}
+            <Icon
+                name="ok"
+                crop={IconCrop::CenteredSquare64}
+                class={classes!("afk-round-report-header-ok")}
+            />
+        </span>
+    }
+}
+
+fn render_round_report_colgroup() -> Html {
+    html! {
+        <div class="afk-round-report-colgroup" aria-hidden="true">
+            <div class="afk-round-report-name-col" />
+            <div class="afk-round-report-count-col" />
+            <div class="afk-round-report-count-col" />
+        </div>
+    }
+}
+
+fn round_report_body_overflow_px(
+    group_ref: &NodeRef,
+    thead_ref: &NodeRef,
+    tbody_ref: &NodeRef,
+) -> f64 {
+    let Some(group) = group_ref.cast::<Element>() else {
+        return 0.0;
+    };
+    let Some(thead) = thead_ref.cast::<Element>() else {
+        return 0.0;
+    };
+    let Some(tbody) = tbody_ref.cast::<Element>() else {
+        return 0.0;
+    };
+    let Some(group_client_height) = element_number_property_from_element(&group, "clientHeight")
+    else {
+        return 0.0;
+    };
+    let Some(thead_height) = element_number_property_from_element(&thead, "offsetHeight") else {
+        return 0.0;
+    };
+    let Some(tbody_height) = element_number_property_from_element(&tbody, "offsetHeight") else {
+        return 0.0;
+    };
+
+    let body_viewport_height = (group_client_height - thead_height).max(0.0);
+    let overflow_px = (tbody_height - body_viewport_height).max(0.0);
+    (overflow_px > 0.0).then_some(overflow_px).unwrap_or(0.0)
+}
+
+fn element_number_property_from_element(element: &Element, property: &str) -> Option<f64> {
+    Reflect::get(element.as_ref(), &JsValue::from_str(property))
+        .ok()?
+        .as_f64()
+}
+
+fn round_report_animation_duration_ms(overflow_px: f64) -> u32 {
+    let travel_ms = overflow_px.max(0.0).round() as u32 * 35;
+    travel_ms
+        .saturating_mul(2)
+        .saturating_add(2_000)
+        .clamp(8_000, 30_000)
+}
+
+#[derive(Properties, PartialEq)]
+struct AfkRoundReportGroupProps {
+    title: AttrValue,
+    scope: AfkRoundReportScope,
+    game_over: bool,
+    users: Vec<AfkUserStatsSnapshot>,
+}
+
+#[function_component]
+fn AfkRoundReportGroupView(props: &AfkRoundReportGroupProps) -> Html {
+    let group_ref = use_node_ref();
+    let thead_ref = use_node_ref();
+    let tbody_ref = use_node_ref();
+    let overflow_px = use_state_eq(|| 0.0_f64);
+
+    {
+        let group_ref = group_ref.clone();
+        let thead_ref = thead_ref.clone();
+        let tbody_ref = tbody_ref.clone();
+        let overflow_px = overflow_px.clone();
+        use_effect(move || {
+            let handle = request_animation_frame(move |_| {
+                let next = round_report_body_overflow_px(&group_ref, &thead_ref, &tbody_ref);
+                overflow_px.set(next);
+            });
+            move || drop(handle)
+        });
+    }
+
+    let is_overflowing = *overflow_px > 0.0;
+    let tbody_style = if is_overflowing {
+        format!(
+            "--afk-round-report-body-overflow: {:.3}px; --afk-round-report-body-duration: {}ms;",
+            *overflow_px,
+            round_report_animation_duration_ms(*overflow_px),
+        )
+    } else {
+        String::new()
+    };
+
+    html! {
+        <div
+            class={classes!("afk-round-report-group", is_overflowing.then_some("overflowing"))}
+            ref={group_ref}
+        >
+            <div class="afk-round-report-table" role="table">
+                {render_round_report_colgroup()}
+                <div class="afk-round-report-thead" ref={thead_ref} role="rowgroup">
+                    <div class="afk-round-report-row" role="row">
+                        <div class="afk-round-report-th afk-round-report-section" role="columnheader">
+                            {props.title.clone()}
+                        </div>
+                        <div
+                            class="afk-round-report-th afk-round-report-count-header"
+                            title="Correct flags"
+                            role="columnheader"
+                        >
+                            {render_round_report_header_cell(AfkCellSnapshot::Flagged)}
+                        </div>
+                        <div
+                            class="afk-round-report-th afk-round-report-count-header"
+                            title="Opened cells"
+                            role="columnheader"
+                        >
+                            {render_round_report_header_cell(AfkCellSnapshot::Hidden)}
+                        </div>
+                    </div>
+                </div>
+                <div class="afk-round-report-tbody" ref={tbody_ref} style={tbody_style} role="rowgroup">
+                    {
+                        if props.users.is_empty() {
+                            html! {
+                                <div class="afk-round-report-row" role="row">
+                                    <div class="afk-round-report-td afk-round-report-empty" role="cell">{"No moves"}</div>
+                                    <div class="afk-round-report-td afk-round-report-empty-count" role="cell"></div>
+                                    <div class="afk-round-report-td afk-round-report-empty-count" role="cell"></div>
+                                </div>
+                            }
+                        } else {
+                            html! {
+                                <>
+                                    {
+                                        for props.users.iter().map(|user| html! {
+                                            <div class="afk-round-report-row" role="row">
+                                                <div class="afk-round-report-td afk-round-report-user" role="cell">
+                                                    <span class="afk-round-report-user-inner">
+                                                        <Icon
+                                                            name={round_report_user_icon_name_for_scope(props.scope, props.game_over, user)}
+                                                            crop={IconCrop::CenteredSquare64}
+                                                            class={classes!("afk-round-report-user-icon")}
+                                                        />
+                                                        <span class="afk-round-report-user-name">
+                                                            {user.chatter.display_name.clone()}
+                                                        </span>
+                                                    </span>
+                                                </div>
+                                                <div class="afk-round-report-td afk-round-report-count" role="cell">{user.correct_flags}</div>
+                                                <div class="afk-round-report-td afk-round-report-count" role="cell">{user.opened_cells}</div>
+                                            </div>
+                                        })
+                                    }
+                                </>
+                            }
+                        }
+                    }
+                </div>
+            </div>
+        </div>
+    }
+}
+
+fn render_round_report_group(
+    title: &str,
+    scope: AfkRoundReportScope,
+    game_over: bool,
+    group: &AfkStatsGroupSnapshot,
+    max_rows: usize,
+) -> Html {
+    let users = displayed_report_users(group, max_rows);
+    html! {
+        <AfkRoundReportGroupView title={AttrValue::from(title)} {scope} {game_over} {users} />
+    }
+}
+
+fn render_round_report_overlay(
+    session: &AfkSessionSnapshot,
+    report: &AfkRoundReportSnapshot,
+    layout: AfkRoundReportLayout,
+) -> Html {
+    let max_rows = round_report_max_rows(session);
+    html! {
+        <div class="afk-round-report-overlay" aria-hidden="true">
+            <div class={classes!(
+                "afk-round-report-window",
+                (session.board.width == 16 && matches!(layout, AfkRoundReportLayout::SideBySide))
+                    .then_some("small-board"),
+                matches!(layout, AfkRoundReportLayout::TotalOnly).then_some("total-only"),
+                matches!(
+                    layout,
+                    AfkRoundReportLayout::Stacked | AfkRoundReportLayout::TotalOnly
+                )
+                .then_some("stacked")
+            )}>
+                {
+                    if matches!(layout, AfkRoundReportLayout::TotalOnly) {
+                        render_round_report_group("Total", AfkRoundReportScope::Total, session.game_over, &report.run, max_rows)
+                    } else {
+                        html! {
+                            <div class="afk-round-report-columns">
+                                {render_round_report_group("Round", AfkRoundReportScope::Round, session.game_over, &report.round, max_rows)}
+                                {render_round_report_group("Total", AfkRoundReportScope::Total, session.game_over, &report.run, max_rows)}
+                            </div>
+                        }
+                    }
+                }
+            </div>
+        </div>
     }
 }
 
@@ -1011,6 +1379,25 @@ fn view_face_overlay(overlay: &AfkFaceOverlay, on_action: Callback<AfkFaceAction
                 <div class="face-prompt-status">{status.clone()}</div>
             </div>
         },
+    }
+}
+
+fn view_lives_rail(lives: u8) -> Html {
+    html! {
+        <div
+            class="face-lives-rail"
+            aria-label={format!("{lives} live{}", if lives == 1 { "" } else { "s" })}
+        >
+            {
+                for (0..usize::from(lives)).map(|_| html! {
+                    <Icon
+                        name="heart"
+                        crop={IconCrop::CenteredSquare64}
+                        class={classes!("face-life-icon")}
+                    />
+                })
+            }
+        </div>
     }
 }
 
@@ -1376,10 +1763,14 @@ fn render_countdown_demo_board_cell(cell: AfkCountdownDemoCell) -> Html {
     }
 }
 
-fn render_countdown_context_board(cell: AfkCountdownDemoCell) -> Html {
+fn render_demo_context_board(
+    cell: AfkCountdownDemoCell,
+    window_class: &'static str,
+    board_class: &'static str,
+) -> Html {
     html! {
-        <div class="afk-countdown-board-window" aria-hidden="true">
-            <table class="afk-countdown-board-preview">
+        <div class={window_class} aria-hidden="true">
+            <table class={board_class}>
                 <tbody>
                     {
                         for (0..3).map(|y| html! {
@@ -1404,6 +1795,14 @@ fn render_countdown_context_board(cell: AfkCountdownDemoCell) -> Html {
             </table>
         </div>
     }
+}
+
+fn render_countdown_context_board(cell: AfkCountdownDemoCell) -> Html {
+    render_demo_context_board(
+        cell,
+        "afk-countdown-board-window",
+        "afk-countdown-board-preview",
+    )
 }
 
 fn render_countdown_overlay_row(row: AfkCountdownDemoRow, show_after: bool) -> Html {
@@ -2774,16 +3173,8 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
     let face_button_locked = current_overlay
         .as_ref()
         .is_some_and(|overlay| matches!(overlay, AfkFaceOverlay::Prompt(_)));
-    let board_interactive = match &*status {
-        LoadState::Ready(status) => status.session.as_ref().is_some_and(|session| {
-            matches!(
-                session.phase,
-                AfkRoundPhase::Countdown | AfkRoundPhase::Active
-            ) && !session.paused
-                && !face_button_locked
-        }),
-        _ => false,
-    };
+    let board_interactive =
+        afk_board_is_interactive(&status, *socket_connected, face_button_locked);
 
     {
         let current_cell_state = current_cell_state.clone();
@@ -3154,8 +3545,10 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                 _ => None,
             };
             let countdown_overlay = active_countdown_overlay(session);
+            let round_report = active_round_report(session);
             let mines_left = mines_counter_text(session);
             let timer = board_counter_text(session);
+            let visible_lives = visible_lives_count(session);
             let displayed_idle_state = if face_button_locked { None } else { idle_state };
             let game_state_icon = afk_face_icon(
                 &status,
@@ -3191,6 +3584,11 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                             <GlyphRun set={GlyphSet::Counter} text={mines_left} class={classes!("counter-glyphs")}/>
                         </aside>
                         <span class={classes!("face-slot", face_button_locked.then_some("prompt-open"))}>
+                            {
+                                visible_lives
+                                    .map(view_lives_rail)
+                                    .unwrap_or_default()
+                            }
                             {
                                 if let Some(overlay) = current_overlay.as_ref() {
                                     view_face_overlay(overlay, on_face_action)
@@ -3238,6 +3636,17 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                         {
                             countdown_overlay
                                 .map(|overlay| render_countdown_overlay(overlay, *countdown_demo_show_after))
+                                .or_else(|| {
+                                    session.and_then(|session| {
+                                        round_report.map(|report| {
+                                            render_round_report_overlay(
+                                                session,
+                                                report,
+                                                round_report_layout(session),
+                                            )
+                                        })
+                                    })
+                                })
                                 .unwrap_or_default()
                         }
                     </div>
@@ -3391,8 +3800,8 @@ mod tests {
     use super::*;
     use detonito_protocol::{
         AfkActivityKind, AfkBoardSize, AfkBoardSnapshot, AfkChatConnectionState, AfkHazardVariant,
-        AfkIdentity, AfkLossReason, AfkTimerProfileSnapshot, FrontendRuntimeConfig,
-        StreamerAuthStatus,
+        AfkIdentity, AfkLossReason, AfkRoundReportSnapshot, AfkStatsGroupSnapshot,
+        AfkTimerProfileSnapshot, AfkUserStatsSnapshot, FrontendRuntimeConfig, StreamerAuthStatus,
     };
 
     fn active_test_session(last_user_activity_at_ms: i64) -> AfkSessionSnapshot {
@@ -3418,6 +3827,10 @@ mod tests {
             timer_remaining_secs: 120,
             phase_countdown_secs: None,
             current_level: 3,
+            lives_remaining: 3,
+            max_lives: 3,
+            game_over: false,
+            round_report: None,
             live_mines_left: 50,
             crater_count: 0,
             loss_reason: None,
@@ -3446,6 +3859,10 @@ mod tests {
             },
             phase_countdown_secs: Some(5),
             current_level: 1,
+            lives_remaining: 3,
+            max_lives: 3,
+            game_over: false,
+            round_report: None,
             live_mines_left,
             ..active_test_session(1_000)
         }
@@ -3467,6 +3884,60 @@ mod tests {
         })
     }
 
+    fn sample_round_report() -> AfkRoundReportSnapshot {
+        AfkRoundReportSnapshot {
+            round_loser: None,
+            round: AfkStatsGroupSnapshot {
+                users: vec![
+                    AfkUserStatsSnapshot {
+                        chatter: AfkIdentity::new("1", "jan", "Jan"),
+                        opened_cells: 4,
+                        correct_flags: 2,
+                        incorrect_flags: 0,
+                        correct_unflags: 0,
+                        died_this_round: false,
+                        died_before_this_round: false,
+                        died_every_round: false,
+                    },
+                    AfkUserStatsSnapshot {
+                        chatter: AfkIdentity::new("2", "bea", "Bea"),
+                        opened_cells: 1,
+                        correct_flags: 0,
+                        incorrect_flags: 1,
+                        correct_unflags: 0,
+                        died_this_round: false,
+                        died_before_this_round: false,
+                        died_every_round: false,
+                    },
+                ],
+            },
+            run: AfkStatsGroupSnapshot {
+                users: vec![
+                    AfkUserStatsSnapshot {
+                        chatter: AfkIdentity::new("1", "jan", "Jan"),
+                        opened_cells: 9,
+                        correct_flags: 4,
+                        incorrect_flags: 0,
+                        correct_unflags: 1,
+                        died_this_round: false,
+                        died_before_this_round: false,
+                        died_every_round: false,
+                    },
+                    AfkUserStatsSnapshot {
+                        chatter: AfkIdentity::new("3", "zoe", "Zoe"),
+                        opened_cells: 0,
+                        correct_flags: 1,
+                        incorrect_flags: 0,
+                        correct_unflags: 0,
+                        died_this_round: false,
+                        died_before_this_round: false,
+                        died_every_round: false,
+                    },
+                ],
+            },
+        }
+    }
+
     fn base_status(session: Option<AfkSessionSnapshot>) -> AfkStatusResponse {
         AfkStatusResponse {
             runtime: FrontendRuntimeConfig { afk_enabled: true },
@@ -3481,6 +3952,21 @@ mod tests {
             websocket_path: None,
             session,
         }
+    }
+
+    fn connected_streamer_status(
+        session: Option<AfkSessionSnapshot>,
+        chat_connection: AfkChatConnectionState,
+    ) -> LoadState<AfkStatusResponse> {
+        LoadState::Ready(AfkStatusResponse {
+            auth: StreamerAuthStatus {
+                identity: Some(AfkIdentity::new("1", "streamer", "Streamer")),
+                ..StreamerAuthStatus::default()
+            },
+            chat_connection,
+            websocket_path: Some("/ws/afk".into()),
+            ..base_status(session)
+        })
     }
 
     #[test]
@@ -3712,6 +4198,207 @@ mod tests {
     }
 
     #[test]
+    fn visible_lives_count_matches_wide_board_capacity() {
+        let session = active_test_session(1_000);
+        assert_eq!(visible_lives_count(Some(&session)), Some(3));
+
+        let narrow = countdown_test_session(AfkBoardSize::Tiny);
+        assert_eq!(visible_lives_count(Some(&narrow)), None);
+    }
+
+    #[test]
+    fn round_report_layout_uses_total_only_on_tiny_boards() {
+        assert_eq!(
+            round_report_layout(&countdown_test_session(AfkBoardSize::Tiny)),
+            AfkRoundReportLayout::TotalOnly
+        );
+        assert_eq!(
+            round_report_layout(&countdown_test_session(AfkBoardSize::Small)),
+            AfkRoundReportLayout::SideBySide
+        );
+    }
+
+    #[test]
+    fn round_report_max_rows_scales_with_board_size() {
+        assert_eq!(
+            round_report_max_rows(&countdown_test_session(AfkBoardSize::Tiny)),
+            2
+        );
+        assert_eq!(
+            round_report_max_rows(&countdown_test_session(AfkBoardSize::Small)),
+            3
+        );
+        assert_eq!(
+            round_report_max_rows(&countdown_test_session(AfkBoardSize::Medium)),
+            4
+        );
+        assert_eq!(
+            round_report_max_rows(&countdown_test_session(AfkBoardSize::Large)),
+            5
+        );
+    }
+
+    #[test]
+    fn displayed_report_users_filters_zero_rows_and_caps_at_requested_limit() {
+        let group = AfkStatsGroupSnapshot {
+            users: vec![
+                AfkUserStatsSnapshot {
+                    chatter: AfkIdentity::new("1", "jan", "Jan"),
+                    opened_cells: 5,
+                    correct_flags: 1,
+                    incorrect_flags: 0,
+                    correct_unflags: 0,
+                    died_this_round: false,
+                    died_before_this_round: false,
+                    died_every_round: false,
+                },
+                AfkUserStatsSnapshot {
+                    chatter: AfkIdentity::new("2", "bea", "Bea"),
+                    opened_cells: 0,
+                    correct_flags: 0,
+                    incorrect_flags: 2,
+                    correct_unflags: 0,
+                    died_this_round: false,
+                    died_before_this_round: false,
+                    died_every_round: false,
+                },
+                AfkUserStatsSnapshot {
+                    chatter: AfkIdentity::new("3", "zoe", "Zoe"),
+                    opened_cells: 3,
+                    correct_flags: 0,
+                    incorrect_flags: 0,
+                    correct_unflags: 0,
+                    died_this_round: false,
+                    died_before_this_round: false,
+                    died_every_round: false,
+                },
+                AfkUserStatsSnapshot {
+                    chatter: AfkIdentity::new("4", "max", "Max"),
+                    opened_cells: 1,
+                    correct_flags: 2,
+                    incorrect_flags: 0,
+                    correct_unflags: 0,
+                    died_this_round: false,
+                    died_before_this_round: false,
+                    died_every_round: false,
+                },
+                AfkUserStatsSnapshot {
+                    chatter: AfkIdentity::new("5", "ivy", "Ivy"),
+                    opened_cells: 1,
+                    correct_flags: 1,
+                    incorrect_flags: 0,
+                    correct_unflags: 0,
+                    died_this_round: false,
+                    died_before_this_round: false,
+                    died_every_round: false,
+                },
+            ],
+        };
+
+        assert_eq!(
+            displayed_report_users(&group, 3)
+                .into_iter()
+                .map(|user| user.chatter.display_name)
+                .collect::<Vec<_>>(),
+            vec!["Jan", "Bea", "Zoe"]
+        );
+    }
+
+    #[test]
+    fn round_report_user_icon_is_woozy_for_wrong_flags_only_rows() {
+        let user = AfkUserStatsSnapshot {
+            chatter: AfkIdentity::new("2", "bea", "Bea"),
+            opened_cells: 0,
+            correct_flags: 0,
+            incorrect_flags: 2,
+            correct_unflags: 0,
+            died_this_round: false,
+            died_before_this_round: false,
+            died_every_round: false,
+        };
+
+        assert_eq!(round_report_user_icon_name(&user), "woozy");
+        assert_eq!(total_report_user_icon_name(false, &user), "woozy");
+    }
+
+    #[test]
+    fn round_report_user_icon_is_win_decent_for_mixed_mistake_rows() {
+        let user = AfkUserStatsSnapshot {
+            chatter: AfkIdentity::new("2", "bea", "Bea"),
+            opened_cells: 1,
+            correct_flags: 0,
+            incorrect_flags: 1,
+            correct_unflags: 0,
+            died_this_round: false,
+            died_before_this_round: false,
+            died_every_round: false,
+        };
+
+        assert_eq!(round_report_user_icon_name(&user), "win-decent");
+    }
+
+    #[test]
+    fn total_report_user_icon_is_in_progress_after_prior_death() {
+        let user = AfkUserStatsSnapshot {
+            chatter: AfkIdentity::new("2", "bea", "Bea"),
+            opened_cells: 3,
+            correct_flags: 1,
+            incorrect_flags: 0,
+            correct_unflags: 0,
+            died_this_round: false,
+            died_before_this_round: true,
+            died_every_round: false,
+        };
+
+        assert_eq!(total_report_user_icon_name(false, &user), "in-progress");
+    }
+
+    #[test]
+    fn total_report_user_icon_is_lose_for_current_round_death() {
+        let user = AfkUserStatsSnapshot {
+            chatter: AfkIdentity::new("2", "bea", "Bea"),
+            opened_cells: 3,
+            correct_flags: 1,
+            incorrect_flags: 0,
+            correct_unflags: 0,
+            died_this_round: true,
+            died_before_this_round: false,
+            died_every_round: false,
+        };
+
+        assert_eq!(total_report_user_icon_name(false, &user), "lose");
+    }
+
+    #[test]
+    fn total_report_user_icon_is_instant_loss_after_death_every_round() {
+        let user = AfkUserStatsSnapshot {
+            chatter: AfkIdentity::new("2", "bea", "Bea"),
+            opened_cells: 3,
+            correct_flags: 1,
+            incorrect_flags: 0,
+            correct_unflags: 0,
+            died_this_round: true,
+            died_before_this_round: false,
+            died_every_round: true,
+        };
+
+        assert_eq!(total_report_user_icon_name(true, &user), "instant-loss");
+    }
+
+    #[test]
+    fn active_round_report_requires_finished_round() {
+        let mut session = active_test_session(1_000);
+        session.round_report = Some(sample_round_report());
+        assert_eq!(active_round_report(Some(&session)), None);
+
+        session.phase = AfkRoundPhase::Won;
+        assert_eq!(
+            active_round_report(Some(&session)),
+            session.round_report.as_ref()
+        );
+    }
+
+    #[test]
     fn should_show_cell_code_uses_snapshot_label_mask_when_present() {
         let session = AfkSessionSnapshot {
             streamer: None,
@@ -3739,6 +4426,10 @@ mod tests {
             timer_remaining_secs: 120,
             phase_countdown_secs: None,
             current_level: 1,
+            lives_remaining: 3,
+            max_lives: 3,
+            game_over: false,
+            round_report: None,
             live_mines_left: 1,
             crater_count: 0,
             loss_reason: None,
@@ -3808,6 +4499,10 @@ mod tests {
             timer_remaining_secs: 120,
             phase_countdown_secs: None,
             current_level: 1,
+            lives_remaining: 3,
+            max_lives: 3,
+            game_over: false,
+            round_report: None,
             live_mines_left: 1,
             crater_count: 0,
             loss_reason: None,
@@ -3862,6 +4557,10 @@ mod tests {
             timer_remaining_secs: 120,
             phase_countdown_secs: None,
             current_level: 1,
+            lives_remaining: 3,
+            max_lives: 3,
+            game_over: false,
+            round_report: None,
             live_mines_left: 1,
             crater_count: 0,
             loss_reason: None,
@@ -3935,6 +4634,10 @@ mod tests {
             timer_remaining_secs: 120,
             phase_countdown_secs: None,
             current_level: 1,
+            lives_remaining: 3,
+            max_lives: 3,
+            game_over: false,
+            round_report: None,
             live_mines_left: 1,
             crater_count: 0,
             loss_reason: None,
@@ -4045,6 +4748,10 @@ mod tests {
                 timer_remaining_secs: 0,
                 phase_countdown_secs: Some(60),
                 current_level: 1,
+                lives_remaining: 3,
+                max_lives: 3,
+                game_over: false,
+                round_report: None,
                 live_mines_left: 0,
                 crater_count: 0,
                 loss_reason: Some(AfkLossReason::Timer),
@@ -4094,6 +4801,10 @@ mod tests {
             timer_remaining_secs: 0,
             phase_countdown_secs: Some(60),
             current_level: 1,
+            lives_remaining: 3,
+            max_lives: 3,
+            game_over: false,
+            round_report: None,
             live_mines_left: 0,
             crater_count: 0,
             loss_reason: Some(AfkLossReason::Timer),
@@ -4105,7 +4816,7 @@ mod tests {
             last_user_activity_at_ms: 1,
         };
 
-        assert_eq!(loss_prompt_message(&session), "Too slow! Play again? (60)");
+        assert_eq!(loss_prompt_message(&session), "Too slow! Retry level? (60)");
     }
 
     #[test]
@@ -4132,6 +4843,10 @@ mod tests {
             timer_remaining_secs: 0,
             phase_countdown_secs: Some(60),
             current_level: 1,
+            lives_remaining: 3,
+            max_lives: 3,
+            game_over: false,
+            round_report: None,
             live_mines_left: 0,
             crater_count: 0,
             loss_reason: Some(AfkLossReason::Mine),
@@ -4143,7 +4858,25 @@ mod tests {
             last_user_activity_at_ms: 1,
         };
 
-        assert_eq!(loss_prompt_message(&session), "Too bad. Play again? (60)");
+        assert_eq!(loss_prompt_message(&session), "Too bad. Retry level? (60)");
+    }
+
+    #[test]
+    fn game_over_prompt_uses_start_over_copy() {
+        let mut session = active_test_session(1_000);
+        session.phase = AfkRoundPhase::TimedOut;
+        session.phase_countdown_secs = Some(60);
+        session.loss_reason = Some(AfkLossReason::Mine);
+        session.current_level = 4;
+        session.live_mines_left = 0;
+        session.lives_remaining = 0;
+        session.game_over = true;
+
+        assert_eq!(loss_prompt_message(&session), "Game over. Start over? (60)");
+        assert_eq!(
+            loss_continue_prompt(&session).choices[0].title,
+            AttrValue::from("Start a new run from level 1")
+        );
     }
 
     #[test]
@@ -4268,6 +5001,55 @@ mod tests {
     }
 
     #[test]
+    fn afk_board_waits_for_live_connection_before_becoming_interactive() {
+        let countdown = countdown_test_session(AfkBoardSize::Medium);
+
+        assert!(!afk_board_is_interactive(
+            &connected_streamer_status(Some(countdown.clone()), AfkChatConnectionState::Connected,),
+            false,
+            false,
+        ));
+        assert!(!afk_board_is_interactive(
+            &connected_streamer_status(Some(countdown.clone()), AfkChatConnectionState::Connecting,),
+            true,
+            false,
+        ));
+        assert!(afk_board_is_interactive(
+            &connected_streamer_status(Some(countdown), AfkChatConnectionState::Connected),
+            true,
+            false,
+        ));
+    }
+
+    #[test]
+    fn afk_board_still_respects_pause_phase_and_prompt_locks() {
+        let mut paused = active_test_session(1_000);
+        paused.paused = true;
+        assert!(!afk_board_is_interactive(
+            &connected_streamer_status(Some(paused), AfkChatConnectionState::Connected),
+            true,
+            false,
+        ));
+
+        let mut timed_out = active_test_session(1_000);
+        timed_out.phase = AfkRoundPhase::TimedOut;
+        assert!(!afk_board_is_interactive(
+            &connected_streamer_status(Some(timed_out), AfkChatConnectionState::Connected),
+            true,
+            false,
+        ));
+
+        assert!(!afk_board_is_interactive(
+            &connected_streamer_status(
+                Some(active_test_session(1_000)),
+                AfkChatConnectionState::Connected,
+            ),
+            true,
+            true,
+        ));
+    }
+
+    #[test]
     fn notifications_override_idle_prompt() {
         let session = active_test_session(1_000);
         let overlay = active_face_overlay(
@@ -4312,11 +5094,11 @@ mod tests {
         assert_eq!(
             overlay,
             Some(AfkFaceOverlay::Prompt(AfkFacePrompt {
-                message: "Too bad. Play again? (60)".into(),
+                message: "Too bad. Retry level? (60)".into(),
                 choices: vec![
                     AfkFaceChoice {
                         label: "Yes (!continue)".into(),
-                        title: "Start the next round now".into(),
+                        title: "Retry the current level".into(),
                         action: AfkFaceAction::ContinueRound,
                     },
                     AfkFaceChoice {
@@ -4410,6 +5192,10 @@ mod tests {
             timer_remaining_secs: 9,
             phase_countdown_secs: Some(30),
             current_level: 2,
+            lives_remaining: 3,
+            max_lives: 3,
+            game_over: false,
+            round_report: None,
             live_mines_left: 0,
             crater_count: 1,
             loss_reason: None,
@@ -4500,6 +5286,10 @@ mod tests {
             timer_remaining_secs: 20,
             phase_countdown_secs: Some(30),
             current_level: 2,
+            lives_remaining: 3,
+            max_lives: 3,
+            game_over: false,
+            round_report: None,
             live_mines_left: 0,
             crater_count: 1,
             loss_reason: None,
@@ -4539,6 +5329,10 @@ mod tests {
             timer_remaining_secs: 20,
             phase_countdown_secs: Some(30),
             current_level: 2,
+            lives_remaining: 3,
+            max_lives: 3,
+            game_over: false,
+            round_report: None,
             live_mines_left: 0,
             crater_count: 0,
             loss_reason: None,
@@ -4591,6 +5385,10 @@ mod tests {
                     timer_remaining_secs: 120,
                     phase_countdown_secs: None,
                     current_level: 3,
+                    lives_remaining: 3,
+                    max_lives: 3,
+                    game_over: false,
+                    round_report: None,
                     live_mines_left: 50,
                     crater_count: 0,
                     loss_reason: None,
@@ -4648,6 +5446,10 @@ mod tests {
                     timer_remaining_secs: 120,
                     phase_countdown_secs: None,
                     current_level: 3,
+                    lives_remaining: 3,
+                    max_lives: 3,
+                    game_over: false,
+                    round_report: None,
                     live_mines_left: 9,
                     crater_count: 0,
                     loss_reason: None,
@@ -4705,6 +5507,10 @@ mod tests {
                     timer_remaining_secs: 120,
                     phase_countdown_secs: None,
                     current_level: 3,
+                    lives_remaining: 3,
+                    max_lives: 3,
+                    game_over: false,
+                    round_report: None,
                     live_mines_left: 50,
                     crater_count: 0,
                     loss_reason: None,
@@ -4771,6 +5577,10 @@ mod tests {
                     timer_remaining_secs: 0,
                     phase_countdown_secs: Some(60),
                     current_level: 1,
+                    lives_remaining: 3,
+                    max_lives: 3,
+                    game_over: false,
+                    round_report: None,
                     live_mines_left: 0,
                     crater_count: 0,
                     loss_reason: Some(AfkLossReason::Mine),
@@ -4794,11 +5604,11 @@ mod tests {
         assert_eq!(
             overlay,
             Some(AfkFaceOverlay::Prompt(AfkFacePrompt {
-                message: "Too bad. Play again? (60)".into(),
+                message: "Too bad. Retry level? (60)".into(),
                 choices: vec![
                     AfkFaceChoice {
                         label: "Yes (!continue)".into(),
-                        title: "Start the next round now".into(),
+                        title: "Retry the current level".into(),
                         action: AfkFaceAction::ContinueRound,
                     },
                     AfkFaceChoice {

@@ -735,8 +735,11 @@ impl AfkEngine {
         cratered_mines: u16,
         mine_triggered: bool,
     ) -> AfkActionOutcome {
-        let mut timer_delta_secs =
-            i32::from(safe_reveals) * self.preset.timer.safe_reveal_bonus_secs as i32;
+        let mut timer_delta_secs = if safe_reveals > 0 {
+            self.preset.timer.safe_reveal_bonus_secs as i32
+        } else {
+            0
+        };
         if mine_triggered {
             timer_delta_secs -= self.preset.timer.mine_penalty_secs as i32;
         }
@@ -791,7 +794,7 @@ impl AfkEngine {
         self.mine_layout = Some(layout);
     }
 
-    fn has_mine_at(&self, coords: Coord2) -> Result<bool> {
+    pub fn has_mine_at(&self, coords: Coord2) -> Result<bool> {
         self.validate_coords(coords)?;
         Ok(self
             .mine_layout
@@ -1019,6 +1022,60 @@ mod tests {
         assert!(outcome.changed);
         assert!(outcome.safe_reveals > 0);
         assert!(engine.timer_remaining_secs() > before);
+    }
+
+    #[test]
+    fn safe_reveal_bonus_is_flat_for_single_cell_and_cascade_reveals() {
+        let single_layout = MineLayout::from_mine_coords((2, 2), &[(1, 1)]).unwrap();
+        let cascade_layout = MineLayout::from_mine_coords((3, 1), &[(2, 0)]).unwrap();
+        let mut single = AfkEngine::with_layout_for_tests(single_layout, AfkPreset::v1(), now());
+        let mut cascade =
+            AfkEngine::with_layout_for_tests(cascade_layout, line_preset(3, 1), now());
+
+        let single_outcome = single
+            .apply_action(AfkAction::Reveal((0, 0)), now())
+            .expect("single reveal should succeed");
+        let cascade_outcome = cascade
+            .apply_action(AfkAction::Reveal((0, 0)), now())
+            .expect("cascade reveal should succeed");
+
+        assert_eq!(single_outcome.safe_reveals, 1);
+        assert!(cascade_outcome.safe_reveals > 1);
+        assert_eq!(
+            single_outcome.timer_delta_secs,
+            AfkPreset::v1().timer.safe_reveal_bonus_secs as i32
+        );
+        assert_eq!(
+            cascade_outcome.timer_delta_secs,
+            line_preset(3, 1).timer.safe_reveal_bonus_secs as i32
+        );
+    }
+
+    #[test]
+    fn mixed_chord_mine_outcome_still_only_gets_one_safe_bonus() {
+        let layout = MineLayout::from_mine_coords((2, 2), &[(1, 1)]).unwrap();
+        let preset = AfkPreset {
+            config: GameConfig::new_unchecked((2, 2), 1),
+            timer: AfkTimerProfile::v1(),
+        };
+        let mut engine = AfkEngine::with_layout_for_tests(layout, preset, now());
+        engine
+            .apply_action(AfkAction::Reveal((0, 0)), now())
+            .expect("revealing clue should succeed");
+        engine
+            .apply_action(AfkAction::SetFlag((1, 0)), now())
+            .expect("misflag should succeed");
+
+        let outcome = engine
+            .apply_action(AfkAction::Chord((0, 0)), now())
+            .expect("chord should resolve hidden neighbors");
+
+        assert_eq!(outcome.safe_reveals, 1);
+        assert!(outcome.mine_triggered);
+        assert_eq!(
+            outcome.timer_delta_secs,
+            preset.timer.safe_reveal_bonus_secs as i32 - preset.timer.mine_penalty_secs as i32
+        );
     }
 
     #[test]

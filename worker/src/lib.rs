@@ -30,8 +30,9 @@ use detonito_protocol::{
     AfkActionKind, AfkActionRequest, AfkActivityKind, AfkActivityRow,
     AfkBoardSize as ProtocolAfkBoardSize, AfkBoardSnapshot, AfkCellSnapshot,
     AfkChatConnectionState, AfkClientMessage, AfkCoordSnapshot, AfkHazardVariant, AfkIdentity,
-    AfkLossReason, AfkPenaltySnapshot, AfkRoundPhase, AfkServerMessage, AfkSessionSnapshot,
-    AfkStatusResponse, AfkTimerProfileSnapshot, FrontendRuntimeConfig, StreamerAuthStatus,
+    AfkLossReason, AfkPenaltySnapshot, AfkRoundPhase, AfkRoundReportSnapshot, AfkServerMessage,
+    AfkSessionSnapshot, AfkStatsGroupSnapshot, AfkStatusResponse, AfkTimerProfileSnapshot,
+    AfkUserStatsSnapshot, FrontendRuntimeConfig, StreamerAuthStatus,
 };
 use futures_channel::mpsc::{UnboundedReceiver, unbounded};
 use futures_util::StreamExt;
@@ -63,10 +64,13 @@ const MAX_TIMED_OUT_USERS: usize = 200;
 /// already expired on Twitch's side. If the configured timeout durations are
 /// ever raised significantly, revisit this cap or add expiry-based eviction.
 const MAX_PENDING_UNTIMEOUTS: usize = 64;
+const MAX_STATS_USERS: usize = 256;
+const MAX_RUN_DEAD_USERS: usize = 256;
 const DEFAULT_TIMEOUT_DURATION_SECS: u32 = 30;
 const TIMEOUT_DURATION_OPTIONS_SECS: [u32; 12] = [1, 5, 10, 15, 30, 45, 60, 90, 120, 180, 240, 300];
 const AFK_FRONTEND_ABSENCE_TIMEOUT_MS: i64 = 10 * 60 * 1_000;
 const AFK_SESSION_INACTIVITY_TIMEOUT_MS: i64 = 60 * 60 * 1_000;
+const AFK_MAX_LIVES: u8 = 3;
 
 const EVENTSUB_WS_URL: &str = "wss://eventsub.wss.twitch.tv/ws";
 const EVENTSUB_RECONNECT_RETRY_SECS: u64 = 5;
@@ -84,14 +88,60 @@ struct PersistedEventSubState {
     last_error: Option<String>,
 }
 
-/// Per-round session state stored inside [`PersistedAfkState`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct PersistedAfkUserStats {
+    chatter: AfkIdentity,
+    #[serde(default)]
+    opened_cells: u32,
+    #[serde(default)]
+    correct_flags: u32,
+    #[serde(default)]
+    incorrect_flags: u32,
+    #[serde(default)]
+    correct_unflags: u32,
+    #[serde(default)]
+    death_rounds: u16,
+}
+
+impl PersistedAfkUserStats {
+    fn snapshot(
+        &self,
+        died_this_round: bool,
+        died_before_this_round: bool,
+        died_every_round: bool,
+    ) -> AfkUserStatsSnapshot {
+        AfkUserStatsSnapshot {
+            chatter: self.chatter.clone(),
+            opened_cells: self.opened_cells,
+            correct_flags: self.correct_flags,
+            incorrect_flags: self.incorrect_flags,
+            correct_unflags: self.correct_unflags,
+            died_this_round,
+            died_before_this_round,
+            died_every_round,
+        }
+    }
+
+    fn has_any_stats(&self) -> bool {
+        self.opened_cells > 0
+            || self.correct_flags > 0
+            || self.incorrect_flags > 0
+            || self.correct_unflags > 0
+    }
+}
+
+/// Persisted AFK run state stored inside [`PersistedAfkState`].
 ///
-/// The `ignored_users` and `timed_out_users` vectors are cleared on each
-/// `restart_round()` but capped at [`MAX_IGNORED_USERS`] / [`MAX_TIMED_OUT_USERS`]
-/// as a safety net against the 128 KiB DO storage limit.
+/// The round-scoped vectors are cleared on each `restart_round()`, while
+/// run-scoped stats persist until a game-over restart. All growable fields are
+/// capped to stay well under the DO storage size limit.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct PersistedAfkSession {
     engine: AfkEngine,
+    #[serde(default = "default_lives_remaining")]
+    lives_remaining: u8,
+    #[serde(default)]
+    game_over: bool,
     /// Users who hit mines this round. Capped at [`MAX_IGNORED_USERS`].
     ignored_users: Vec<AfkIdentity>,
     /// Recent mine-hit penalty records. Capped at [`MAX_PENALTIES`].
@@ -102,6 +152,22 @@ struct PersistedAfkSession {
     /// Chronological game event log. Capped at [`MAX_ACTIVITY_ROWS`].
     activity: Vec<AfkActivityRow>,
     last_action: Option<AfkActivityRow>,
+    #[serde(default)]
+    round_loser: Option<AfkIdentity>,
+    #[serde(default)]
+    run_finished_round_count: u16,
+    /// Per-round user contribution stats. Capped at [`MAX_STATS_USERS`].
+    #[serde(default)]
+    round_stats: Vec<PersistedAfkUserStats>,
+    /// Per-run user contribution stats. Capped at [`MAX_STATS_USERS`].
+    #[serde(default)]
+    run_stats: Vec<PersistedAfkUserStats>,
+    /// Users who have died from a mine hit earlier in the current run.
+    #[serde(default)]
+    run_dead_user_ids: Vec<String>,
+    /// Current-round flag ownership, indexed by board flat index.
+    #[serde(default)]
+    flag_owner_user_ids: Vec<Option<String>>,
     timeout_enabled: bool,
     #[serde(default = "default_protocol_hazard_variant")]
     hazard_variant: AfkHazardVariant,
@@ -120,16 +186,25 @@ impl PersistedAfkSession {
     ) -> Self {
         let mut session = Self {
             engine: AfkEngine::new(random_seed(), AfkPreset::for_board_size(board_size), now_ms),
+            lives_remaining: default_lives_remaining(),
+            game_over: false,
             ignored_users: Vec::new(),
             recent_penalties: Vec::new(),
             timed_out_users: Vec::new(),
             activity: Vec::new(),
             last_action: None,
+            round_loser: None,
+            run_finished_round_count: 0,
+            round_stats: Vec::new(),
+            run_stats: Vec::new(),
+            run_dead_user_ids: Vec::new(),
+            flag_owner_user_ids: Vec::new(),
             timeout_enabled,
             hazard_variant,
             last_user_activity_at_ms: now_ms,
             frontend_missing_since_at_ms: None,
         };
+        session.reset_round_tracking();
         session.push_activity("AFK run started", now_ms);
         session
     }
@@ -137,6 +212,14 @@ impl PersistedAfkSession {
     fn normalize_loaded_state(&mut self, now_ms: i64) {
         if self.last_user_activity_at_ms <= 0 {
             self.last_user_activity_at_ms = now_ms;
+        }
+        if self.lives_remaining == 0 && !self.game_over {
+            self.lives_remaining = default_lives_remaining();
+        }
+        self.trim_stats();
+        self.trim_run_dead_users();
+        if self.flag_owner_user_ids.len() != self.board_cell_count() {
+            self.flag_owner_user_ids = vec![None; self.board_cell_count()];
         }
     }
 
@@ -146,7 +229,9 @@ impl PersistedAfkSession {
             .preset()
             .board_size()
             .unwrap_or_else(default_board_size);
-        let next_mines = if matches!(self.engine.phase(), CoreAfkRoundPhase::Won) {
+        let next_mines = if self.game_over {
+            board_size.initial_mines()
+        } else if matches!(self.engine.phase(), CoreAfkRoundPhase::Won) {
             board_size.next_mine_count(self.engine.preset().config.mines)
         } else {
             self.engine
@@ -155,15 +240,19 @@ impl PersistedAfkSession {
                 .mines
                 .clamp(board_size.initial_mines(), board_size.max_mines())
         };
+        if self.game_over {
+            self.lives_remaining = default_lives_remaining();
+            self.run_finished_round_count = 0;
+            self.run_stats.clear();
+            self.run_dead_user_ids.clear();
+        }
         self.engine = AfkEngine::new(
             random_seed(),
             AfkPreset::for_board_size_and_mines(board_size, next_mines),
             now_ms,
         );
-        self.ignored_users.clear();
-        self.recent_penalties.clear();
-        self.timed_out_users.clear();
-        self.last_action = None;
+        self.game_over = false;
+        self.reset_round_tracking();
         self.push_activity("Round restarted", now_ms);
     }
 
@@ -251,6 +340,295 @@ impl PersistedAfkSession {
         }
     }
 
+    fn board_cell_count(&self) -> usize {
+        let size = self.engine.size();
+        usize::from(size.0) * usize::from(size.1)
+    }
+
+    fn reset_round_tracking(&mut self) {
+        self.ignored_users.clear();
+        self.recent_penalties.clear();
+        self.timed_out_users.clear();
+        self.last_action = None;
+        self.round_loser = None;
+        self.round_stats.clear();
+        self.flag_owner_user_ids = vec![None; self.board_cell_count()];
+    }
+
+    fn trim_stats(&mut self) {
+        if self.round_stats.len() > MAX_STATS_USERS {
+            let overflow = self.round_stats.len() - MAX_STATS_USERS;
+            self.round_stats.drain(0..overflow);
+        }
+        if self.run_stats.len() > MAX_STATS_USERS {
+            let overflow = self.run_stats.len() - MAX_STATS_USERS;
+            self.run_stats.drain(0..overflow);
+        }
+    }
+
+    fn trim_run_dead_users(&mut self) {
+        if self.run_dead_user_ids.len() > MAX_RUN_DEAD_USERS {
+            let overflow = self.run_dead_user_ids.len() - MAX_RUN_DEAD_USERS;
+            self.run_dead_user_ids.drain(0..overflow);
+        }
+    }
+
+    fn record_run_death(&mut self, actor: &AfkIdentity) {
+        if self
+            .run_dead_user_ids
+            .iter()
+            .any(|user_id| user_id == &actor.user_id)
+        {
+            return;
+        }
+        self.run_dead_user_ids.push(actor.user_id.clone());
+        self.trim_run_dead_users();
+    }
+
+    fn credit_run_death_round(&mut self, actor: &AfkIdentity) {
+        if let Some(stats) = Self::stats_entry_mut(&mut self.run_stats, actor) {
+            stats.death_rounds = stats.death_rounds.saturating_add(1);
+        }
+    }
+
+    fn apply_round_transition(
+        &mut self,
+        before_phase: CoreAfkRoundPhase,
+        round_loser: Option<AfkIdentity>,
+    ) {
+        if !matches!(before_phase, CoreAfkRoundPhase::Active) {
+            return;
+        }
+        match self.engine.phase() {
+            CoreAfkRoundPhase::Won => {
+                self.run_finished_round_count = self.run_finished_round_count.saturating_add(1);
+                self.round_loser = None;
+                self.game_over = false;
+            }
+            CoreAfkRoundPhase::TimedOut => {
+                self.run_finished_round_count = self.run_finished_round_count.saturating_add(1);
+                self.round_loser = if self.engine.loss_reason() == Some(CoreAfkLossReason::Mine) {
+                    round_loser
+                } else {
+                    None
+                };
+                if let Some(round_loser) = self.round_loser.clone() {
+                    self.record_run_death(&round_loser);
+                    self.credit_run_death_round(&round_loser);
+                }
+                self.lives_remaining = self.lives_remaining.saturating_sub(1);
+                self.game_over = self.lives_remaining == 0;
+            }
+            CoreAfkRoundPhase::Countdown | CoreAfkRoundPhase::Active => {}
+        }
+    }
+
+    fn credit_opened_cells(&mut self, actor: &AfkIdentity) {
+        self.with_actor_stats_mut(actor, |stats| {
+            stats.opened_cells = stats.opened_cells.saturating_add(1);
+        });
+    }
+
+    fn credit_correct_flag(&mut self, actor: &AfkIdentity) {
+        self.with_actor_stats_mut(actor, |stats| {
+            stats.correct_flags = stats.correct_flags.saturating_add(1);
+        });
+    }
+
+    fn revoke_correct_flag(&mut self, user_id: &str) {
+        self.with_stats_by_user_id_mut(user_id, |stats| {
+            stats.correct_flags = stats.correct_flags.saturating_sub(1);
+        });
+    }
+
+    fn credit_incorrect_flag(&mut self, actor: &AfkIdentity) {
+        self.with_actor_stats_mut(actor, |stats| {
+            stats.incorrect_flags = stats.incorrect_flags.saturating_add(1);
+        });
+    }
+
+    fn revoke_incorrect_flag(&mut self, user_id: &str) {
+        self.with_stats_by_user_id_mut(user_id, |stats| {
+            stats.incorrect_flags = stats.incorrect_flags.saturating_sub(1);
+        });
+    }
+
+    fn credit_correct_unflag(&mut self, actor: &AfkIdentity) {
+        self.with_actor_stats_mut(actor, |stats| {
+            stats.correct_unflags = stats.correct_unflags.saturating_add(1);
+        });
+    }
+
+    fn with_actor_stats_mut(
+        &mut self,
+        actor: &AfkIdentity,
+        mut update: impl FnMut(&mut PersistedAfkUserStats),
+    ) {
+        if let Some(stats) = Self::stats_entry_mut(&mut self.round_stats, actor) {
+            update(stats);
+        }
+        if let Some(stats) = Self::stats_entry_mut(&mut self.run_stats, actor) {
+            update(stats);
+        }
+    }
+
+    fn with_stats_by_user_id_mut(
+        &mut self,
+        user_id: &str,
+        mut update: impl FnMut(&mut PersistedAfkUserStats),
+    ) {
+        if let Some(stats) = self
+            .round_stats
+            .iter_mut()
+            .find(|stats| stats.chatter.user_id == user_id)
+        {
+            update(stats);
+        }
+        if let Some(stats) = self
+            .run_stats
+            .iter_mut()
+            .find(|stats| stats.chatter.user_id == user_id)
+        {
+            update(stats);
+        }
+    }
+
+    fn stats_entry_mut<'a>(
+        stats: &'a mut Vec<PersistedAfkUserStats>,
+        actor: &AfkIdentity,
+    ) -> Option<&'a mut PersistedAfkUserStats> {
+        if let Some(index) = stats
+            .iter()
+            .position(|stats| stats.chatter.user_id == actor.user_id)
+        {
+            stats[index].chatter = actor.clone();
+            return stats.get_mut(index);
+        }
+        if stats.len() >= MAX_STATS_USERS {
+            return None;
+        }
+        stats.push(PersistedAfkUserStats {
+            chatter: actor.clone(),
+            opened_cells: 0,
+            correct_flags: 0,
+            incorrect_flags: 0,
+            correct_unflags: 0,
+            death_rounds: 0,
+        });
+        stats.last_mut()
+    }
+
+    fn record_open_stats(&mut self, actor: &AfkIdentity, safe_reveals: u16) {
+        if safe_reveals > 0 {
+            self.credit_opened_cells(actor);
+        }
+    }
+
+    fn record_starting_open(&mut self, actor: &AfkIdentity) {
+        self.credit_opened_cells(actor);
+    }
+
+    fn record_flag_changes(&mut self, actor: &AfkIdentity, before_flags: &[bool]) {
+        if self.flag_owner_user_ids.len() != self.board_cell_count() {
+            self.flag_owner_user_ids = vec![None; self.board_cell_count()];
+        }
+        let size = self.engine.size();
+        for y in 0..size.1 {
+            for x in 0..size.0 {
+                let coords = (x, y);
+                let idx = flat_index(size, coords);
+                let after_flagged = matches!(
+                    self.engine.cell_state_at(coords),
+                    Ok(CoreAfkCellState::Flagged)
+                );
+                let before_flagged = before_flags.get(idx).copied().unwrap_or(false);
+                match (before_flagged, after_flagged) {
+                    (false, true) => self.record_flag_added(actor, coords),
+                    (true, false) => self.record_flag_removed(actor, coords),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn record_flag_added(&mut self, actor: &AfkIdentity, coords: (u8, u8)) {
+        let idx = flat_index(self.engine.size(), coords);
+        let correct = self.engine.has_mine_at(coords).unwrap_or(false);
+        self.flag_owner_user_ids[idx] = Some(actor.user_id.clone());
+        if correct {
+            self.credit_correct_flag(actor);
+        } else {
+            self.credit_incorrect_flag(actor);
+        }
+    }
+
+    fn record_flag_removed(&mut self, actor: &AfkIdentity, coords: (u8, u8)) {
+        let idx = flat_index(self.engine.size(), coords);
+        let owner_user_id = self.flag_owner_user_ids.get_mut(idx).and_then(Option::take);
+        let correct = self.engine.has_mine_at(coords).unwrap_or(false);
+        if correct {
+            if let Some(owner_user_id) = owner_user_id.as_deref() {
+                self.revoke_correct_flag(owner_user_id);
+            }
+            return;
+        }
+        let Some(owner_user_id) = owner_user_id.as_deref() else {
+            return;
+        };
+        if owner_user_id == actor.user_id {
+            self.revoke_incorrect_flag(owner_user_id);
+        } else {
+            self.credit_correct_unflag(actor);
+        }
+    }
+
+    fn sorted_stats_snapshot(&self, stats: &[PersistedAfkUserStats]) -> AfkStatsGroupSnapshot {
+        let mut users: Vec<_> = stats
+            .iter()
+            .filter(|stats| stats.has_any_stats())
+            .map(|stats| {
+                let died_this_round = self
+                    .round_loser
+                    .as_ref()
+                    .is_some_and(|loser| loser.user_id == stats.chatter.user_id);
+                let died_before_this_round = !died_this_round
+                    && self
+                        .run_dead_user_ids
+                        .iter()
+                        .any(|user_id| user_id == &stats.chatter.user_id);
+                let died_every_round = self.run_finished_round_count > 0
+                    && stats.death_rounds == self.run_finished_round_count;
+                stats.snapshot(died_this_round, died_before_this_round, died_every_round)
+            })
+            .collect();
+        users.sort_by(|left, right| {
+            right
+                .opened_cells
+                .cmp(&left.opened_cells)
+                .then_with(|| right.correct_flags.cmp(&left.correct_flags))
+                .then_with(|| {
+                    left.chatter
+                        .display_name
+                        .to_ascii_lowercase()
+                        .cmp(&right.chatter.display_name.to_ascii_lowercase())
+                })
+                .then_with(|| left.chatter.user_id.cmp(&right.chatter.user_id))
+        });
+        AfkStatsGroupSnapshot { users }
+    }
+
+    fn round_report_snapshot(&self) -> Option<AfkRoundReportSnapshot> {
+        matches!(
+            self.engine.phase(),
+            CoreAfkRoundPhase::Won | CoreAfkRoundPhase::TimedOut
+        )
+        .then(|| AfkRoundReportSnapshot {
+            round_loser: self.round_loser.clone(),
+            round: self.sorted_stats_snapshot(&self.round_stats),
+            run: self.sorted_stats_snapshot(&self.run_stats),
+        })
+    }
+
     fn snapshot(
         &self,
         streamer: Option<AfkIdentity>,
@@ -305,6 +683,10 @@ impl PersistedAfkSession {
             timer_remaining_secs: self.engine.board_timer_remaining_secs(),
             phase_countdown_secs: self.engine.phase_countdown_secs(now_ms),
             current_level: self.engine.preset().current_level(),
+            lives_remaining: self.lives_remaining,
+            max_lives: AFK_MAX_LIVES,
+            game_over: self.game_over,
+            round_report: self.round_report_snapshot(),
             live_mines_left: self.engine.live_mines_left_for_display(),
             crater_count: self.engine.crater_count(),
             loss_reason: self.engine.loss_reason().map(|reason| match reason {
@@ -1263,6 +1645,14 @@ impl AfkSessionDO {
                 .session
                 .as_mut()
                 .expect("session existence checked above");
+            let actor = AfkIdentity::new(
+                chat.chatter_user_id.clone(),
+                chat.chatter_user_login.clone(),
+                actor_label.to_string(),
+            );
+            let before_phase = session.engine.phase();
+            let flag_mask_before =
+                action_changes_flags(parsed.action).then(|| engine_flag_mask(&session.engine));
             let outcome = session
                 .engine
                 .apply_action(parsed.action, now)
@@ -1270,6 +1660,14 @@ impl AfkSessionDO {
             if !outcome.changed {
                 return Ok(None);
             }
+            session.record_open_stats(&actor, outcome.safe_reveals);
+            if let Some(flag_mask_before) = flag_mask_before.as_deref() {
+                session.record_flag_changes(&actor, flag_mask_before);
+            }
+            session.apply_round_transition(
+                before_phase,
+                outcome.mine_triggered.then_some(actor.clone()),
+            );
 
             let coord_label = format_coord(parsed.coords);
             let verb = match parsed.action {
@@ -1280,16 +1678,11 @@ impl AfkSessionDO {
                 AfkAction::ChordFlag(_) => "chord-flagged",
             };
             let row = if outcome.mine_triggered {
-                let actor = AfkIdentity::new(
-                    chat.chatter_user_id.clone(),
-                    chat.chatter_user_login.clone(),
-                    actor_label.to_string(),
-                );
                 session.push_activity_with_details(
                     format!("{actor_label} hit a mine at {coord_label}"),
                     now,
                     AfkActivityKind::MineHit,
-                    Some(actor),
+                    Some(actor.clone()),
                     Some(AfkCoordSnapshot {
                         x: parsed.coords.0,
                         y: parsed.coords.1,
@@ -1534,6 +1927,7 @@ impl AfkSessionDO {
                 self.persist(state).await?;
                 return Ok(false);
             }
+            session.record_starting_open(&streamer);
             let row = session.push_activity(
                 format!("{} opened {}", streamer.display_name, format_coord(coords)),
                 now,
@@ -1544,6 +1938,9 @@ impl AfkSessionDO {
             return Ok(true);
         }
 
+        let before_phase = session.engine.phase();
+        let flag_mask_before =
+            action_changes_flags(action).then(|| engine_flag_mask(&session.engine));
         let outcome = session
             .engine
             .apply_action(action, now)
@@ -1551,6 +1948,10 @@ impl AfkSessionDO {
         if !outcome.changed {
             self.persist(state).await?;
             return Ok(false);
+        }
+        session.record_open_stats(&streamer, outcome.safe_reveals);
+        if let Some(flag_mask_before) = flag_mask_before.as_deref() {
+            session.record_flag_changes(&streamer, flag_mask_before);
         }
 
         let coord_label = format_coord(coords);
@@ -1564,6 +1965,7 @@ impl AfkSessionDO {
         };
         let row = if outcome.mine_triggered {
             session.engine.force_timed_out(CoreAfkLossReason::Mine, now);
+            session.apply_round_transition(before_phase, Some(streamer.clone()));
             session.push_activity_with_details(
                 format!("{actor_label} hit a mine at {coord_label}"),
                 now,
@@ -1575,8 +1977,10 @@ impl AfkSessionDO {
                 }),
             )
         } else if outcome.won {
+            session.apply_round_transition(before_phase, None);
             session.push_activity(format!("{actor_label} cleared {coord_label}"), now)
         } else {
+            session.apply_round_transition(before_phase, None);
             session.push_activity(format!("{actor_label} {verb} {coord_label}"), now)
         };
 
@@ -1998,6 +2402,7 @@ impl AfkSessionDO {
             } else if should_broadcast_countdown {
                 broadcast_snapshot = true;
             }
+            session.apply_round_transition(before_phase, None);
             phase_ended = matches!(before_phase, CoreAfkRoundPhase::Active)
                 && matches!(
                     session.engine.phase(),
@@ -2415,6 +2820,31 @@ fn request_action_to_core(request: AfkActionRequest) -> Result<AfkAction> {
     })
 }
 
+fn action_changes_flags(action: AfkAction) -> bool {
+    matches!(
+        action,
+        AfkAction::ToggleFlag(_)
+            | AfkAction::SetFlag(_)
+            | AfkAction::ClearFlag(_)
+            | AfkAction::ChordFlag(_)
+    )
+}
+
+fn engine_flag_mask(engine: &AfkEngine) -> Vec<bool> {
+    let size = engine.size();
+    let mut mask = Vec::with_capacity(usize::from(size.0) * usize::from(size.1));
+    for y in 0..size.1 {
+        for x in 0..size.0 {
+            mask.push(matches!(
+                engine.cell_state_at((x, y)),
+                Ok(CoreAfkCellState::Flagged)
+            ));
+        }
+    }
+    mask
+}
+
+#[cfg(target_arch = "wasm32")]
 fn random_seed() -> u64 {
     use js_sys::Math::random;
     u64::from_be_bytes([
@@ -2429,6 +2859,11 @@ fn random_seed() -> u64 {
     ])
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn random_seed() -> u64 {
+    0x4b1d_f00d_cafe_babe
+}
+
 fn to_afk_identity(outcome: &TwitchAuthOutcome) -> AfkIdentity {
     AfkIdentity::new(
         outcome.identity.user_id.clone(),
@@ -2437,8 +2872,19 @@ fn to_afk_identity(outcome: &TwitchAuthOutcome) -> AfkIdentity {
     )
 }
 
+#[cfg(target_arch = "wasm32")]
 fn now_ms() -> i64 {
     js_sys::Date::now() as i64
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn now_ms() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or_default()
 }
 
 fn error_from_display(error: impl core::fmt::Display) -> Error {
@@ -2447,6 +2893,10 @@ fn error_from_display(error: impl core::fmt::Display) -> Error {
 
 const fn default_timeout_enabled() -> bool {
     true
+}
+
+const fn default_lives_remaining() -> u8 {
+    AFK_MAX_LIVES
 }
 
 const fn default_board_size() -> CoreAfkBoardSize {
@@ -2867,11 +3317,23 @@ mod tests {
     fn test_session() -> PersistedAfkSession {
         PersistedAfkSession {
             engine: AfkEngine::new(0, AfkPreset::v1(), 0),
+            lives_remaining: AFK_MAX_LIVES,
+            game_over: false,
             ignored_users: Vec::new(),
             recent_penalties: Vec::new(),
             timed_out_users: Vec::new(),
             activity: Vec::new(),
             last_action: None,
+            round_loser: None,
+            run_finished_round_count: 0,
+            round_stats: Vec::new(),
+            run_stats: Vec::new(),
+            run_dead_user_ids: Vec::new(),
+            flag_owner_user_ids: vec![
+                None;
+                usize::from(AfkPreset::v1().config.size.0)
+                    * usize::from(AfkPreset::v1().config.size.1)
+            ],
             timeout_enabled: true,
             hazard_variant: AfkHazardVariant::Mines,
             last_user_activity_at_ms: 1,
@@ -2891,6 +3353,7 @@ mod tests {
             },
             1_000,
         );
+        session.flag_owner_user_ids = vec![None; usize::from(width)];
         session
     }
 
@@ -3258,7 +3721,10 @@ mod tests {
         let won_timer = won_session.engine.timer_remaining_secs();
         let won_snapshot = won_session.snapshot(None, true, now_ms + 5_000);
         assert_eq!(won_snapshot.timer_remaining_secs, won_timer);
-        assert_eq!(won_snapshot.phase_countdown_secs, Some(25));
+        assert_eq!(
+            won_snapshot.phase_countdown_secs,
+            Some(preset.timer.win_continue_delay_secs as i32 - 5)
+        );
         assert_eq!(won_snapshot.current_level, 1);
 
         let mut timed_out_session = test_session();
@@ -3271,7 +3737,10 @@ mod tests {
             .force_timed_out(CoreAfkLossReason::Timer, now_ms);
         let timed_out_snapshot = timed_out_session.snapshot(None, true, now_ms + 7_000);
         assert_eq!(timed_out_snapshot.timer_remaining_secs, 0);
-        assert_eq!(timed_out_snapshot.phase_countdown_secs, Some(53));
+        assert_eq!(
+            timed_out_snapshot.phase_countdown_secs,
+            Some(preset.timer.loss_continue_delay_secs as i32 - 7)
+        );
         assert_eq!(timed_out_snapshot.current_level, 1);
     }
 
@@ -3386,6 +3855,333 @@ mod tests {
         assert!(chat_board_action_targets_labeled_cell(&session, parsed).unwrap());
     }
 
+    #[test]
+    fn non_final_losses_consume_a_life_and_retry_same_level() {
+        let mut session = test_session();
+        let before_level = session.engine.preset().current_level();
+
+        session
+            .engine
+            .force_timed_out(CoreAfkLossReason::Timer, 1_000);
+        session.apply_round_transition(CoreAfkRoundPhase::Active, None);
+
+        assert_eq!(session.lives_remaining, AFK_MAX_LIVES - 1);
+        assert!(!session.game_over);
+        assert_eq!(session.engine.preset().current_level(), before_level);
+
+        session.restart_round(2_000);
+
+        assert_eq!(session.lives_remaining, AFK_MAX_LIVES - 1);
+        assert_eq!(session.engine.preset().current_level(), before_level);
+    }
+
+    #[test]
+    fn game_over_reset_is_deferred_until_restart() {
+        let mut session = test_session();
+        let actor = test_identity(1);
+        session.lives_remaining = 1;
+        session.run_stats.push(PersistedAfkUserStats {
+            chatter: actor.clone(),
+            opened_cells: 3,
+            correct_flags: 1,
+            incorrect_flags: 0,
+            correct_unflags: 0,
+            death_rounds: 0,
+        });
+        session.engine = AfkEngine::with_layout_for_tests(
+            detonito_core::MineLayout::from_mine_coords((24, 18), &[(0, 0)]).unwrap(),
+            AfkPreset::for_board_size_and_mines(CoreAfkBoardSize::Medium, 50),
+            1_000,
+        );
+        session.flag_owner_user_ids = vec![None; session.board_cell_count()];
+
+        session
+            .engine
+            .force_timed_out(CoreAfkLossReason::Mine, 1_000);
+        session.apply_round_transition(CoreAfkRoundPhase::Active, Some(actor.clone()));
+
+        assert!(session.game_over);
+        assert_eq!(session.lives_remaining, 0);
+        assert_eq!(session.engine.preset().current_level(), 3);
+        assert_eq!(session.round_loser, Some(actor.clone()));
+        assert_eq!(session.run_finished_round_count, 1);
+        assert_eq!(session.run_stats.len(), 1);
+        assert_eq!(session.run_dead_user_ids, vec![actor.user_id.clone()]);
+
+        session.restart_round(2_000);
+
+        assert!(!session.game_over);
+        assert_eq!(session.lives_remaining, AFK_MAX_LIVES);
+        assert_eq!(session.engine.preset().current_level(), 1);
+        assert!(session.run_stats.is_empty());
+        assert!(session.run_dead_user_ids.is_empty());
+        assert!(session.round_stats.is_empty());
+    }
+
+    #[test]
+    fn self_fixing_a_wrong_flag_removes_the_mistake() {
+        let mut session = line_session(2, &[1]);
+        let actor = test_identity(1);
+
+        let before_flag_mask = engine_flag_mask(&session.engine);
+        session
+            .engine
+            .apply_action(AfkAction::SetFlag((0, 0)), 1_000)
+            .expect("flagging should succeed");
+        session.record_flag_changes(&actor, &before_flag_mask);
+        assert_eq!(session.round_stats[0].incorrect_flags, 1);
+
+        let before_unflag_mask = engine_flag_mask(&session.engine);
+        session
+            .engine
+            .apply_action(AfkAction::ClearFlag((0, 0)), 1_000)
+            .expect("unflagging should succeed");
+        session.record_flag_changes(&actor, &before_unflag_mask);
+
+        assert_eq!(session.round_stats[0].incorrect_flags, 0);
+        assert_eq!(session.round_stats[0].correct_unflags, 0);
+    }
+
+    #[test]
+    fn clearing_someone_elses_wrong_flag_credits_a_correct_unflag() {
+        let mut session = line_session(2, &[1]);
+        let owner = test_identity(1);
+        let fixer = test_identity(2);
+
+        let before_flag_mask = engine_flag_mask(&session.engine);
+        session
+            .engine
+            .apply_action(AfkAction::SetFlag((0, 0)), 1_000)
+            .expect("flagging should succeed");
+        session.record_flag_changes(&owner, &before_flag_mask);
+
+        let before_unflag_mask = engine_flag_mask(&session.engine);
+        session
+            .engine
+            .apply_action(AfkAction::ClearFlag((0, 0)), 1_000)
+            .expect("unflagging should succeed");
+        session.record_flag_changes(&fixer, &before_unflag_mask);
+
+        let owner_stats = session
+            .round_stats
+            .iter()
+            .find(|stats| stats.chatter.user_id == owner.user_id)
+            .expect("owner stats should exist");
+        let fixer_stats = session
+            .round_stats
+            .iter()
+            .find(|stats| stats.chatter.user_id == fixer.user_id)
+            .expect("fixer stats should exist");
+        assert_eq!(owner_stats.incorrect_flags, 1);
+        assert_eq!(fixer_stats.correct_unflags, 1);
+    }
+
+    #[test]
+    fn removing_a_correct_flag_revokes_the_original_credit() {
+        let mut session = line_session(2, &[1]);
+        let owner = test_identity(1);
+        let remover = test_identity(2);
+
+        let before_flag_mask = engine_flag_mask(&session.engine);
+        session
+            .engine
+            .apply_action(AfkAction::SetFlag((1, 0)), 1_000)
+            .expect("flagging should succeed");
+        session.record_flag_changes(&owner, &before_flag_mask);
+        assert_eq!(session.round_stats[0].correct_flags, 1);
+
+        let before_unflag_mask = engine_flag_mask(&session.engine);
+        session
+            .engine
+            .apply_action(AfkAction::ClearFlag((1, 0)), 1_000)
+            .expect("unflagging should succeed");
+        session.record_flag_changes(&remover, &before_unflag_mask);
+
+        let owner_stats = session
+            .round_stats
+            .iter()
+            .find(|stats| stats.chatter.user_id == owner.user_id)
+            .expect("owner stats should exist");
+        assert_eq!(owner_stats.correct_flags, 0);
+    }
+
+    #[test]
+    fn round_report_snapshot_sorts_users_and_keeps_round_loser() {
+        let mut session = test_session();
+        session.round_loser = Some(test_identity(9));
+        session.run_dead_user_ids = vec!["9".into(), "2".into()];
+        session.round_stats = vec![
+            PersistedAfkUserStats {
+                chatter: test_identity(2),
+                opened_cells: 1,
+                correct_flags: 3,
+                incorrect_flags: 0,
+                correct_unflags: 0,
+                death_rounds: 0,
+            },
+            PersistedAfkUserStats {
+                chatter: test_identity(1),
+                opened_cells: 4,
+                correct_flags: 1,
+                incorrect_flags: 0,
+                correct_unflags: 0,
+                death_rounds: 0,
+            },
+        ];
+        session.run_stats = session.round_stats.clone();
+        session
+            .engine
+            .force_timed_out(CoreAfkLossReason::Mine, 1_000);
+
+        let report = session
+            .round_report_snapshot()
+            .expect("finished rounds should expose a report");
+
+        assert_eq!(report.round_loser, session.round_loser);
+        assert_eq!(report.round.users[0].chatter.user_id, "1");
+        assert_eq!(report.round.users[1].chatter.user_id, "2");
+        assert!(!report.round.users[0].died_this_round);
+        assert!(!report.round.users[0].died_before_this_round);
+        assert!(!report.round.users[1].died_this_round);
+        assert!(report.round.users[1].died_before_this_round);
+    }
+
+    #[test]
+    fn round_report_snapshot_marks_current_round_loser_on_user_stats() {
+        let mut session = test_session();
+        let loser = test_identity(2);
+        session.round_loser = Some(loser.clone());
+        session.run_dead_user_ids = vec![loser.user_id.clone()];
+        session.round_stats = vec![
+            PersistedAfkUserStats {
+                chatter: loser.clone(),
+                opened_cells: 1,
+                correct_flags: 0,
+                incorrect_flags: 0,
+                correct_unflags: 0,
+                death_rounds: 0,
+            },
+            PersistedAfkUserStats {
+                chatter: test_identity(1),
+                opened_cells: 2,
+                correct_flags: 1,
+                incorrect_flags: 0,
+                correct_unflags: 0,
+                death_rounds: 0,
+            },
+        ];
+        session.run_stats = vec![
+            PersistedAfkUserStats {
+                chatter: loser.clone(),
+                opened_cells: 1,
+                correct_flags: 0,
+                incorrect_flags: 0,
+                correct_unflags: 0,
+                death_rounds: 1,
+            },
+            PersistedAfkUserStats {
+                chatter: test_identity(1),
+                opened_cells: 2,
+                correct_flags: 1,
+                incorrect_flags: 0,
+                correct_unflags: 0,
+                death_rounds: 0,
+            },
+        ];
+        session.run_finished_round_count = 1;
+        session
+            .engine
+            .force_timed_out(CoreAfkLossReason::Mine, 1_000);
+
+        let report = session
+            .round_report_snapshot()
+            .expect("finished rounds should expose a report");
+        let loser_stats = report
+            .round
+            .users
+            .iter()
+            .find(|stats| stats.chatter.user_id == loser.user_id)
+            .expect("loser stats should exist");
+
+        assert!(loser_stats.died_this_round);
+        assert!(!loser_stats.died_before_this_round);
+    }
+
+    #[test]
+    fn round_report_snapshot_marks_prior_run_deaths_in_total_stats() {
+        let mut session = test_session();
+        let prior_loser = test_identity(3);
+        let active_user = test_identity(1);
+        session.run_dead_user_ids = vec![prior_loser.user_id.clone()];
+        session.run_stats = vec![
+            PersistedAfkUserStats {
+                chatter: active_user,
+                opened_cells: 4,
+                correct_flags: 1,
+                incorrect_flags: 0,
+                correct_unflags: 0,
+                death_rounds: 0,
+            },
+            PersistedAfkUserStats {
+                chatter: prior_loser.clone(),
+                opened_cells: 1,
+                correct_flags: 0,
+                incorrect_flags: 0,
+                correct_unflags: 0,
+                death_rounds: 1,
+            },
+        ];
+        session.run_finished_round_count = 2;
+        session
+            .engine
+            .force_timed_out(CoreAfkLossReason::Timer, 1_000);
+
+        let report = session
+            .round_report_snapshot()
+            .expect("finished rounds should expose a report");
+        let prior_loser_stats = report
+            .run
+            .users
+            .iter()
+            .find(|stats| stats.chatter.user_id == prior_loser.user_id)
+            .expect("prior loser stats should exist");
+
+        assert!(!prior_loser_stats.died_this_round);
+        assert!(prior_loser_stats.died_before_this_round);
+        assert!(!prior_loser_stats.died_every_round);
+    }
+
+    #[test]
+    fn round_report_snapshot_marks_total_users_who_died_every_round() {
+        let mut session = test_session();
+        let doomed_user = test_identity(7);
+        session.run_dead_user_ids = vec![doomed_user.user_id.clone()];
+        session.run_finished_round_count = 2;
+        session.run_stats = vec![PersistedAfkUserStats {
+            chatter: doomed_user.clone(),
+            opened_cells: 2,
+            correct_flags: 0,
+            incorrect_flags: 0,
+            correct_unflags: 0,
+            death_rounds: 2,
+        }];
+        session
+            .engine
+            .force_timed_out(CoreAfkLossReason::Timer, 1_000);
+
+        let report = session
+            .round_report_snapshot()
+            .expect("finished rounds should expose a report");
+        let doomed_user_stats = report
+            .run
+            .users
+            .iter()
+            .find(|stats| stats.chatter.user_id == doomed_user.user_id)
+            .expect("doomed user stats should exist");
+
+        assert!(doomed_user_stats.died_every_round);
+    }
+
     // --- DO storage size limit tests ---
 
     fn test_identity(n: usize) -> AfkIdentity {
@@ -3400,6 +4196,9 @@ mod tests {
         let mut session = test_session();
         session.ignored_users = (0..MAX_IGNORED_USERS).map(test_identity).collect();
         session.timed_out_users = (0..MAX_TIMED_OUT_USERS).map(test_identity).collect();
+        session.run_dead_user_ids = (0..MAX_RUN_DEAD_USERS)
+            .map(|i| format!("run-dead-user-{i:0>20}"))
+            .collect();
         for i in 0..MAX_PENALTIES {
             session.push_penalty(AfkPenaltySnapshot {
                 chatter: test_identity(i),
@@ -3473,6 +4272,17 @@ mod tests {
         }
         assert_eq!(session.ignored_users.len(), MAX_IGNORED_USERS);
         assert_eq!(session.ignored_users[0].user_id, "10");
+    }
+
+    #[test]
+    fn run_dead_users_cap_drains_oldest_entries() {
+        let mut session = test_session();
+        for i in 0..MAX_RUN_DEAD_USERS + 7 {
+            session.run_dead_user_ids.push(format!("run-dead-{i}"));
+            session.trim_run_dead_users();
+        }
+        assert_eq!(session.run_dead_user_ids.len(), MAX_RUN_DEAD_USERS);
+        assert_eq!(session.run_dead_user_ids[0], "run-dead-7");
     }
 
     #[test]

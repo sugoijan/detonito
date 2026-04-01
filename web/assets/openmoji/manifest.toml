@@ -36,6 +36,10 @@ upstream = "1F605.svg"
 source = "upstream"
 upstream = "1F60A.svg"
 
+[icons.woozy]
+source = "upstream"
+upstream = "1F974.svg"
+
 [icons.lose]
 source = "upstream"
 upstream = "1F635.svg"
@@ -159,6 +163,10 @@ upstream = "2714.svg"
 [icons.cancel]
 source = "upstream"
 upstream = "274C.svg"
+
+[icons.heart]
+source = "upstream"
+upstream = "2764.svg"
 
 [icons.gamble]
 source = "upstream"

@@ -55,6 +55,83 @@ $state-size: 24px;
   border-color: var(#{$css-var-prefix}shadow);
 }
 
+@mixin board-cell-chrome($cell-size) {
+  border: 0;
+  padding: 0;
+  height: $cell-size;
+  min-height: $cell-size;
+  max-height: $cell-size;
+  width: $cell-size;
+  min-width: $cell-size;
+  max-width: $cell-size;
+  background-color: var(#{$css-var-prefix}primary);
+  @include outset-border($border-mid);
+  position: relative;
+
+  &:hover:not(.locked) {
+    @include outset-border-hover;
+  }
+
+  &.locked {
+    cursor: default;
+  }
+
+  &.open {
+    background-color: var(#{$css-var-prefix}background);
+    @include pressed-border;
+
+    &:hover:not(.locked) {
+      @include inset-border-hover;
+    }
+  }
+
+  &.loading {
+    position: relative;
+
+    &::after {
+      $size: $spinner-size;
+      $shade1: var(#{$css-var-prefix}highlight);
+      $shade2: var(#{$css-var-prefix}highlight-hover);
+      $shade3: var(#{$css-var-prefix}primary-hover);
+      content: "";
+      position: absolute;
+      width: $size;
+      height: $size;
+      top: calc(($cell-size - $size - $border-thin) / 2);
+      left: calc(($cell-size - $size - $border-thin) / 2);
+      box-sizing: border-box;
+      border-width: $border-mid;
+      border-style: solid;
+      border-color: $shade3 $shade2 $shade1 transparent;
+      border-radius: 50%;
+      opacity: 0;
+      animation:
+        loading-spin 0.8s linear infinite,
+        loading-show 0s linear 100ms forwards;
+    }
+  }
+
+  &.wrong {
+    background-color: var(#{$css-var-prefix}incorrect);
+    #{$css-var-prefix}highlight: var(#{$css-var-prefix}incorrect-highlight);
+    #{$css-var-prefix}shadow: var(#{$css-var-prefix}incorrect-shadow);
+  }
+
+  &.oops {
+    background-color: var(#{$css-var-prefix}exploded);
+
+    &.hazard-flowers {
+      background-color: var(#{$css-var-prefix}wilted);
+    }
+  }
+
+  @for $i from 0 through 9 {
+    &.num-#{$i} {
+      color: var(#{$css-var-prefix}num#{$i});
+    }
+  }
+}
+
 body {
   margin: 0;
   min-height: 100vh;
@@ -279,7 +356,7 @@ main {
       }
 
       .face-prompt-bubble {
-        $bg-color: var(#{$css-var-prefix}highlight);
+        $bg-color: var(#{$css-var-prefix}highlight-hover);
         $border-color: var(#{$css-var-prefix}text);
 
         position: absolute;
@@ -350,6 +427,23 @@ main {
         color: var(#{$css-var-prefix}text);
         font: 9px/1 "Iosevka", "SFMono-Regular", "Cascadia Mono", "Segoe UI Mono", monospace;
         letter-spacing: 0.01em;
+      }
+
+      .face-lives-rail {
+        position: absolute;
+        right: calc(100% + 6px);
+        top: 50%;
+        transform: translateY(-50%);
+        min-height: 18px;
+        display: inline-flex;
+        align-items: center;
+        gap: 2px;
+        pointer-events: none;
+      }
+
+      .face-life-icon {
+        width: 12px;
+        height: 12px;
       }
 
       .face-prompt-choice {
@@ -441,6 +535,21 @@ main {
     }
   }
 
+  @keyframes afk-report-body-marquee {
+    0%,
+    15% {
+      top: 0;
+    }
+    45%,
+    75% {
+      top: calc(-1 * var(--afk-round-report-body-overflow, 0px));
+    }
+    95%,
+    100% {
+      top: 0;
+    }
+  }
+
   table.playable td:not(.locked):hover {
     background-color: var(#{$css-var-prefix}primary-hover);
   }
@@ -478,78 +587,7 @@ main {
   }
 
   td, dialog button {
-    border: 0;
-    padding: 0;
-    height: $size-cell;
-    min-height: $size-cell;
-    max-height: $size-cell;
-    width: $size-cell;
-    min-width: $size-cell;
-    max-width: $size-cell;
-    background-color: var(#{$css-var-prefix}primary);
-    @include outset-border($border-mid);
-    position: relative;
-
-    &:hover:not(.locked) {
-      @include outset-border-hover;
-    }
-
-    &.locked {
-      cursor: default;
-    }
-
-    &.open {
-      background-color: var(#{$css-var-prefix}background);
-      @include pressed-border;
-      &:hover:not(.locked) {
-        @include inset-border-hover;
-      }
-    }
-
-    &.loading {
-      position: relative;
-
-      &::after {
-        $size: $spinner-size;
-        $shade1: var(#{$css-var-prefix}highlight);
-        $shade2: var(#{$css-var-prefix}highlight-hover);
-        $shade3: var(#{$css-var-prefix}primary-hover);
-        content: "";
-        position: absolute;
-        width: $size;
-        height: $size;
-        top: calc(($size-cell - $size - $border-thin) / 2);
-        left: calc(($size-cell - $size - $border-thin) / 2);
-        box-sizing: border-box;
-        border-width: $border-mid;
-        border-style: solid;
-        border-color: $shade3 $shade2 $shade1 transparent;
-        border-radius: 50%;
-        opacity: 0;
-        animation:
-          loading-spin 0.8s linear infinite,
-          loading-show 0s linear 100ms forwards;
-      }
-    }
-
-    &.wrong {
-      background-color: var(#{$css-var-prefix}incorrect);
-      #{$css-var-prefix}highlight: var(#{$css-var-prefix}incorrect-highlight);
-      #{$css-var-prefix}shadow: var(#{$css-var-prefix}incorrect-shadow);
-    }
-
-    &.oops {
-      background-color: var(#{$css-var-prefix}exploded);
-      &.hazard-flowers {
-        background-color: var(#{$css-var-prefix}wilted);
-      }
-    }
-
-    @for $i from 0 through 9 {
-      &.num-#{$i} {
-        color: var(#{$css-var-prefix}num#{$i});
-      }
-    }
+    @include board-cell-chrome($size-cell);
   }
 
   dialog {
@@ -763,17 +801,38 @@ main {
     )
   }
 
+  .afk-round-report-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    display: grid;
+    place-items: center;
+    padding: 4px;
+    margin: 2.9px;
+    overflow: hidden;
+    pointer-events: none;
+    background: repeating-linear-gradient(
+      var(#{$css-var-prefix}overlay-backdrop),
+      var(#{$css-var-prefix}overlay-backdrop) 3.1px,
+      var(#{$css-var-prefix}shadow) 3.1px,
+      var(#{$css-var-prefix}shadow) 3.671px
+    );
+  }
+
   .afk-countdown-guide,
   .afk-countdown-command,
   .afk-countdown-description,
-  .afk-countdown-title {
+  .afk-countdown-title,
+  .afk-round-report-window,
+  .afk-round-report-th,
+  .afk-round-report-td {
     font-family: "Iosevka", "SFMono-Regular", "Cascadia Mono", "Segoe UI Mono", monospace;
     line-height: 1;
     white-space: nowrap;
   }
 
   .afk-countdown-guide {
-    $bg-color: var(#{$css-var-prefix}highlight);
+    $bg-color: var(#{$css-var-prefix}highlight-hover);
     $border-color: var(#{$css-var-prefix}text);
 
     display: grid;
@@ -790,6 +849,245 @@ main {
   .afk-countdown-title {
     font-size: 9px;
     color: var(#{$css-var-prefix}text);
+  }
+
+  .afk-round-report-window {
+    $bg-color: var(#{$css-var-prefix}highlight-hover);
+    $border-color: var(#{$css-var-prefix}text);
+
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    //width: min(calc(100% - 8px), 176px);
+    width: 90%;
+    max-height: 100%;
+    min-height: 0;
+    padding: 5px 6px;
+    box-sizing: border-box;
+    overflow: hidden;
+    color: var(#{$css-var-prefix}text);
+    background-color: $bg-color;
+    border: solid 1px $border-color;
+    border-radius: 3px;
+
+    &.stacked {
+      width: 100%;
+    }
+
+    &.small-board {
+      width: 100%;
+    }
+
+    &.total-only {
+      width: 100%;
+    }
+  }
+
+  .afk-round-report-columns {
+    display: grid;
+    flex: 1 1 auto;
+    width: 100%;
+    min-height: 0;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px;
+
+    .afk-round-report-window.stacked & {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  .afk-round-report-window.total-only > .afk-round-report-group {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
+  .afk-round-report-group {
+    @include inset-border($border-fat);
+    flex: 1 1 auto;
+    min-height: 0;
+    position: relative;
+    overflow: hidden;
+    isolation: isolate;
+    background-color: var(#{$css-var-prefix}background);
+  }
+
+  .afk-round-report-table {
+    display: table;
+    width: 100%;
+    margin: 0;
+    border-collapse: separate;
+    border-spacing: 0;
+    table-layout: fixed;
+  }
+
+  .afk-round-report-colgroup {
+    display: table-column-group;
+  }
+
+  .afk-round-report-name-col {
+    display: table-column;
+    width: auto;
+  }
+
+  .afk-round-report-count-col {
+    display: table-column;
+    width: 2.5ch;
+  }
+
+  .afk-round-report-thead {
+    display: table-header-group;
+    position: relative;
+    z-index: 1;
+    background-color: var(#{$css-var-prefix}background);
+  }
+
+  .afk-round-report-tbody {
+    display: table-row-group;
+    position: relative;
+    top: 0;
+    z-index: 0;
+    will-change: top;
+  }
+
+  .afk-round-report-row {
+    display: table-row;
+  }
+
+  .afk-round-report-th,
+  .afk-round-report-td {
+    display: table-cell;
+    border-style: solid;
+    width: auto;
+    min-width: 0;
+    max-width: none;
+    height: auto;
+    min-height: 0;
+    max-height: none;
+    padding: 2px 4px;
+    background-color: var(#{$css-var-prefix}background);
+    @include pressed-border;
+    color: var(#{$css-var-prefix}text);
+    cursor: default;
+    font-size: 8px;
+    line-height: 1.1;
+    vertical-align: middle;
+    &:first-child {
+      border-left-width: 0;
+    }
+  }
+
+  .afk-round-report-th {
+    font-weight: normal;
+    text-align: center;
+    padding: 1px;
+    position: relative;
+    z-index: 1;
+    border-top-width: 0;
+  }
+
+  .afk-round-report-group.overflowing .afk-round-report-tbody {
+    animation: afk-report-body-marquee var(--afk-round-report-body-duration, 8s)
+      ease-in-out infinite;
+  }
+
+  .afk-round-report-section {
+    padding: 1px;
+    background-color: var(#{$css-var-prefix}primary);
+    letter-spacing: 0.04em;
+    text-align: center;
+    text-transform: uppercase;
+  }
+
+  .afk-round-report-user {
+    text-align: left;
+  }
+
+  .afk-round-report-count-header,
+  .afk-round-report-count {
+    padding-left: 0;
+    padding-right: 0;
+    text-align: center;
+  }
+
+  .afk-round-report-count-header {
+    padding-top: 1px;
+    padding-bottom: 1px;
+    padding-left: 1px;
+    padding-right: 1px;
+    vertical-align: middle;
+  }
+
+  .afk-round-report-user {
+    overflow: hidden;
+  }
+
+  .afk-round-report-user-inner {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .afk-round-report-user-icon {
+    width: 12px;
+    height: 12px;
+    flex: none;
+    position: relative;
+    top: 1px;
+    transform: scale(1.4);
+    transform-origin: center;
+  }
+
+  .afk-round-report-user-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .afk-round-report-empty {
+    text-align: center;
+  }
+
+  .afk-round-report-empty-count {
+    color: transparent;
+  }
+
+  .afk-round-report-header-icon-stack {
+    position: relative;
+    width: 16px;
+    height: 16px;
+    margin: 0 auto;
+    display: block;
+  }
+
+  .afk-round-report-header-window {
+    width: 16px;
+    min-width: 16px;
+    max-width: 16px;
+    height: 16px;
+    min-height: 16px;
+    max-height: 16px;
+    margin: 0 auto;
+    overflow: hidden;
+  }
+
+  .afk-round-report-header-ok {
+    position: absolute;
+    right: 1px;
+    bottom: 1px;
+    width: 8px;
+    height: 8px;
+  }
+
+  .afk-round-report-header-board {
+    margin: 0;
+    border: 0;
+    transform: translate(-16px, -16px);
+  }
+
+  .afk-round-report-header-board td:hover:not(.locked) {
+    border-color: var(#{$css-var-prefix}shadow);
   }
 
   .afk-countdown-rows {

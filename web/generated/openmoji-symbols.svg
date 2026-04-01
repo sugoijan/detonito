@@ -175,6 +175,14 @@
         <polyline class="dtn-openmoji-layer dtn-openmoji-layer-color-foreground dtn-palette-stroke-red-shade" fill="none" points="47.26 35.69 47.26 33.7 51.8 33.7 49 41.77" stroke="var(--dtn-sprite-red-shade)" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/>
       </g>
     </symbol>
+    <symbol id="dtn-icon-heart" viewBox="0 0 72 72">
+      <g class="dtn-openmoji-layer dtn-openmoji-layer-color">
+        <path class="dtn-openmoji-layer dtn-openmoji-layer-color dtn-palette-fill-red-shade" d="m59.5 25c0-6.904-5.596-12.5-12.5-12.5-4.753 0-8.886 2.654-11 6.56-2.114-3.906-6.247-6.56-11-6.56-6.904 0-12.5 5.596-12.5 12.5 0 2.97 1.04 5.694 2.77 7.839l-0.0043 0.0034 20.73 25.7 20.73-25.7-0.0043-0.0034c1.73-2.145 2.77-4.869 2.77-7.839z" fill="var(--dtn-sprite-red-shade)"/>
+      </g>
+      <g class="dtn-openmoji-layer dtn-openmoji-layer-line">
+        <path class="dtn-openmoji-layer dtn-openmoji-layer-line dtn-palette-stroke-ink" d="m59.5 25c0-6.904-5.596-12.5-12.5-12.5-4.753 0-8.886 2.654-11 6.56-2.114-3.906-6.247-6.56-11-6.56-6.904 0-12.5 5.596-12.5 12.5 0 2.97 1.04 5.694 2.77 7.839l-0.0043 0.0034 20.73 25.7 20.73-25.7-0.0043-0.0034c1.73-2.145 2.77-4.869 2.77-7.839z" fill="none" stroke="var(--dtn-sprite-ink)" stroke-linejoin="round" stroke-miterlimit="10" stroke-width="2"/>
+      </g>
+    </symbol>
     <symbol id="dtn-icon-home" viewBox="0 0 72 72">
       <g class="dtn-openmoji-layer dtn-openmoji-layer-color">
         <polygon class="dtn-openmoji-layer dtn-openmoji-layer-color dtn-palette-fill-gray-light" fill="var(--dtn-sprite-gray-light)" points="42.2771 59.8522 42.2638 41.5965 30.0769 41.5439 30.0327 59.8993 16.7565 59.8993 16.0605 34.7399 16.0812 29.0201 36.0216 8.9381 55.9811 28.8969 55.9766 43.3584 55.5109 59.9379 42.2771 59.8522"/>
@@ -662,6 +670,23 @@
         <path class="dtn-openmoji-layer dtn-openmoji-layer-line dtn-palette-stroke-ink" d="M45.8147,45.2268a15.4294,15.4294,0,0,1-19.6294,0" fill="none" stroke="var(--dtn-sprite-ink)" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/>
         <path class="dtn-openmoji-layer dtn-openmoji-layer-line dtn-palette-stroke-ink" d="M31.6941,33.4036a4.7262,4.7262,0,0,0-8.6382,0" fill="none" stroke="var(--dtn-sprite-ink)" stroke-linecap="round" stroke-miterlimit="10" stroke-width="2"/>
         <path class="dtn-openmoji-layer dtn-openmoji-layer-line dtn-palette-stroke-ink" d="M48.9441,33.4036a4.7262,4.7262,0,0,0-8.6382,0" fill="none" stroke="var(--dtn-sprite-ink)" stroke-linecap="round" stroke-miterlimit="10" stroke-width="2"/>
+      </g>
+    </symbol>
+    <symbol id="dtn-icon-woozy" viewBox="0 0 72 72">
+      <g class="dtn-openmoji-layer dtn-openmoji-layer-color">
+        <circle class="dtn-openmoji-layer dtn-openmoji-layer-color dtn-palette-fill-yellow" cx="36" cy="36" fill="var(--dtn-sprite-yellow)" r="23"/>
+      </g>
+      <g class="dtn-openmoji-layer dtn-openmoji-layer-hair"/>
+      <g class="dtn-openmoji-layer dtn-openmoji-layer-skin"/>
+      <g class="dtn-openmoji-layer dtn-openmoji-layer-skin-shadow"/>
+      <g class="dtn-openmoji-layer dtn-openmoji-layer-line">
+        <circle class="dtn-openmoji-layer dtn-openmoji-layer-line dtn-palette-stroke-ink" cx="36" cy="36" fill="none" r="23" stroke="var(--dtn-sprite-ink)" stroke-miterlimit="10" stroke-width="2"/>
+        <path class="dtn-openmoji-layer dtn-openmoji-layer-line dtn-palette-stroke-ink" d="M21.2638,27.6286 c1.1139-1.3946,2.7077-2.3238,4.47-2.6062c1.4909-0.2133,3.011,0.0546,4.3392,0.7648" fill="none" stroke="var(--dtn-sprite-ink)" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/>
+        <path class="dtn-openmoji-layer dtn-openmoji-layer-line dtn-palette-stroke-ink" d="M41,27.0774 c1.3758,1.1372,3.1261,1.7207,4.9091,1.6364c1.503-0.0963,2.9361-0.6696,4.0909-1.6364" fill="none" stroke="var(--dtn-sprite-ink)" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/>
+        <path class="dtn-openmoji-layer dtn-openmoji-layer-line dtn-palette-stroke-ink" d="M24,40.9991 C23.7435,40.795,23.52,49,29,49c5,0,4-8.0009,9-5.6007" fill="none" stroke="var(--dtn-sprite-ink)" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/>
+        <path class="dtn-openmoji-layer dtn-openmoji-layer-line dtn-palette-stroke-ink" d="M49,40.9991 c0,0-0.8892,6.146-5,6.4007c-3.7688,0.2335-5.1617-6.1179-9-4.0005" fill="none" stroke="var(--dtn-sprite-ink)" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/>
+        <path class="dtn-openmoji-layer dtn-openmoji-layer-line dtn-palette-fill-ink" d="M30,33c0,1.6568-1.3448,3-3,3c-1.6553,0-3-1.3433-3-3c0-1.6552,1.3447-3,3-3C28.6552,30,30,31.3448,30,33" fill="var(--dtn-sprite-ink)"/>
+        <path class="dtn-openmoji-layer dtn-openmoji-layer-line dtn-palette-fill-ink" d="M48,31c0,1.6568-1.3447,3-3,3s-3-1.3433-3-3c0-1.6552,1.3447-3,3-3S48,29.3448,48,31" fill="var(--dtn-sprite-ink)"/>
       </g>
     </symbol>
     <symbol id="dtn-icon-yawning" viewBox="0 0 72 72">
