@@ -703,6 +703,7 @@ pub(crate) fn SettingsView(props: &SettingsProps) -> Html {
                     settings.zoom_percent(),
                     Settings::MIN_ZOOM_PERCENT,
                     Settings::MAX_ZOOM_PERCENT,
+                    None,
                     Some("%".into()),
                     Some(menu_icon_button(
                         "zoom-reset",

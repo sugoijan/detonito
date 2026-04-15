@@ -9,7 +9,7 @@ use detonito_protocol::{
     AfkActionKind, AfkActionRequest, AfkActivityKind, AfkActivityRow, AfkBoardSize,
     AfkCellSnapshot, AfkChatConnectionState, AfkClientMessage, AfkCoordSnapshot, AfkLossReason,
     AfkRoundPhase, AfkRoundReportSnapshot, AfkServerMessage, AfkSessionSnapshot,
-    AfkStatsGroupSnapshot, AfkStatusResponse, AfkUserStatsSnapshot,
+    AfkStatsGroupSnapshot, AfkStatusResponse, AfkTimerPreferences, AfkUserStatsSnapshot,
 };
 use gloo::{render::request_animation_frame, timers::callback::Timeout};
 use js_sys::{Reflect, encode_uri_component};
@@ -22,8 +22,9 @@ use web_sys::{
 use yew::prelude::*;
 
 use crate::menu::{
-    menu_copy_row, menu_header_row, menu_icon_button, menu_nav_enter_button, menu_primary_row,
-    menu_section_gap, menu_stepper_row, menu_toggle_row, menu_wide_detail_row,
+    menu_copy_row, menu_header_row, menu_icon_button, menu_nav_enter_button,
+    menu_number_stepper_row_with_suffix, menu_primary_row, menu_section_gap, menu_stepper_row,
+    menu_toggle_row, menu_wide_detail_row,
 };
 use crate::runtime::{AppRoute, app_path, auth_return_to, frontend_runtime_config, websocket_path};
 use crate::sprites::{Glyph, GlyphRun, GlyphSet, Icon, IconCrop, SpriteDefs};
@@ -64,6 +65,8 @@ enum AfkMenuPage {
     Root,
     BoardSize,
     ConfirmBoardSize,
+    Advanced,
+    ConfirmAdvanced,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -152,6 +155,15 @@ const AFK_CONNECTION_NOTICE_GRACE_MS: u32 = 2_000;
 const AFK_WEBSOCKET_RECONNECT_BASE_DELAY_MS: u32 = 1_000;
 const AFK_WEBSOCKET_RECONNECT_MAX_DELAY_MS: u32 = 60_000;
 const AFK_WEBSOCKET_RECONNECT_TICK_MS: u32 = 1_000;
+const AFK_ADVANCED_START_SECS_MIN: u16 = 30;
+const AFK_ADVANCED_START_SECS_MAX: u16 = 300;
+const AFK_ADVANCED_START_SECS_STEP: u32 = 5;
+const AFK_ADVANCED_BONUS_SECS_MIN: u16 = 0;
+const AFK_ADVANCED_BONUS_SECS_MAX: u16 = 10;
+const AFK_ADVANCED_BONUS_SECS_STEP: u32 = 1;
+const AFK_ADVANCED_PUNISHMENT_SECS_MIN: u16 = 0;
+const AFK_ADVANCED_PUNISHMENT_SECS_MAX: u16 = 60;
+const AFK_ADVANCED_PUNISHMENT_SECS_STEP: u32 = 1;
 const AFK_TIMEOUT_DURATION_OPTIONS_SECS: [u32; 12] =
     [1, 5, 10, 15, 30, 45, 60, 90, 120, 180, 240, 300];
 const AFK_DEFAULT_TIMEOUT_DURATION_INDEX: usize = 4;
@@ -289,6 +301,8 @@ struct AfkMenuPreferences {
     board_size: AfkBoardSize,
     timeout_enabled: bool,
     timeout_duration_secs: u32,
+    #[serde(default)]
+    timer_preferences: AfkTimerPreferences,
 }
 
 impl Default for AfkMenuPreferences {
@@ -297,6 +311,7 @@ impl Default for AfkMenuPreferences {
             board_size: AfkBoardSize::Medium,
             timeout_enabled: true,
             timeout_duration_secs: 30,
+            timer_preferences: AfkTimerPreferences::default(),
         }
     }
 }
@@ -319,6 +334,7 @@ fn afk_menu_preferences_from_status(status: &AfkStatusResponse) -> AfkMenuPrefer
         board_size: status.board_size,
         timeout_enabled: status.timeout_enabled,
         timeout_duration_secs: status.timeout_duration_secs,
+        timer_preferences: status.timer_preferences,
     }
 }
 
@@ -348,6 +364,13 @@ enum AfkBoardSizeChangePlan {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AfkTimerPreferencesChangePlan {
+    NoChange,
+    ApplyOnly(AfkTimerPreferences),
+    ConfirmRestart(AfkTimerPreferences),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AfkRootPrimaryAction {
     ResumeAndStartNew,
     Start,
@@ -364,6 +387,43 @@ fn plan_board_size_change(
         AfkBoardSizeChangePlan::ConfirmRestart(next_board_size)
     } else {
         AfkBoardSizeChangePlan::ApplyOnly(next_board_size)
+    }
+}
+
+fn plan_timer_preferences_change(
+    status: &AfkStatusResponse,
+    next_preferences: AfkTimerPreferences,
+) -> AfkTimerPreferencesChangePlan {
+    if status.timer_preferences == next_preferences {
+        AfkTimerPreferencesChangePlan::NoChange
+    } else if status.session.is_some() {
+        AfkTimerPreferencesChangePlan::ConfirmRestart(next_preferences)
+    } else {
+        AfkTimerPreferencesChangePlan::ApplyOnly(next_preferences)
+    }
+}
+
+fn timer_preferences_are_default(timer_preferences: AfkTimerPreferences) -> bool {
+    timer_preferences == AfkTimerPreferences::default()
+}
+
+fn advanced_menu_detail(timer_preferences: AfkTimerPreferences) -> &'static str {
+    if timer_preferences_are_default(timer_preferences) {
+        ""
+    } else {
+        "customized"
+    }
+}
+
+fn advanced_menu_timer_preferences(
+    status: &AfkStatusResponse,
+    pending_preferences: Option<AfkMenuPreferences>,
+    pending_advanced_preferences: Option<AfkTimerPreferences>,
+) -> AfkTimerPreferences {
+    if status.auth.identity.is_some() && status.session.is_some() {
+        pending_advanced_preferences.unwrap_or(status.timer_preferences)
+    } else {
+        displayed_afk_menu_preferences(status, pending_preferences).timer_preferences
     }
 }
 
@@ -541,6 +601,7 @@ fn afk_root_option_rows(
     displayed_preferences: AfkMenuPreferences,
     timeout_controls_disabled: bool,
     open_board_size_menu: &Callback<MouseEvent>,
+    open_advanced_menu: &Callback<MouseEvent>,
     set_timeout_on: &Callback<MouseEvent>,
     set_timeout_off: &Callback<MouseEvent>,
     decrease_timeout_duration: &Callback<MouseEvent>,
@@ -606,6 +667,15 @@ fn afk_root_option_rows(
                     Html::default()
                 }
             }
+            {menu_wide_detail_row(
+                "Advanced",
+                advanced_menu_detail(displayed_preferences.timer_preferences),
+                menu_nav_enter_button(
+                    "Open advanced AFK timer settings",
+                    false,
+                    open_advanced_menu.clone(),
+                ),
+            )}
             {menu_section_gap()}
             {menu_wide_detail_row(
                 "Settings",
@@ -630,6 +700,7 @@ fn afk_root_menu_rows(
     start_new_board: &Callback<MouseEvent>,
     connect_twitch_and_start: &Callback<MouseEvent>,
     open_board_size_menu: &Callback<MouseEvent>,
+    open_advanced_menu: &Callback<MouseEvent>,
     set_timeout_on: &Callback<MouseEvent>,
     set_timeout_off: &Callback<MouseEvent>,
     decrease_timeout_duration: &Callback<MouseEvent>,
@@ -649,6 +720,7 @@ fn afk_root_menu_rows(
                 displayed_preferences,
                 timeout_controls_disabled,
                 open_board_size_menu,
+                open_advanced_menu,
                 set_timeout_on,
                 set_timeout_off,
                 decrease_timeout_duration,
@@ -740,6 +812,29 @@ fn next_timeout_duration_secs(current: u32) -> u32 {
     let index = timeout_duration_index(current);
     let next_index = (index + 1).min(AFK_TIMEOUT_DURATION_OPTIONS_SECS.len() - 1);
     AFK_TIMEOUT_DURATION_OPTIONS_SECS[next_index]
+}
+
+fn clamp_advanced_start_secs(value: u16) -> u32 {
+    u32::from(value.clamp(AFK_ADVANCED_START_SECS_MIN, AFK_ADVANCED_START_SECS_MAX))
+}
+
+fn clamp_advanced_bonus_secs(value: u16) -> u32 {
+    u32::from(value.clamp(AFK_ADVANCED_BONUS_SECS_MIN, AFK_ADVANCED_BONUS_SECS_MAX))
+}
+
+fn clamp_advanced_punishment_secs(value: u16) -> u32 {
+    u32::from(value.clamp(
+        AFK_ADVANCED_PUNISHMENT_SECS_MIN,
+        AFK_ADVANCED_PUNISHMENT_SECS_MAX,
+    ))
+}
+
+fn previous_advanced_value(current: u32, min: u16, step: u32) -> u32 {
+    current.saturating_sub(step).max(u32::from(min))
+}
+
+fn next_advanced_value(current: u32, max: u16, step: u32) -> u32 {
+    current.saturating_add(step).min(u32::from(max))
 }
 
 fn win_prompt_message(session: &AfkSessionSnapshot) -> AttrValue {
@@ -1887,6 +1982,7 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
     });
     let menu_page = use_state_eq(|| AfkMenuPage::Root);
     let pending_board_size = use_state_eq(|| None::<AfkBoardSize>);
+    let pending_advanced_preferences = use_state_eq(|| None::<AfkTimerPreferences>);
     let pre_auth_preferences = use_state_eq(|| {
         Option::<AfkConnectStartDraft>::local_or_default().map(|draft| draft.preferences)
     });
@@ -2712,11 +2808,13 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
     let go_to_main_menu = {
         let manual_face_prompt = manual_face_prompt.clone();
         let menu_page = menu_page.clone();
+        let pending_advanced_preferences = pending_advanced_preferences.clone();
         let clear_face_notification = clear_face_notification.clone();
         let on_menu = props.on_menu.clone();
         Callback::from(move |_: MouseEvent| {
             clear_face_notification();
             manual_face_prompt.set(None);
+            pending_advanced_preferences.set(None);
             menu_page.set(AfkMenuPage::Root);
             on_menu.emit(());
         })
@@ -2732,14 +2830,49 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
         Callback::from(move |_| menu_page.set(AfkMenuPage::Root))
     };
 
+    let open_advanced_menu = {
+        let menu_page = menu_page.clone();
+        Callback::from(move |_| menu_page.set(AfkMenuPage::Advanced))
+    };
+
+    let close_advanced_menu = {
+        let menu_page = menu_page.clone();
+        let status = status.clone();
+        let pre_auth_preferences = pre_auth_preferences.clone();
+        let pending_advanced_preferences = pending_advanced_preferences.clone();
+        Callback::from(move |_| {
+            let LoadState::Ready(current_status) = &*status else {
+                pending_advanced_preferences.set(None);
+                menu_page.set(AfkMenuPage::Root);
+                return;
+            };
+            let next_preferences = advanced_menu_timer_preferences(
+                current_status,
+                *pre_auth_preferences,
+                *pending_advanced_preferences,
+            );
+            if matches!(
+                plan_timer_preferences_change(current_status, next_preferences),
+                AfkTimerPreferencesChangePlan::ConfirmRestart(_)
+            ) {
+                menu_page.set(AfkMenuPage::ConfirmAdvanced);
+            } else {
+                pending_advanced_preferences.set(None);
+                menu_page.set(AfkMenuPage::Root);
+            }
+        })
+    };
+
     let resume_board = {
         let screen = screen.clone();
         let menu_page = menu_page.clone();
+        let pending_advanced_preferences = pending_advanced_preferences.clone();
         let manual_face_prompt = manual_face_prompt.clone();
         let status = status.clone();
         let last_error = last_error.clone();
         Callback::from(move |_| {
             manual_face_prompt.set(None);
+            pending_advanced_preferences.set(None);
             menu_page.set(AfkMenuPage::Root);
             let should_resume = matches!(
                 &*status,
@@ -2776,11 +2909,13 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
         let status = status.clone();
         let screen = screen.clone();
         let menu_page = menu_page.clone();
+        let pending_advanced_preferences = pending_advanced_preferences.clone();
         let manual_face_prompt = manual_face_prompt.clone();
         let last_error = last_error.clone();
         let start_transition_in_progress = start_transition_in_progress.clone();
         Callback::from(move |_| {
             manual_face_prompt.set(None);
+            pending_advanced_preferences.set(None);
             menu_page.set(AfkMenuPage::Root);
             start_transition_in_progress.set(true);
             screen.set(AfkScreen::Board);
@@ -2814,9 +2949,11 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
         let status = status.clone();
         let screen = screen.clone();
         let menu_page = menu_page.clone();
+        let pending_advanced_preferences = pending_advanced_preferences.clone();
         let manual_face_prompt = manual_face_prompt.clone();
         Callback::from(move |_| {
             manual_face_prompt.set(None);
+            pending_advanced_preferences.set(None);
             screen.set(AfkScreen::Menu);
             menu_page.set(AfkMenuPage::Root);
             let status = status.clone();
@@ -2964,6 +3101,318 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                 )
                 .await;
                 match size_response {
+                    Ok(_) => {
+                        last_error.set(None);
+                        start_transition_in_progress.set(true);
+                        screen.set(AfkScreen::Board);
+                        match post_start_status(HazardVariant::local_or_default()).await {
+                            Ok(response) => {
+                                handle_started_status(
+                                    &status,
+                                    &screen,
+                                    &last_error,
+                                    &start_transition_in_progress,
+                                    response,
+                                );
+                            }
+                            Err(error) => {
+                                start_transition_in_progress.set(false);
+                                screen.set(AfkScreen::Menu);
+                                status.set(LoadState::Error(error));
+                            }
+                        }
+                    }
+                    Err(error) => status.set(LoadState::Error(error)),
+                }
+            });
+        })
+    };
+
+    let set_advanced_timer_preferences = {
+        let status = status.clone();
+        let pre_auth_preferences = pre_auth_preferences.clone();
+        let pending_advanced_preferences = pending_advanced_preferences.clone();
+        Rc::new(move |next_timer_preferences: AfkTimerPreferences| {
+            let LoadState::Ready(current_status) = &*status else {
+                return;
+            };
+            if current_status.auth.identity.is_none() {
+                let next_preferences = AfkMenuPreferences {
+                    timer_preferences: next_timer_preferences,
+                    ..displayed_afk_menu_preferences(current_status, *pre_auth_preferences)
+                };
+                pre_auth_preferences.set(Some(next_preferences));
+                persist_afk_connect_start_draft(Some(next_preferences));
+                return;
+            }
+
+            match plan_timer_preferences_change(current_status, next_timer_preferences) {
+                AfkTimerPreferencesChangePlan::NoChange => {
+                    pending_advanced_preferences.set(None);
+                }
+                AfkTimerPreferencesChangePlan::ApplyOnly(next_timer_preferences) => {
+                    pending_advanced_preferences.set(None);
+                    let status = status.clone();
+                    spawn_local(async move {
+                        match post_timer_preferences_status(next_timer_preferences).await {
+                            Ok(response) => status.set(LoadState::Ready(response)),
+                            Err(error) => status.set(LoadState::Error(error)),
+                        }
+                    });
+                }
+                AfkTimerPreferencesChangePlan::ConfirmRestart(next_timer_preferences) => {
+                    pending_advanced_preferences.set(Some(next_timer_preferences));
+                }
+            }
+        })
+    };
+
+    let decrease_advanced_start_secs = {
+        let status = status.clone();
+        let pre_auth_preferences = pre_auth_preferences.clone();
+        let pending_advanced_preferences = pending_advanced_preferences.clone();
+        let set_advanced_timer_preferences = set_advanced_timer_preferences.clone();
+        Callback::from(move |()| {
+            let LoadState::Ready(current_status) = &*status else {
+                return;
+            };
+            let current_preferences = advanced_menu_timer_preferences(
+                current_status,
+                *pre_auth_preferences,
+                *pending_advanced_preferences,
+            );
+            set_advanced_timer_preferences(AfkTimerPreferences {
+                start_secs: previous_advanced_value(
+                    current_preferences.start_secs,
+                    AFK_ADVANCED_START_SECS_MIN,
+                    AFK_ADVANCED_START_SECS_STEP,
+                ),
+                ..current_preferences
+            });
+        })
+    };
+
+    let increase_advanced_start_secs = {
+        let status = status.clone();
+        let pre_auth_preferences = pre_auth_preferences.clone();
+        let pending_advanced_preferences = pending_advanced_preferences.clone();
+        let set_advanced_timer_preferences = set_advanced_timer_preferences.clone();
+        Callback::from(move |()| {
+            let LoadState::Ready(current_status) = &*status else {
+                return;
+            };
+            let current_preferences = advanced_menu_timer_preferences(
+                current_status,
+                *pre_auth_preferences,
+                *pending_advanced_preferences,
+            );
+            set_advanced_timer_preferences(AfkTimerPreferences {
+                start_secs: next_advanced_value(
+                    current_preferences.start_secs,
+                    AFK_ADVANCED_START_SECS_MAX,
+                    AFK_ADVANCED_START_SECS_STEP,
+                ),
+                ..current_preferences
+            });
+        })
+    };
+
+    let set_advanced_start_secs = {
+        let status = status.clone();
+        let pre_auth_preferences = pre_auth_preferences.clone();
+        let pending_advanced_preferences = pending_advanced_preferences.clone();
+        let set_advanced_timer_preferences = set_advanced_timer_preferences.clone();
+        Callback::from(move |value: u16| {
+            let LoadState::Ready(current_status) = &*status else {
+                return;
+            };
+            let current_preferences = advanced_menu_timer_preferences(
+                current_status,
+                *pre_auth_preferences,
+                *pending_advanced_preferences,
+            );
+            set_advanced_timer_preferences(AfkTimerPreferences {
+                start_secs: clamp_advanced_start_secs(value),
+                ..current_preferences
+            });
+        })
+    };
+
+    let decrease_advanced_bonus_secs = {
+        let status = status.clone();
+        let pre_auth_preferences = pre_auth_preferences.clone();
+        let pending_advanced_preferences = pending_advanced_preferences.clone();
+        let set_advanced_timer_preferences = set_advanced_timer_preferences.clone();
+        Callback::from(move |()| {
+            let LoadState::Ready(current_status) = &*status else {
+                return;
+            };
+            let current_preferences = advanced_menu_timer_preferences(
+                current_status,
+                *pre_auth_preferences,
+                *pending_advanced_preferences,
+            );
+            set_advanced_timer_preferences(AfkTimerPreferences {
+                safe_reveal_bonus_secs: previous_advanced_value(
+                    current_preferences.safe_reveal_bonus_secs,
+                    AFK_ADVANCED_BONUS_SECS_MIN,
+                    AFK_ADVANCED_BONUS_SECS_STEP,
+                ),
+                ..current_preferences
+            });
+        })
+    };
+
+    let increase_advanced_bonus_secs = {
+        let status = status.clone();
+        let pre_auth_preferences = pre_auth_preferences.clone();
+        let pending_advanced_preferences = pending_advanced_preferences.clone();
+        let set_advanced_timer_preferences = set_advanced_timer_preferences.clone();
+        Callback::from(move |()| {
+            let LoadState::Ready(current_status) = &*status else {
+                return;
+            };
+            let current_preferences = advanced_menu_timer_preferences(
+                current_status,
+                *pre_auth_preferences,
+                *pending_advanced_preferences,
+            );
+            set_advanced_timer_preferences(AfkTimerPreferences {
+                safe_reveal_bonus_secs: next_advanced_value(
+                    current_preferences.safe_reveal_bonus_secs,
+                    AFK_ADVANCED_BONUS_SECS_MAX,
+                    AFK_ADVANCED_BONUS_SECS_STEP,
+                ),
+                ..current_preferences
+            });
+        })
+    };
+
+    let set_advanced_bonus_secs = {
+        let status = status.clone();
+        let pre_auth_preferences = pre_auth_preferences.clone();
+        let pending_advanced_preferences = pending_advanced_preferences.clone();
+        let set_advanced_timer_preferences = set_advanced_timer_preferences.clone();
+        Callback::from(move |value: u16| {
+            let LoadState::Ready(current_status) = &*status else {
+                return;
+            };
+            let current_preferences = advanced_menu_timer_preferences(
+                current_status,
+                *pre_auth_preferences,
+                *pending_advanced_preferences,
+            );
+            set_advanced_timer_preferences(AfkTimerPreferences {
+                safe_reveal_bonus_secs: clamp_advanced_bonus_secs(value),
+                ..current_preferences
+            });
+        })
+    };
+
+    let decrease_advanced_punishment_secs = {
+        let status = status.clone();
+        let pre_auth_preferences = pre_auth_preferences.clone();
+        let pending_advanced_preferences = pending_advanced_preferences.clone();
+        let set_advanced_timer_preferences = set_advanced_timer_preferences.clone();
+        Callback::from(move |()| {
+            let LoadState::Ready(current_status) = &*status else {
+                return;
+            };
+            let current_preferences = advanced_menu_timer_preferences(
+                current_status,
+                *pre_auth_preferences,
+                *pending_advanced_preferences,
+            );
+            set_advanced_timer_preferences(AfkTimerPreferences {
+                mine_penalty_secs: previous_advanced_value(
+                    current_preferences.mine_penalty_secs,
+                    AFK_ADVANCED_PUNISHMENT_SECS_MIN,
+                    AFK_ADVANCED_PUNISHMENT_SECS_STEP,
+                ),
+                ..current_preferences
+            });
+        })
+    };
+
+    let increase_advanced_punishment_secs = {
+        let status = status.clone();
+        let pre_auth_preferences = pre_auth_preferences.clone();
+        let pending_advanced_preferences = pending_advanced_preferences.clone();
+        let set_advanced_timer_preferences = set_advanced_timer_preferences.clone();
+        Callback::from(move |()| {
+            let LoadState::Ready(current_status) = &*status else {
+                return;
+            };
+            let current_preferences = advanced_menu_timer_preferences(
+                current_status,
+                *pre_auth_preferences,
+                *pending_advanced_preferences,
+            );
+            set_advanced_timer_preferences(AfkTimerPreferences {
+                mine_penalty_secs: next_advanced_value(
+                    current_preferences.mine_penalty_secs,
+                    AFK_ADVANCED_PUNISHMENT_SECS_MAX,
+                    AFK_ADVANCED_PUNISHMENT_SECS_STEP,
+                ),
+                ..current_preferences
+            });
+        })
+    };
+
+    let set_advanced_punishment_secs = {
+        let status = status.clone();
+        let pre_auth_preferences = pre_auth_preferences.clone();
+        let pending_advanced_preferences = pending_advanced_preferences.clone();
+        let set_advanced_timer_preferences = set_advanced_timer_preferences.clone();
+        Callback::from(move |value: u16| {
+            let LoadState::Ready(current_status) = &*status else {
+                return;
+            };
+            let current_preferences = advanced_menu_timer_preferences(
+                current_status,
+                *pre_auth_preferences,
+                *pending_advanced_preferences,
+            );
+            set_advanced_timer_preferences(AfkTimerPreferences {
+                mine_penalty_secs: clamp_advanced_punishment_secs(value),
+                ..current_preferences
+            });
+        })
+    };
+
+    let reset_advanced_timer_preferences = {
+        let set_advanced_timer_preferences = set_advanced_timer_preferences.clone();
+        Callback::from(move |_| set_advanced_timer_preferences(AfkTimerPreferences::default()))
+    };
+
+    let cancel_advanced_restart = {
+        let menu_page = menu_page.clone();
+        let pending_advanced_preferences = pending_advanced_preferences.clone();
+        Callback::from(move |_| {
+            pending_advanced_preferences.set(None);
+            menu_page.set(AfkMenuPage::Advanced);
+        })
+    };
+
+    let confirm_advanced_restart = {
+        let status = status.clone();
+        let screen = screen.clone();
+        let menu_page = menu_page.clone();
+        let pending_advanced_preferences = pending_advanced_preferences.clone();
+        let last_error = last_error.clone();
+        let start_transition_in_progress = start_transition_in_progress.clone();
+        Callback::from(move |_| {
+            let Some(next_timer_preferences) = *pending_advanced_preferences else {
+                return;
+            };
+            pending_advanced_preferences.set(None);
+            menu_page.set(AfkMenuPage::Root);
+            let status = status.clone();
+            let screen = screen.clone();
+            let last_error = last_error.clone();
+            let start_transition_in_progress = start_transition_in_progress.clone();
+            spawn_local(async move {
+                match post_timer_preferences_status(next_timer_preferences).await {
                     Ok(_) => {
                         last_error.set(None);
                         start_transition_in_progress.set(true);
@@ -3416,6 +3865,68 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                                 )}
                             </>
                         }
+                    } else if matches!(*menu_page, AfkMenuPage::Advanced) {
+                        let timer_preferences = advanced_menu_timer_preferences(
+                            status,
+                            *pre_auth_preferences,
+                            *pending_advanced_preferences,
+                        );
+                        html! {
+                            <>
+                                {menu_section_gap()}
+                                {afk_menu_notice_block(
+                                    auth_error_html.clone(),
+                                    menu_notice.clone(),
+                                )}
+                                {menu_number_stepper_row_with_suffix(
+                                    "Initial time",
+                                    timer_preferences.start_secs as u16,
+                                    AFK_ADVANCED_START_SECS_MIN,
+                                    AFK_ADVANCED_START_SECS_MAX,
+                                    None,
+                                    Some("s".into()),
+                                    None,
+                                    decrease_advanced_start_secs.clone(),
+                                    set_advanced_start_secs.clone(),
+                                    increase_advanced_start_secs.clone(),
+                                )}
+                                {menu_number_stepper_row_with_suffix(
+                                    "Open cell bonus",
+                                    timer_preferences.safe_reveal_bonus_secs as u16,
+                                    AFK_ADVANCED_BONUS_SECS_MIN,
+                                    AFK_ADVANCED_BONUS_SECS_MAX,
+                                    Some("+".into()),
+                                    Some("s".into()),
+                                    None,
+                                    decrease_advanced_bonus_secs.clone(),
+                                    set_advanced_bonus_secs.clone(),
+                                    increase_advanced_bonus_secs.clone(),
+                                )}
+                                {menu_number_stepper_row_with_suffix(
+                                    "Mistake penalty",
+                                    timer_preferences.mine_penalty_secs as u16,
+                                    AFK_ADVANCED_PUNISHMENT_SECS_MIN,
+                                    AFK_ADVANCED_PUNISHMENT_SECS_MAX,
+                                    Some("-".into()),
+                                    Some("s".into()),
+                                    None,
+                                    decrease_advanced_punishment_secs.clone(),
+                                    set_advanced_punishment_secs.clone(),
+                                    increase_advanced_punishment_secs.clone(),
+                                )}
+                                {menu_section_gap()}
+                                {menu_primary_row(
+                                    "Reset",
+                                    menu_icon_button(
+                                        "broom",
+                                        "Reset advanced AFK timer settings",
+                                        false,
+                                        timer_preferences_are_default(timer_preferences),
+                                        reset_advanced_timer_preferences.clone(),
+                                    ),
+                                )}
+                            </>
+                        }
                     } else if matches!(*menu_page, AfkMenuPage::ConfirmBoardSize)
                         && status.auth.identity.is_some()
                     {
@@ -3451,6 +3962,43 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                                 {menu_section_gap()}
                             </>
                         }
+                    } else if matches!(*menu_page, AfkMenuPage::ConfirmAdvanced)
+                        && status.auth.identity.is_some()
+                        && status.session.is_some()
+                    {
+                        let pending_preferences =
+                            (*pending_advanced_preferences).unwrap_or(status.timer_preferences);
+                        html! {
+                            <>
+                                {menu_section_gap()}
+                                {menu_copy_row("Changing advanced settings starts a new AFK round immediately.")}
+                                {menu_copy_row(format!("Initial time: {}s", pending_preferences.start_secs))}
+                                {menu_copy_row(format!("Open cell bonus: +{}s", pending_preferences.safe_reveal_bonus_secs))}
+                                {menu_copy_row(format!("Mistake punishment: -{}s", pending_preferences.mine_penalty_secs))}
+                                {menu_section_gap()}
+                                {menu_primary_row(
+                                    "Start New Round",
+                                    menu_icon_button(
+                                        "ok",
+                                        "Apply advanced settings and start a new AFK round",
+                                        false,
+                                        false,
+                                        confirm_advanced_restart.clone(),
+                                    ),
+                                )}
+                                {menu_primary_row(
+                                    "Keep Current Round",
+                                    menu_icon_button(
+                                        "cancel",
+                                        "Discard the pending advanced settings",
+                                        false,
+                                        false,
+                                        cancel_advanced_restart.clone(),
+                                    ),
+                                )}
+                                {menu_section_gap()}
+                            </>
+                        }
                     } else {
                         let displayed_preferences =
                             displayed_afk_menu_preferences(status, *pre_auth_preferences);
@@ -3472,6 +4020,7 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                                     &start_new_board,
                                     &connect_twitch_and_start,
                                     &open_board_size_menu,
+                                    &open_advanced_menu,
                                     &set_timeout_on,
                                     &set_timeout_off,
                                     &decrease_timeout_duration,
@@ -3523,10 +4072,18 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                                         && matches!(&*status, LoadState::Ready(_))
                                     {
                                         menu_header_row("Board Size", close_board_size_menu)
+                                    } else if matches!(*menu_page, AfkMenuPage::Advanced)
+                                        && matches!(&*status, LoadState::Ready(_))
+                                    {
+                                        menu_header_row("Advanced", close_advanced_menu)
                                     } else if matches!(*menu_page, AfkMenuPage::ConfirmBoardSize)
                                         && matches!(&*status, LoadState::Ready(status) if status.auth.identity.is_some())
                                     {
                                         menu_header_row("Start New Round", cancel_board_size_restart)
+                                    } else if matches!(*menu_page, AfkMenuPage::ConfirmAdvanced)
+                                        && matches!(&*status, LoadState::Ready(status) if status.auth.identity.is_some() && status.session.is_some())
+                                    {
+                                        menu_header_row("Start New Round", cancel_advanced_restart)
                                     } else {
                                         menu_header_row("AFK Mode", go_to_main_menu)
                                     }
@@ -3705,10 +4262,25 @@ async fn post_board_action(request_body: AfkActionRequest) -> Result<AfkStatusRe
     post_json_status("/api/afk/action", &request_body).await
 }
 
+async fn post_timer_preferences_status(
+    timer_preferences: AfkTimerPreferences,
+) -> Result<AfkStatusResponse, String> {
+    post_json_status(
+        "/api/afk/timer-profile",
+        &serde_json::json!({
+            "start_secs": timer_preferences.start_secs,
+            "safe_reveal_bonus_secs": timer_preferences.safe_reveal_bonus_secs,
+            "mine_penalty_secs": timer_preferences.mine_penalty_secs,
+        }),
+    )
+    .await
+}
+
 async fn apply_preferences_and_start(
     preferences: AfkMenuPreferences,
     hazard_variant: HazardVariant,
 ) -> Result<AfkStatusResponse, String> {
+    post_timer_preferences_status(preferences.timer_preferences).await?;
     post_json_status(
         "/api/afk/timeout",
         &serde_json::json!({
@@ -3803,6 +4375,7 @@ mod tests {
         AfkIdentity, AfkLossReason, AfkRoundReportSnapshot, AfkStatsGroupSnapshot,
         AfkTimerProfileSnapshot, AfkUserStatsSnapshot, FrontendRuntimeConfig, StreamerAuthStatus,
     };
+    use serde_json::json;
 
     fn active_test_session(last_user_activity_at_ms: i64) -> AfkSessionSnapshot {
         AfkSessionSnapshot {
@@ -3817,14 +4390,14 @@ mod tests {
             },
             labeled_cells: Vec::new(),
             timer_profile: AfkTimerProfileSnapshot {
-                start_secs: 120,
-                safe_reveal_bonus_secs: 1,
-                mine_penalty_secs: 15,
+                start_secs: 180,
+                safe_reveal_bonus_secs: 3,
+                mine_penalty_secs: 10,
                 start_delay_secs: 5,
                 win_continue_delay_secs: 30,
                 loss_continue_delay_secs: 60,
             },
-            timer_remaining_secs: 120,
+            timer_remaining_secs: 180,
             phase_countdown_secs: None,
             current_level: 3,
             lives_remaining: 3,
@@ -3874,6 +4447,7 @@ mod tests {
             auth: StreamerAuthStatus::default(),
             chat_connection: AfkChatConnectionState::Idle,
             chat_error: None,
+            timer_preferences: AfkTimerPreferences::default(),
             timeout_supported: true,
             timeout_enabled: true,
             timeout_duration_secs: 30,
@@ -3944,6 +4518,7 @@ mod tests {
             auth: StreamerAuthStatus::default(),
             chat_connection: AfkChatConnectionState::Idle,
             chat_error: None,
+            timer_preferences: AfkTimerPreferences::default(),
             timeout_supported: true,
             timeout_enabled: true,
             timeout_duration_secs: 30,
@@ -3986,6 +4561,36 @@ mod tests {
         assert_eq!(
             plan_board_size_change(&status, AfkBoardSize::Large),
             AfkBoardSizeChangePlan::ApplyOnly(AfkBoardSize::Large)
+        );
+    }
+
+    #[test]
+    fn timer_preferences_change_requires_confirmation_when_run_is_active() {
+        let status = base_status(Some(active_test_session(1_000)));
+        let next_preferences = AfkTimerPreferences {
+            start_secs: 180,
+            safe_reveal_bonus_secs: 3,
+            mine_penalty_secs: 20,
+        };
+
+        assert_eq!(
+            plan_timer_preferences_change(&status, next_preferences),
+            AfkTimerPreferencesChangePlan::ConfirmRestart(next_preferences)
+        );
+    }
+
+    #[test]
+    fn timer_preferences_change_applies_immediately_when_no_run_exists() {
+        let status = base_status(None);
+        let next_preferences = AfkTimerPreferences {
+            start_secs: 180,
+            safe_reveal_bonus_secs: 3,
+            mine_penalty_secs: 20,
+        };
+
+        assert_eq!(
+            plan_timer_preferences_change(&status, next_preferences),
+            AfkTimerPreferencesChangePlan::ApplyOnly(next_preferences)
         );
     }
 
@@ -4083,13 +4688,76 @@ mod tests {
                     board_size: AfkBoardSize::Large,
                     timeout_enabled: false,
                     timeout_duration_secs: 90,
+                    timer_preferences: AfkTimerPreferences {
+                        start_secs: 200,
+                        safe_reveal_bonus_secs: 3,
+                        mine_penalty_secs: 12,
+                    },
                 }),
             ),
             AfkMenuPreferences {
                 board_size: AfkBoardSize::Large,
                 timeout_enabled: false,
                 timeout_duration_secs: 90,
+                timer_preferences: AfkTimerPreferences {
+                    start_secs: 200,
+                    safe_reveal_bonus_secs: 3,
+                    mine_penalty_secs: 12,
+                },
             }
+        );
+    }
+
+    #[test]
+    fn connect_start_draft_deserialization_defaults_timer_preferences() {
+        let draft: AfkConnectStartDraft = serde_json::from_value(json!({
+            "preferences": {
+                "board_size": "large",
+                "timeout_enabled": false,
+                "timeout_duration_secs": 90
+            }
+        }))
+        .expect("draft should deserialize");
+
+        assert_eq!(draft.preferences.board_size, AfkBoardSize::Large);
+        assert!(!draft.preferences.timeout_enabled);
+        assert_eq!(draft.preferences.timeout_duration_secs, 90);
+        assert_eq!(
+            draft.preferences.timer_preferences,
+            AfkTimerPreferences::default()
+        );
+    }
+
+    #[test]
+    fn advanced_detail_is_empty_for_defaults_and_customized_for_changes() {
+        assert_eq!(advanced_menu_detail(AfkTimerPreferences::default()), "");
+        assert_eq!(
+            advanced_menu_detail(AfkTimerPreferences {
+                start_secs: 185,
+                ..AfkTimerPreferences::default()
+            }),
+            "customized"
+        );
+    }
+
+    #[test]
+    fn advanced_menu_uses_pending_preferences_for_active_session() {
+        let status = AfkStatusResponse {
+            auth: StreamerAuthStatus {
+                identity: Some(AfkIdentity::new("1", "streamer", "Streamer")),
+                ..StreamerAuthStatus::default()
+            },
+            ..base_status(Some(active_test_session(1_000)))
+        };
+        let pending_preferences = AfkTimerPreferences {
+            start_secs: 180,
+            safe_reveal_bonus_secs: 3,
+            mine_penalty_secs: 20,
+        };
+
+        assert_eq!(
+            advanced_menu_timer_preferences(&status, None, Some(pending_preferences)),
+            pending_preferences
         );
     }
 
@@ -4416,14 +5084,14 @@ mod tests {
             },
             labeled_cells: vec![false, false, true],
             timer_profile: AfkTimerProfileSnapshot {
-                start_secs: 120,
-                safe_reveal_bonus_secs: 1,
-                mine_penalty_secs: 15,
+                start_secs: 180,
+                safe_reveal_bonus_secs: 3,
+                mine_penalty_secs: 10,
                 start_delay_secs: 5,
                 win_continue_delay_secs: 30,
                 loss_continue_delay_secs: 60,
             },
-            timer_remaining_secs: 120,
+            timer_remaining_secs: 180,
             phase_countdown_secs: None,
             current_level: 1,
             lives_remaining: 3,
@@ -4489,14 +5157,14 @@ mod tests {
             },
             labeled_cells: Vec::new(),
             timer_profile: AfkTimerProfileSnapshot {
-                start_secs: 120,
-                safe_reveal_bonus_secs: 1,
-                mine_penalty_secs: 15,
+                start_secs: 180,
+                safe_reveal_bonus_secs: 3,
+                mine_penalty_secs: 10,
                 start_delay_secs: 5,
                 win_continue_delay_secs: 30,
                 loss_continue_delay_secs: 60,
             },
-            timer_remaining_secs: 120,
+            timer_remaining_secs: 180,
             phase_countdown_secs: None,
             current_level: 1,
             lives_remaining: 3,
@@ -4547,14 +5215,14 @@ mod tests {
             },
             labeled_cells: Vec::new(),
             timer_profile: AfkTimerProfileSnapshot {
-                start_secs: 120,
-                safe_reveal_bonus_secs: 1,
-                mine_penalty_secs: 15,
+                start_secs: 180,
+                safe_reveal_bonus_secs: 3,
+                mine_penalty_secs: 10,
                 start_delay_secs: 5,
                 win_continue_delay_secs: 30,
                 loss_continue_delay_secs: 60,
             },
-            timer_remaining_secs: 120,
+            timer_remaining_secs: 180,
             phase_countdown_secs: None,
             current_level: 1,
             lives_remaining: 3,
@@ -4624,14 +5292,14 @@ mod tests {
             },
             labeled_cells: Vec::new(),
             timer_profile: AfkTimerProfileSnapshot {
-                start_secs: 120,
-                safe_reveal_bonus_secs: 1,
-                mine_penalty_secs: 15,
+                start_secs: 180,
+                safe_reveal_bonus_secs: 3,
+                mine_penalty_secs: 10,
                 start_delay_secs: 5,
                 win_continue_delay_secs: 30,
                 loss_continue_delay_secs: 60,
             },
-            timer_remaining_secs: 120,
+            timer_remaining_secs: 180,
             phase_countdown_secs: None,
             current_level: 1,
             lives_remaining: 3,
@@ -4720,6 +5388,7 @@ mod tests {
             auth: StreamerAuthStatus::default(),
             chat_connection: AfkChatConnectionState::Idle,
             chat_error: None,
+            timer_preferences: AfkTimerPreferences::default(),
             timeout_supported: true,
             timeout_enabled: true,
             timeout_duration_secs: 30,
@@ -4738,9 +5407,9 @@ mod tests {
                 },
                 labeled_cells: Vec::new(),
                 timer_profile: AfkTimerProfileSnapshot {
-                    start_secs: 120,
-                    safe_reveal_bonus_secs: 1,
-                    mine_penalty_secs: 15,
+                    start_secs: 180,
+                    safe_reveal_bonus_secs: 3,
+                    mine_penalty_secs: 10,
                     start_delay_secs: 5,
                     win_continue_delay_secs: 30,
                     loss_continue_delay_secs: 60,
@@ -4791,9 +5460,9 @@ mod tests {
             },
             labeled_cells: Vec::new(),
             timer_profile: AfkTimerProfileSnapshot {
-                start_secs: 120,
-                safe_reveal_bonus_secs: 1,
-                mine_penalty_secs: 15,
+                start_secs: 180,
+                safe_reveal_bonus_secs: 3,
+                mine_penalty_secs: 10,
                 start_delay_secs: 5,
                 win_continue_delay_secs: 30,
                 loss_continue_delay_secs: 60,
@@ -4833,9 +5502,9 @@ mod tests {
             },
             labeled_cells: Vec::new(),
             timer_profile: AfkTimerProfileSnapshot {
-                start_secs: 120,
-                safe_reveal_bonus_secs: 1,
-                mine_penalty_secs: 15,
+                start_secs: 180,
+                safe_reveal_bonus_secs: 3,
+                mine_penalty_secs: 10,
                 start_delay_secs: 5,
                 win_continue_delay_secs: 30,
                 loss_continue_delay_secs: 60,
@@ -5182,9 +5851,9 @@ mod tests {
             },
             labeled_cells: Vec::new(),
             timer_profile: AfkTimerProfileSnapshot {
-                start_secs: 120,
-                safe_reveal_bonus_secs: 1,
-                mine_penalty_secs: 15,
+                start_secs: 180,
+                safe_reveal_bonus_secs: 3,
+                mine_penalty_secs: 10,
                 start_delay_secs: 5,
                 win_continue_delay_secs: 30,
                 loss_continue_delay_secs: 60,
@@ -5276,9 +5945,9 @@ mod tests {
             },
             labeled_cells: Vec::new(),
             timer_profile: AfkTimerProfileSnapshot {
-                start_secs: 120,
-                safe_reveal_bonus_secs: 1,
-                mine_penalty_secs: 15,
+                start_secs: 180,
+                safe_reveal_bonus_secs: 3,
+                mine_penalty_secs: 10,
                 start_delay_secs: 5,
                 win_continue_delay_secs: 30,
                 loss_continue_delay_secs: 60,
@@ -5319,9 +5988,9 @@ mod tests {
             },
             labeled_cells: Vec::new(),
             timer_profile: AfkTimerProfileSnapshot {
-                start_secs: 120,
-                safe_reveal_bonus_secs: 1,
-                mine_penalty_secs: 15,
+                start_secs: 180,
+                safe_reveal_bonus_secs: 3,
+                mine_penalty_secs: 10,
                 start_delay_secs: 5,
                 win_continue_delay_secs: 30,
                 loss_continue_delay_secs: 60,
@@ -5357,6 +6026,7 @@ mod tests {
                 auth: StreamerAuthStatus::default(),
                 chat_connection: AfkChatConnectionState::Idle,
                 chat_error: None,
+                timer_preferences: AfkTimerPreferences::default(),
                 timeout_supported: true,
                 timeout_enabled: true,
                 timeout_duration_secs: 30,
@@ -5375,14 +6045,14 @@ mod tests {
                     },
                     labeled_cells: Vec::new(),
                     timer_profile: AfkTimerProfileSnapshot {
-                        start_secs: 120,
-                        safe_reveal_bonus_secs: 1,
-                        mine_penalty_secs: 15,
+                        start_secs: 180,
+                        safe_reveal_bonus_secs: 3,
+                        mine_penalty_secs: 10,
                         start_delay_secs: 5,
                         win_continue_delay_secs: 30,
                         loss_continue_delay_secs: 60,
                     },
-                    timer_remaining_secs: 120,
+                    timer_remaining_secs: 180,
                     phase_countdown_secs: None,
                     current_level: 3,
                     lives_remaining: 3,
@@ -5418,6 +6088,7 @@ mod tests {
                 auth: StreamerAuthStatus::default(),
                 chat_connection: AfkChatConnectionState::Idle,
                 chat_error: None,
+                timer_preferences: AfkTimerPreferences::default(),
                 timeout_supported: true,
                 timeout_enabled: true,
                 timeout_duration_secs: 30,
@@ -5436,14 +6107,14 @@ mod tests {
                     },
                     labeled_cells: Vec::new(),
                     timer_profile: AfkTimerProfileSnapshot {
-                        start_secs: 120,
-                        safe_reveal_bonus_secs: 1,
-                        mine_penalty_secs: 15,
+                        start_secs: 180,
+                        safe_reveal_bonus_secs: 3,
+                        mine_penalty_secs: 10,
                         start_delay_secs: 5,
                         win_continue_delay_secs: 30,
                         loss_continue_delay_secs: 60,
                     },
-                    timer_remaining_secs: 120,
+                    timer_remaining_secs: 180,
                     phase_countdown_secs: None,
                     current_level: 3,
                     lives_remaining: 3,
@@ -5479,6 +6150,7 @@ mod tests {
                 auth: StreamerAuthStatus::default(),
                 chat_connection: AfkChatConnectionState::Idle,
                 chat_error: None,
+                timer_preferences: AfkTimerPreferences::default(),
                 timeout_supported: true,
                 timeout_enabled: true,
                 timeout_duration_secs: 30,
@@ -5497,14 +6169,14 @@ mod tests {
                     },
                     labeled_cells: Vec::new(),
                     timer_profile: AfkTimerProfileSnapshot {
-                        start_secs: 120,
-                        safe_reveal_bonus_secs: 1,
-                        mine_penalty_secs: 15,
+                        start_secs: 180,
+                        safe_reveal_bonus_secs: 3,
+                        mine_penalty_secs: 10,
                         start_delay_secs: 5,
                         win_continue_delay_secs: 30,
                         loss_continue_delay_secs: 60,
                     },
-                    timer_remaining_secs: 120,
+                    timer_remaining_secs: 180,
                     phase_countdown_secs: None,
                     current_level: 3,
                     lives_remaining: 3,
@@ -5549,6 +6221,7 @@ mod tests {
                 auth: StreamerAuthStatus::default(),
                 chat_connection: AfkChatConnectionState::Idle,
                 chat_error: None,
+                timer_preferences: AfkTimerPreferences::default(),
                 timeout_supported: true,
                 timeout_enabled: true,
                 timeout_duration_secs: 30,
@@ -5567,9 +6240,9 @@ mod tests {
                     },
                     labeled_cells: Vec::new(),
                     timer_profile: AfkTimerProfileSnapshot {
-                        start_secs: 120,
-                        safe_reveal_bonus_secs: 1,
-                        mine_penalty_secs: 15,
+                        start_secs: 180,
+                        safe_reveal_bonus_secs: 3,
+                        mine_penalty_secs: 10,
                         start_delay_secs: 5,
                         win_continue_delay_secs: 30,
                         loss_continue_delay_secs: 60,

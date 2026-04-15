@@ -658,11 +658,10 @@ main {
       }
 
       .menu-number-field {
-        display: flex;
+        display: inline-flex;
         align-items: center;
         justify-content: center;
-        width: 100%;
-        min-width: 0;
+        max-width: 100%;
         padding: 0 6px;
       }
 
@@ -691,16 +690,33 @@ main {
         }
 
         &.with-suffix {
-          flex: 0 1 4ch;
-          width: 4ch;
+          flex: 0 0 auto;
+          min-width: 1ch;
+          width: auto;
           padding: 0;
           text-align: right;
         }
+
+        &.with-prefix {
+          flex: 0 0 auto;
+          min-width: 1ch;
+          width: auto;
+          padding: 0;
+          text-align: left;
+        }
       }
 
+      .menu-number-prefix,
       .menu-number-suffix {
         flex: 0 0 auto;
         min-width: 1ch;
+      }
+
+      .menu-number-prefix {
+        text-align: right;
+      }
+
+      .menu-number-suffix {
         text-align: left;
       }
 

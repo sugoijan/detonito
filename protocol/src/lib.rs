@@ -12,6 +12,10 @@ fn default_afk_max_lives() -> u8 {
     3
 }
 
+fn default_afk_timer_preferences() -> AfkTimerPreferences {
+    AfkTimerPreferences::default()
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrontendRuntimeConfig {
     pub afk_enabled: bool,
@@ -102,6 +106,23 @@ pub struct AfkTimerProfileSnapshot {
     pub start_delay_secs: u32,
     pub win_continue_delay_secs: u32,
     pub loss_continue_delay_secs: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AfkTimerPreferences {
+    pub start_secs: u32,
+    pub safe_reveal_bonus_secs: u32,
+    pub mine_penalty_secs: u32,
+}
+
+impl Default for AfkTimerPreferences {
+    fn default() -> Self {
+        Self {
+            start_secs: 180,
+            safe_reveal_bonus_secs: 3,
+            mine_penalty_secs: 10,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -238,6 +259,8 @@ pub struct AfkStatusResponse {
     pub auth: StreamerAuthStatus,
     pub chat_connection: AfkChatConnectionState,
     pub chat_error: Option<String>,
+    #[serde(default = "default_afk_timer_preferences")]
+    pub timer_preferences: AfkTimerPreferences,
     pub timeout_supported: bool,
     pub timeout_enabled: bool,
     pub timeout_duration_secs: u32,
@@ -315,6 +338,18 @@ mod tests {
     }
 
     #[test]
+    fn timer_preferences_default_to_standard_values() {
+        assert_eq!(
+            AfkTimerPreferences::default(),
+            AfkTimerPreferences {
+                start_secs: 180,
+                safe_reveal_bonus_secs: 3,
+                mine_penalty_secs: 10,
+            }
+        );
+    }
+
+    #[test]
     fn session_snapshot_deserialization_defaults_hazard_variant_to_mines() {
         let session: AfkSessionSnapshot = serde_json::from_value(json!({
             "streamer": null,
@@ -327,14 +362,14 @@ mod tests {
             },
             "labeled_cells": [],
             "timer_profile": {
-                "start_secs": 120,
-                "safe_reveal_bonus_secs": 1,
-                "mine_penalty_secs": 15,
+                "start_secs": 180,
+                "safe_reveal_bonus_secs": 3,
+                "mine_penalty_secs": 10,
                 "start_delay_secs": 5,
                 "win_continue_delay_secs": 30,
                 "loss_continue_delay_secs": 60
             },
-            "timer_remaining_secs": 120,
+            "timer_remaining_secs": 180,
             "phase_countdown_secs": null,
             "current_level": 1,
             "live_mines_left": 1,
@@ -353,6 +388,26 @@ mod tests {
     }
 
     #[test]
+    fn status_response_deserialization_defaults_timer_preferences() {
+        let status: AfkStatusResponse = serde_json::from_value(json!({
+            "runtime": { "afk_enabled": true },
+            "auth": { "identity": null, "expires_at_ms": null },
+            "chat_connection": "idle",
+            "chat_error": null,
+            "timeout_supported": true,
+            "timeout_enabled": true,
+            "timeout_duration_secs": 30,
+            "board_size": "medium",
+            "connect_url": null,
+            "websocket_path": null,
+            "session": null
+        }))
+        .expect("status response should deserialize");
+
+        assert_eq!(status.timer_preferences, AfkTimerPreferences::default());
+    }
+
+    #[test]
     fn session_snapshot_deserialization_defaults_lives_and_report_fields() {
         let session: AfkSessionSnapshot = serde_json::from_value(json!({
             "streamer": null,
@@ -365,14 +420,14 @@ mod tests {
             },
             "labeled_cells": [],
             "timer_profile": {
-                "start_secs": 120,
-                "safe_reveal_bonus_secs": 1,
-                "mine_penalty_secs": 15,
+                "start_secs": 180,
+                "safe_reveal_bonus_secs": 3,
+                "mine_penalty_secs": 10,
                 "start_delay_secs": 5,
                 "win_continue_delay_secs": 30,
                 "loss_continue_delay_secs": 60
             },
-            "timer_remaining_secs": 120,
+            "timer_remaining_secs": 180,
             "phase_countdown_secs": null,
             "current_level": 1,
             "live_mines_left": 1,

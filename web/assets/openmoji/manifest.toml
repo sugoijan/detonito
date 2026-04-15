@@ -156,6 +156,10 @@ upstream = "21A9.svg"
 source = "upstream"
 upstream = "1F50D.svg"
 
+[icons.broom]
+source = "upstream"
+upstream = "1F9F9.svg"
+
 [icons.ok]
 source = "upstream"
 upstream = "2714.svg"

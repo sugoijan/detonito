@@ -24,15 +24,16 @@ use barbed::oauth::{
 };
 use detonito_core::{
     AfkAction, AfkBoardSize as CoreAfkBoardSize, AfkCellState as CoreAfkCellState, AfkEngine,
-    AfkLossReason as CoreAfkLossReason, AfkPreset, AfkRoundPhase as CoreAfkRoundPhase, flat_index,
+    AfkLossReason as CoreAfkLossReason, AfkPreset, AfkRoundPhase as CoreAfkRoundPhase,
+    AfkTimerProfile, flat_index,
 };
 use detonito_protocol::{
     AfkActionKind, AfkActionRequest, AfkActivityKind, AfkActivityRow,
     AfkBoardSize as ProtocolAfkBoardSize, AfkBoardSnapshot, AfkCellSnapshot,
     AfkChatConnectionState, AfkClientMessage, AfkCoordSnapshot, AfkHazardVariant, AfkIdentity,
     AfkLossReason, AfkPenaltySnapshot, AfkRoundPhase, AfkRoundReportSnapshot, AfkServerMessage,
-    AfkSessionSnapshot, AfkStatsGroupSnapshot, AfkStatusResponse, AfkTimerProfileSnapshot,
-    AfkUserStatsSnapshot, FrontendRuntimeConfig, StreamerAuthStatus,
+    AfkSessionSnapshot, AfkStatsGroupSnapshot, AfkStatusResponse, AfkTimerPreferences,
+    AfkTimerProfileSnapshot, AfkUserStatsSnapshot, FrontendRuntimeConfig, StreamerAuthStatus,
 };
 use futures_channel::mpsc::{UnboundedReceiver, unbounded};
 use futures_util::StreamExt;
@@ -68,6 +69,12 @@ const MAX_STATS_USERS: usize = 256;
 const MAX_RUN_DEAD_USERS: usize = 256;
 const DEFAULT_TIMEOUT_DURATION_SECS: u32 = 30;
 const TIMEOUT_DURATION_OPTIONS_SECS: [u32; 12] = [1, 5, 10, 15, 30, 45, 60, 90, 120, 180, 240, 300];
+const AFK_TIMER_START_SECS_MIN: u32 = 30;
+const AFK_TIMER_START_SECS_MAX: u32 = 300;
+const AFK_TIMER_BONUS_SECS_MIN: u32 = 0;
+const AFK_TIMER_BONUS_SECS_MAX: u32 = 10;
+const AFK_TIMER_PUNISHMENT_SECS_MIN: u32 = 0;
+const AFK_TIMER_PUNISHMENT_SECS_MAX: u32 = 60;
 const AFK_FRONTEND_ABSENCE_TIMEOUT_MS: i64 = 10 * 60 * 1_000;
 const AFK_SESSION_INACTIVITY_TIMEOUT_MS: i64 = 60 * 60 * 1_000;
 const AFK_MAX_LIVES: u8 = 3;
@@ -180,12 +187,17 @@ struct PersistedAfkSession {
 impl PersistedAfkSession {
     fn new(
         board_size: CoreAfkBoardSize,
+        timer_preferences: AfkTimerPreferences,
         timeout_enabled: bool,
         hazard_variant: AfkHazardVariant,
         now_ms: i64,
     ) -> Self {
         let mut session = Self {
-            engine: AfkEngine::new(random_seed(), AfkPreset::for_board_size(board_size), now_ms),
+            engine: AfkEngine::new(
+                random_seed(),
+                preset_for_board_size(board_size, timer_preferences),
+                now_ms,
+            ),
             lives_remaining: default_lives_remaining(),
             game_over: false,
             ignored_users: Vec::new(),
@@ -223,7 +235,7 @@ impl PersistedAfkSession {
         }
     }
 
-    fn restart_round(&mut self, now_ms: i64) {
+    fn restart_round(&mut self, timer_preferences: AfkTimerPreferences, now_ms: i64) {
         let board_size = self
             .engine
             .preset()
@@ -248,7 +260,7 @@ impl PersistedAfkSession {
         }
         self.engine = AfkEngine::new(
             random_seed(),
-            AfkPreset::for_board_size_and_mines(board_size, next_mines),
+            preset_for_board_size_and_mines(board_size, next_mines, timer_preferences),
             now_ms,
         );
         self.game_over = false;
@@ -712,6 +724,8 @@ impl PersistedAfkSession {
 struct PersistedAfkState {
     broadcaster: Option<AfkIdentity>,
     tokens: Option<TwitchTokenState>,
+    #[serde(default = "default_afk_timer_preferences")]
+    timer_preferences: AfkTimerPreferences,
     #[serde(default = "default_timeout_enabled")]
     timeout_enabled: bool,
     #[serde(default = "default_timeout_duration_secs")]
@@ -732,6 +746,7 @@ impl Default for PersistedAfkState {
         Self {
             broadcaster: None,
             tokens: None,
+            timer_preferences: default_afk_timer_preferences(),
             timeout_enabled: default_timeout_enabled(),
             timeout_duration_secs: default_timeout_duration_secs(),
             board_size: default_protocol_board_size(),
@@ -767,6 +782,7 @@ impl PersistedAfkState {
             },
             chat_connection,
             chat_error,
+            timer_preferences: self.timer_preferences,
             timeout_supported: self.timeout_supported(),
             timeout_enabled: self.timeout_enabled,
             timeout_duration_secs: self.timeout_duration_secs,
@@ -803,6 +819,14 @@ fn default_eventsub_error_message(state: &PersistedAfkState) -> String {
     state.eventsub.last_error.clone().unwrap_or_else(|| {
         "Twitch chat is disconnected. Return to AFK mode and start again.".to_string()
     })
+}
+
+fn reset_afk_preferences_on_disconnect(state: &mut PersistedAfkState) {
+    state.timer_preferences = default_afk_timer_preferences();
+    state.timeout_enabled = default_timeout_enabled();
+    state.timeout_duration_secs = default_timeout_duration_secs();
+    state.board_size = default_protocol_board_size();
+    state.pending_untimeouts.clear();
 }
 
 fn chat_connection_for_response(
@@ -848,6 +872,16 @@ struct SetTimeoutPreferenceRequest {
     enabled: Option<bool>,
     #[serde(default)]
     duration_secs: Option<u32>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct SetTimerPreferenceRequest {
+    #[serde(default)]
+    start_secs: Option<u32>,
+    #[serde(default)]
+    safe_reveal_bonus_secs: Option<u32>,
+    #[serde(default)]
+    mine_penalty_secs: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -937,6 +971,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         (Method::Post, "/api/afk/action") => handle_afk_action(req, env).await,
         (Method::Post, "/api/afk/board-size") => handle_afk_action(req, env).await,
         (Method::Post, "/api/afk/chat-reconnect") => handle_afk_action(req, env).await,
+        (Method::Post, "/api/afk/timer-profile") => handle_afk_action(req, env).await,
         (Method::Post, "/api/afk/timeout") => handle_afk_action(req, env).await,
         (Method::Post, "/api/afk/variant") => handle_afk_action(req, env).await,
         (Method::Post, "/api/afk/pause") | (Method::Post, "/api/afk/resume") => {
@@ -1102,6 +1137,7 @@ async fn handle_afk_status(req: Request, env: Env) -> Result<Response> {
             auth: StreamerAuthStatus::default(),
             chat_connection: AfkChatConnectionState::Idle,
             chat_error: None,
+            timer_preferences: default_afk_timer_preferences(),
             timeout_supported: false,
             timeout_enabled: true,
             timeout_duration_secs: default_timeout_duration_secs(),
@@ -1166,6 +1202,7 @@ impl AfkSessionDO {
                 PersistedAfkState::default()
             }
         };
+        loaded.timer_preferences = normalize_afk_timer_preferences(loaded.timer_preferences);
         loaded.timeout_duration_secs =
             normalize_timeout_duration_secs(loaded.timeout_duration_secs);
         loaded.board_size = normalize_protocol_board_size(loaded.board_size);
@@ -1780,6 +1817,7 @@ impl AfkSessionDO {
             chat.chatter_user_name.clone()
         };
         let now = now_ms();
+        let timer_preferences = state.timer_preferences;
         let rows = match command {
             ParsedChatCommand::Continue => {
                 let Some(session) = state.session.as_mut() else {
@@ -1794,7 +1832,7 @@ impl AfkSessionDO {
                     return Ok(false);
                 }
                 session.record_user_activity(now);
-                session.restart_round(now);
+                session.restart_round(timer_preferences, now);
                 vec![session.push_activity(format!("{actor_label} continued the run"), now)]
             }
             ParsedChatCommand::BoardBatch(actions) => {
@@ -2188,10 +2226,7 @@ impl AfkSessionDO {
         let _ = self.cleanup_live_session(&mut state).await?;
         state.broadcaster = None;
         state.tokens = None;
-        state.timeout_enabled = default_timeout_enabled();
-        state.timeout_duration_secs = default_timeout_duration_secs();
-        state.board_size = default_protocol_board_size();
-        state.pending_untimeouts.clear();
+        reset_afk_preferences_on_disconnect(&mut state);
         self.persist(&state).await?;
         self.schedule_alarm(&state).await?;
         self.broadcast_status(&state);
@@ -2421,8 +2456,9 @@ impl AfkSessionDO {
             self.release_round_timeouts(&mut state).await?;
         }
         if needs_restart {
+            let timer_preferences = state.timer_preferences;
             if let Some(session) = state.session.as_mut() {
-                session.restart_round(now);
+                session.restart_round(timer_preferences, now);
             }
             broadcast_snapshot = true;
         }
@@ -2484,6 +2520,7 @@ impl DurableObject for AfkSessionDO {
                 self.release_round_timeouts(&mut state).await?;
                 let mut session = PersistedAfkSession::new(
                     protocol_board_size_to_core(state.board_size),
+                    state.timer_preferences,
                     state.timeout_enabled && state.timeout_supported(),
                     payload.hazard_variant,
                     now_ms(),
@@ -2514,6 +2551,24 @@ impl DurableObject for AfkSessionDO {
                 let payload: SetBoardSizePreferenceRequest = read_json(&mut req).await?;
                 let mut state = self.load().await?;
                 state.board_size = normalize_protocol_board_size(payload.board_size);
+                self.persist(&state).await?;
+                self.broadcast_status(&state);
+                Response::from_json(&self.status_response(&state))
+            }
+            (Method::Post, "/api/afk/timer-profile") => {
+                let payload: SetTimerPreferenceRequest = read_json(&mut req).await?;
+                let mut state = self.load().await?;
+                if let Some(start_secs) = payload.start_secs {
+                    state.timer_preferences.start_secs = normalize_afk_timer_start_secs(start_secs);
+                }
+                if let Some(safe_reveal_bonus_secs) = payload.safe_reveal_bonus_secs {
+                    state.timer_preferences.safe_reveal_bonus_secs =
+                        normalize_afk_timer_bonus_secs(safe_reveal_bonus_secs);
+                }
+                if let Some(mine_penalty_secs) = payload.mine_penalty_secs {
+                    state.timer_preferences.mine_penalty_secs =
+                        normalize_afk_timer_punishment_secs(mine_penalty_secs);
+                }
                 self.persist(&state).await?;
                 self.broadcast_status(&state);
                 Response::from_json(&self.status_response(&state))
@@ -2583,9 +2638,10 @@ impl DurableObject for AfkSessionDO {
                 let mut state = self.load().await?;
                 self.release_round_timeouts(&mut state).await?;
                 let now = now_ms();
+                let timer_preferences = state.timer_preferences;
                 if let Some(session) = state.session.as_mut() {
                     session.record_user_activity(now);
-                    session.restart_round(now);
+                    session.restart_round(timer_preferences, now);
                 }
                 self.persist(&state).await?;
                 self.schedule_alarm(&state).await?;
@@ -2891,6 +2947,10 @@ fn error_from_display(error: impl core::fmt::Display) -> Error {
     Error::RustError(error.to_string())
 }
 
+fn default_afk_timer_preferences() -> AfkTimerPreferences {
+    AfkTimerPreferences::default()
+}
+
 const fn default_timeout_enabled() -> bool {
     true
 }
@@ -2915,8 +2975,55 @@ const fn default_protocol_board_size() -> ProtocolAfkBoardSize {
     ProtocolAfkBoardSize::Medium
 }
 
+fn editable_timer_profile(timer_preferences: AfkTimerPreferences) -> AfkTimerProfile {
+    let mut timer = AfkTimerProfile::v1();
+    timer.start_secs = timer_preferences.start_secs;
+    timer.safe_reveal_bonus_secs = timer_preferences.safe_reveal_bonus_secs;
+    timer.mine_penalty_secs = timer_preferences.mine_penalty_secs;
+    timer
+}
+
+fn preset_for_board_size(
+    board_size: CoreAfkBoardSize,
+    timer_preferences: AfkTimerPreferences,
+) -> AfkPreset {
+    let mut preset = AfkPreset::for_board_size(board_size);
+    preset.timer = editable_timer_profile(timer_preferences);
+    preset
+}
+
+fn preset_for_board_size_and_mines(
+    board_size: CoreAfkBoardSize,
+    mines: u16,
+    timer_preferences: AfkTimerPreferences,
+) -> AfkPreset {
+    let mut preset = AfkPreset::for_board_size_and_mines(board_size, mines);
+    preset.timer = editable_timer_profile(timer_preferences);
+    preset
+}
+
 const fn twitch_timeout_reason(hazard_variant: AfkHazardVariant) -> &'static str {
     hazard_variant.timeout_reason()
+}
+
+fn normalize_afk_timer_start_secs(value: u32) -> u32 {
+    value.clamp(AFK_TIMER_START_SECS_MIN, AFK_TIMER_START_SECS_MAX)
+}
+
+fn normalize_afk_timer_bonus_secs(value: u32) -> u32 {
+    value.clamp(AFK_TIMER_BONUS_SECS_MIN, AFK_TIMER_BONUS_SECS_MAX)
+}
+
+fn normalize_afk_timer_punishment_secs(value: u32) -> u32 {
+    value.clamp(AFK_TIMER_PUNISHMENT_SECS_MIN, AFK_TIMER_PUNISHMENT_SECS_MAX)
+}
+
+fn normalize_afk_timer_preferences(value: AfkTimerPreferences) -> AfkTimerPreferences {
+    AfkTimerPreferences {
+        start_secs: normalize_afk_timer_start_secs(value.start_secs),
+        safe_reveal_bonus_secs: normalize_afk_timer_bonus_secs(value.safe_reveal_bonus_secs),
+        mine_penalty_secs: normalize_afk_timer_punishment_secs(value.mine_penalty_secs),
+    }
 }
 
 fn normalize_timeout_duration_secs(value: u32) -> u32 {
@@ -3522,6 +3629,12 @@ mod tests {
     }
 
     #[test]
+    fn timer_preferences_default_to_standard_values() {
+        let state = PersistedAfkState::default();
+        assert_eq!(state.timer_preferences, AfkTimerPreferences::default());
+    }
+
+    #[test]
     fn board_size_defaults_to_medium() {
         let state = PersistedAfkState::default();
         assert_eq!(state.board_size, ProtocolAfkBoardSize::Medium);
@@ -3569,6 +3682,22 @@ mod tests {
         assert_eq!(normalize_timeout_duration_secs(33), 30);
         assert_eq!(normalize_timeout_duration_secs(59), 60);
         assert_eq!(normalize_timeout_duration_secs(600), 300);
+    }
+
+    #[test]
+    fn timer_preferences_normalize_to_supported_bounds() {
+        assert_eq!(
+            normalize_afk_timer_preferences(AfkTimerPreferences {
+                start_secs: 0,
+                safe_reveal_bonus_secs: 99,
+                mine_penalty_secs: 999,
+            }),
+            AfkTimerPreferences {
+                start_secs: 30,
+                safe_reveal_bonus_secs: 10,
+                mine_penalty_secs: 60,
+            }
+        );
     }
 
     #[test]
@@ -3794,6 +3923,36 @@ mod tests {
     }
 
     #[test]
+    fn near_timeout_mine_losses_keep_mine_reason_and_round_loser() {
+        let now_ms = 10_000;
+        let actor = test_identity(7);
+        let layout = detonito_core::MineLayout::from_mine_coords((2, 2), &[(0, 0)]).unwrap();
+        let mut preset = AfkPreset::v1();
+        preset.config = detonito_core::GameConfig::new_unchecked((2, 2), 1);
+        preset.timer.start_secs = 10;
+        preset.timer.mine_penalty_secs = 8;
+        let mut session = test_session();
+        session.engine = AfkEngine::with_layout_for_tests(layout, preset, now_ms);
+        session.flag_owner_user_ids = vec![None; 4];
+
+        let before_phase = session.engine.phase();
+        let outcome = session
+            .engine
+            .apply_action(AfkAction::Reveal((0, 0)), now_ms)
+            .expect("mine reveal should succeed");
+        assert!(outcome.mine_triggered);
+        let settle = session.engine.settle(now_ms + 2_000);
+        assert!(settle.changed);
+
+        session.apply_round_transition(before_phase, Some(actor.clone()));
+
+        let snapshot = session.snapshot(None, true, now_ms + 2_000);
+        assert_eq!(snapshot.loss_reason, Some(AfkLossReason::Mine));
+        assert_eq!(session.round_loser, Some(actor.clone()));
+        assert_eq!(session.run_dead_user_ids, vec![actor.user_id.clone()]);
+    }
+
+    #[test]
     fn snapshot_auto_flags_mines_when_the_round_is_won() {
         let now_ms = 10_000;
         let preset = AfkPreset {
@@ -3869,7 +4028,7 @@ mod tests {
         assert!(!session.game_over);
         assert_eq!(session.engine.preset().current_level(), before_level);
 
-        session.restart_round(2_000);
+        session.restart_round(AfkTimerPreferences::default(), 2_000);
 
         assert_eq!(session.lives_remaining, AFK_MAX_LIVES - 1);
         assert_eq!(session.engine.preset().current_level(), before_level);
@@ -3908,7 +4067,7 @@ mod tests {
         assert_eq!(session.run_stats.len(), 1);
         assert_eq!(session.run_dead_user_ids, vec![actor.user_id.clone()]);
 
-        session.restart_round(2_000);
+        session.restart_round(AfkTimerPreferences::default(), 2_000);
 
         assert!(!session.game_over);
         assert_eq!(session.lives_remaining, AFK_MAX_LIVES);
@@ -3916,6 +4075,81 @@ mod tests {
         assert!(session.run_stats.is_empty());
         assert!(session.run_dead_user_ids.is_empty());
         assert!(session.round_stats.is_empty());
+    }
+
+    #[test]
+    fn restart_round_uses_custom_timer_preferences() {
+        let mut session = test_session();
+        let timer_preferences = AfkTimerPreferences {
+            start_secs: 180,
+            safe_reveal_bonus_secs: 4,
+            mine_penalty_secs: 25,
+        };
+
+        session.restart_round(timer_preferences, 2_000);
+
+        let timer = session.engine.preset().timer;
+        assert_eq!(timer.start_secs, 180);
+        assert_eq!(timer.safe_reveal_bonus_secs, 4);
+        assert_eq!(timer.mine_penalty_secs, 25);
+        assert_eq!(
+            timer.start_delay_secs,
+            AfkTimerProfile::v1().start_delay_secs
+        );
+        assert_eq!(
+            timer.win_continue_delay_secs,
+            AfkTimerProfile::v1().win_continue_delay_secs
+        );
+        assert_eq!(
+            timer.loss_continue_delay_secs,
+            AfkTimerProfile::v1().loss_continue_delay_secs
+        );
+    }
+
+    #[test]
+    fn status_response_includes_timer_preferences() {
+        let state = PersistedAfkState {
+            timer_preferences: AfkTimerPreferences {
+                start_secs: 200,
+                safe_reveal_bonus_secs: 3,
+                mine_penalty_secs: 12,
+            },
+            ..PersistedAfkState::default()
+        };
+
+        let status = state.status_response("/", AfkChatConnectionState::Idle, None);
+        assert_eq!(
+            status.timer_preferences,
+            AfkTimerPreferences {
+                start_secs: 200,
+                safe_reveal_bonus_secs: 3,
+                mine_penalty_secs: 12,
+            }
+        );
+    }
+
+    #[test]
+    fn disconnect_reset_restores_timer_preferences_defaults() {
+        let mut state = PersistedAfkState {
+            timer_preferences: AfkTimerPreferences {
+                start_secs: 200,
+                safe_reveal_bonus_secs: 3,
+                mine_penalty_secs: 12,
+            },
+            timeout_enabled: false,
+            timeout_duration_secs: 90,
+            board_size: ProtocolAfkBoardSize::Large,
+            pending_untimeouts: vec![test_identity(1)],
+            ..PersistedAfkState::default()
+        };
+
+        reset_afk_preferences_on_disconnect(&mut state);
+
+        assert_eq!(state.timer_preferences, AfkTimerPreferences::default());
+        assert!(state.timeout_enabled);
+        assert_eq!(state.timeout_duration_secs, default_timeout_duration_secs());
+        assert_eq!(state.board_size, default_protocol_board_size());
+        assert!(state.pending_untimeouts.is_empty());
     }
 
     #[test]
@@ -4202,7 +4436,7 @@ mod tests {
         for i in 0..MAX_PENALTIES {
             session.push_penalty(AfkPenaltySnapshot {
                 chatter: test_identity(i),
-                timer_delta_secs: -15,
+                timer_delta_secs: -10,
                 timeout_requested: true,
                 timeout_succeeded: true,
             });
@@ -4214,6 +4448,7 @@ mod tests {
         PersistedAfkState {
             broadcaster: Some(test_identity(9999)),
             tokens: None,
+            timer_preferences: default_afk_timer_preferences(),
             timeout_enabled: true,
             timeout_duration_secs: default_timeout_duration_secs(),
             board_size: default_protocol_board_size(),

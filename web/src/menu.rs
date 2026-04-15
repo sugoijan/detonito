@@ -321,6 +321,8 @@ pub(crate) struct MenuNumberFieldProps {
     pub min: u16,
     pub max: u16,
     #[prop_or_default]
+    pub prefix: Option<AttrValue>,
+    #[prop_or_default]
     pub suffix: Option<AttrValue>,
     pub on_set: Callback<u16>,
 }
@@ -403,11 +405,17 @@ pub(crate) fn MenuNumberField(props: &MenuNumberFieldProps) -> Html {
     } else {
         props.value.to_string()
     };
+    let input_style = (props.prefix.is_some() || props.suffix.is_some())
+        .then(|| AttrValue::from(format!("width: {}ch;", value.chars().count().max(1))));
 
     let input = html! {
         <input
             ref={input_ref}
-            class={classes!("menu-number-input", props.suffix.as_ref().map(|_| "with-suffix"))}
+            class={classes!(
+                "menu-number-input",
+                props.prefix.as_ref().map(|_| "with-prefix"),
+                props.suffix.as_ref().map(|_| "with-suffix"),
+            )}
             type="number"
             inputmode="numeric"
             title={format!("Set {}", props.label)}
@@ -416,6 +424,7 @@ pub(crate) fn MenuNumberField(props: &MenuNumberFieldProps) -> Html {
             max={props.max.to_string()}
             step="1"
             value={value}
+            style={input_style}
             {onfocus}
             {oninput}
             {onblur}
@@ -423,11 +432,20 @@ pub(crate) fn MenuNumberField(props: &MenuNumberFieldProps) -> Html {
         />
     };
 
-    if let Some(suffix) = props.suffix.clone() {
+    if props.prefix.is_some() || props.suffix.is_some() {
         html! {
             <span class="menu-number-field">
+                {
+                    props.prefix.clone().map(|prefix| html! {
+                        <span class="menu-number-prefix" aria-hidden="true">{prefix}</span>
+                    }).unwrap_or_default()
+                }
                 {input}
-                <span class="menu-number-suffix" aria-hidden="true">{suffix}</span>
+                {
+                    props.suffix.clone().map(|suffix| html! {
+                        <span class="menu-number-suffix" aria-hidden="true">{suffix}</span>
+                    }).unwrap_or_default()
+                }
             </span>
         }
     } else {
@@ -440,6 +458,7 @@ pub(crate) fn menu_number_stepper_row_with_suffix(
     value: u16,
     min: u16,
     max: u16,
+    prefix: Option<AttrValue>,
     suffix: Option<AttrValue>,
     prefix_button: Option<Html>,
     on_decrease: Callback<()>,
@@ -455,6 +474,7 @@ pub(crate) fn menu_number_stepper_row_with_suffix(
                 value={value}
                 min={min}
                 max={max}
+                prefix={prefix}
                 suffix={suffix}
                 on_set={on_set}
             />
@@ -490,6 +510,7 @@ pub(crate) fn menu_number_stepper_row(
         value,
         min,
         max,
+        None,
         None,
         None,
         on_decrease,

@@ -11,6 +11,7 @@ use crate::{
 };
 
 const AFK_ENDGAME_LABEL_CUSHION: usize = 2;
+const AFK_MISTAKE_NEAR_TIMEOUT_THRESHOLD_SECS: i32 = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AfkTimerProfile {
@@ -25,9 +26,9 @@ pub struct AfkTimerProfile {
 impl AfkTimerProfile {
     pub const fn v1() -> Self {
         Self {
-            start_secs: 120,
-            safe_reveal_bonus_secs: 1,
-            mine_penalty_secs: 15,
+            start_secs: 180,
+            safe_reveal_bonus_secs: 3,
+            mine_penalty_secs: 10,
             start_delay_secs: 8,
             win_continue_delay_secs: 30,
             loss_continue_delay_secs: 60,
@@ -243,6 +244,8 @@ pub struct AfkEngine {
     last_timer_tick_at_ms: i64,
     #[serde(default)]
     loss_reason: Option<AfkLossReason>,
+    #[serde(default)]
+    pending_timeout_loss_reason: Option<AfkLossReason>,
     mine_layout: Option<MineLayout>,
     board: Array2<AfkBoardCell>,
     revealed_safe_count: Saturating<u16>,
@@ -261,6 +264,7 @@ impl AfkEngine {
             timer_remaining_secs: preset.timer.start_secs as i32,
             last_timer_tick_at_ms: now_ms,
             loss_reason: None,
+            pending_timeout_loss_reason: None,
             mine_layout: None,
             board: Array2::default(preset.config.size.to_nd_index()),
             revealed_safe_count: Saturating(0),
@@ -499,7 +503,11 @@ impl AfkEngine {
                 if self.timer_remaining_secs <= 0 {
                     self.timer_remaining_secs = 0;
                     self.phase = AfkRoundPhase::TimedOut;
-                    self.loss_reason = Some(AfkLossReason::Timer);
+                    self.loss_reason = Some(
+                        self.pending_timeout_loss_reason
+                            .take()
+                            .unwrap_or(AfkLossReason::Timer),
+                    );
                     self.auto_restart_at_ms =
                         now_ms + i64::from(self.preset.timer.loss_continue_delay_secs) * 1_000;
                 }
@@ -555,6 +563,7 @@ impl AfkEngine {
         self.paused_at_ms = None;
         self.phase = AfkRoundPhase::TimedOut;
         self.loss_reason = Some(reason);
+        self.pending_timeout_loss_reason = None;
         self.timer_remaining_secs = 0;
         self.auto_restart_at_ms =
             now_ms + i64::from(self.preset.timer.loss_continue_delay_secs) * 1_000;
@@ -590,8 +599,15 @@ impl AfkEngine {
             } else if outcome.won {
                 self.phase = AfkRoundPhase::Won;
                 self.loss_reason = None;
+                self.pending_timeout_loss_reason = None;
                 self.auto_restart_at_ms =
                     now_ms + i64::from(self.preset.timer.win_continue_delay_secs) * 1_000;
+            } else if outcome.mine_triggered
+                && self.timer_remaining_secs < AFK_MISTAKE_NEAR_TIMEOUT_THRESHOLD_SECS
+            {
+                self.pending_timeout_loss_reason = Some(AfkLossReason::Mine);
+            } else if self.timer_remaining_secs >= AFK_MISTAKE_NEAR_TIMEOUT_THRESHOLD_SECS {
+                self.pending_timeout_loss_reason = None;
             }
         }
 
@@ -1122,6 +1138,57 @@ mod tests {
     }
 
     #[test]
+    fn near_timeout_after_a_mine_still_counts_as_a_mine_loss() {
+        let layout = MineLayout::from_mine_coords((2, 2), &[(0, 0)]).unwrap();
+        let mut preset = AfkPreset::v1();
+        preset.config = GameConfig::new_unchecked((2, 2), 1);
+        preset.timer.start_secs = 10;
+        preset.timer.mine_penalty_secs = 8;
+        let mut engine = AfkEngine::with_layout_for_tests(layout, preset, now());
+
+        let outcome = engine
+            .apply_action(AfkAction::Reveal((0, 0)), now())
+            .expect("mine reveal should succeed");
+        assert!(outcome.mine_triggered);
+        assert_eq!(engine.timer_remaining_secs(), 2);
+        assert_eq!(engine.loss_reason(), None);
+
+        let settle = engine.settle(now() + 2_000);
+        assert!(settle.changed);
+        assert_eq!(engine.phase(), AfkRoundPhase::TimedOut);
+        assert_eq!(engine.loss_reason(), Some(AfkLossReason::Mine));
+    }
+
+    #[test]
+    fn recovering_to_three_seconds_clears_near_timeout_mine_attribution() {
+        let layout = MineLayout::from_mine_coords((2, 2), &[(0, 0)]).unwrap();
+        let mut preset = AfkPreset::v1();
+        preset.config = GameConfig::new_unchecked((2, 2), 1);
+        preset.timer.start_secs = 10;
+        preset.timer.mine_penalty_secs = 8;
+        preset.timer.safe_reveal_bonus_secs = 1;
+        let mut engine = AfkEngine::with_layout_for_tests(layout, preset, now());
+
+        let hit = engine
+            .apply_action(AfkAction::Reveal((0, 0)), now())
+            .expect("mine reveal should succeed");
+        assert!(hit.mine_triggered);
+        assert_eq!(engine.timer_remaining_secs(), 2);
+
+        let recovery = engine
+            .apply_action(AfkAction::Reveal((1, 1)), now())
+            .expect("safe reveal should succeed");
+        assert!(recovery.changed);
+        assert!(!recovery.mine_triggered);
+        assert_eq!(engine.timer_remaining_secs(), 3);
+
+        let settle = engine.settle(now() + 3_000);
+        assert!(settle.changed);
+        assert_eq!(engine.phase(), AfkRoundPhase::TimedOut);
+        assert_eq!(engine.loss_reason(), Some(AfkLossReason::Timer));
+    }
+
+    #[test]
     fn timeout_transition_requests_restart_after_delay() {
         let layout = MineLayout::from_mine_coords((2, 2), &[(1, 1)]).unwrap();
         let mut preset = AfkPreset::v1();
@@ -1143,13 +1210,13 @@ mod tests {
 
         engine.pause(now() + 500);
         assert!(engine.is_paused());
-        assert_eq!(engine.display_timer_remaining_secs(now() + 4_500), 120);
+        assert_eq!(engine.display_timer_remaining_secs(now() + 4_500), 180);
         assert!(!engine.settle(now() + 4_500).changed);
 
         engine.resume(now() + 4_500);
         assert!(!engine.is_paused());
         assert_eq!(engine.settle(now() + 5_500).changed, true);
-        assert_eq!(engine.timer_remaining_secs(), 119);
+        assert_eq!(engine.timer_remaining_secs(), 179);
     }
 
     #[test]
