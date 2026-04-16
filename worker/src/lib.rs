@@ -30,8 +30,9 @@ use detonito_core::{
 use detonito_protocol::{
     AfkActionKind, AfkActionRequest, AfkActivityKind, AfkActivityRow,
     AfkBoardSize as ProtocolAfkBoardSize, AfkBoardSnapshot, AfkCellSnapshot,
-    AfkChatConnectionState, AfkClientMessage, AfkCoordSnapshot, AfkHazardVariant, AfkIdentity,
-    AfkLossReason, AfkPenaltySnapshot, AfkRoundPhase, AfkRoundReportSnapshot, AfkServerMessage,
+    AfkBoardSizePreference as ProtocolAfkBoardSizePreference, AfkChatConnectionState,
+    AfkClientMessage, AfkCoordSnapshot, AfkHazardVariant, AfkIdentity, AfkLossReason,
+    AfkPenaltySnapshot, AfkRoundPhase, AfkRoundReportSnapshot, AfkServerMessage,
     AfkSessionSnapshot, AfkStatsGroupSnapshot, AfkStatusResponse, AfkTimerPreferences,
     AfkTimerProfileSnapshot, AfkUserStatsSnapshot, FrontendRuntimeConfig, StreamerAuthStatus,
 };
@@ -731,7 +732,9 @@ struct PersistedAfkState {
     #[serde(default = "default_timeout_duration_secs")]
     timeout_duration_secs: u32,
     #[serde(default = "default_protocol_board_size")]
-    board_size: ProtocolAfkBoardSize,
+    board_size: ProtocolAfkBoardSizePreference,
+    #[serde(default = "default_protocol_auto_board_size")]
+    auto_board_size: ProtocolAfkBoardSize,
     session: Option<PersistedAfkSession>,
     /// Users awaiting untimeout across rounds. Capped at [`MAX_PENDING_UNTIMEOUTS`].
     #[serde(default)]
@@ -750,6 +753,7 @@ impl Default for PersistedAfkState {
             timeout_enabled: default_timeout_enabled(),
             timeout_duration_secs: default_timeout_duration_secs(),
             board_size: default_protocol_board_size(),
+            auto_board_size: default_protocol_auto_board_size(),
             session: None,
             pending_untimeouts: Vec::new(),
             recent_eventsub_ids: Vec::new(),
@@ -787,6 +791,11 @@ impl PersistedAfkState {
             timeout_enabled: self.timeout_enabled,
             timeout_duration_secs: self.timeout_duration_secs,
             board_size: self.board_size,
+            auto_board_size: self
+                .broadcaster
+                .as_ref()
+                .filter(|_| matches!(self.board_size, ProtocolAfkBoardSizePreference::Auto))
+                .map(|_| self.auto_board_size),
             connect_url: Some(join_base_path(base_path, "/auth/twitch/login")),
             websocket_path: self
                 .broadcaster
@@ -826,6 +835,7 @@ fn reset_afk_preferences_on_disconnect(state: &mut PersistedAfkState) {
     state.timeout_enabled = default_timeout_enabled();
     state.timeout_duration_secs = default_timeout_duration_secs();
     state.board_size = default_protocol_board_size();
+    state.auto_board_size = default_protocol_auto_board_size();
     state.pending_untimeouts.clear();
 }
 
@@ -886,7 +896,18 @@ struct SetTimerPreferenceRequest {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct SetBoardSizePreferenceRequest {
-    board_size: ProtocolAfkBoardSize,
+    board_size: ProtocolAfkBoardSizePreference,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct HelixStreamsResponse {
+    #[serde(default)]
+    data: Vec<HelixStream>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct HelixStream {
+    viewer_count: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1142,6 +1163,7 @@ async fn handle_afk_status(req: Request, env: Env) -> Result<Response> {
             timeout_enabled: true,
             timeout_duration_secs: default_timeout_duration_secs(),
             board_size: default_protocol_board_size(),
+            auto_board_size: None,
             connect_url: Some(join_base_path(
                 &configured_base_path(&env),
                 "/auth/twitch/login",
@@ -1206,6 +1228,7 @@ impl AfkSessionDO {
         loaded.timeout_duration_secs =
             normalize_timeout_duration_secs(loaded.timeout_duration_secs);
         loaded.board_size = normalize_protocol_board_size(loaded.board_size);
+        loaded.auto_board_size = normalize_protocol_auto_board_size(loaded.auto_board_size);
         if let Some(session) = loaded.session.as_mut() {
             session.normalize_loaded_state(now_ms());
         }
@@ -1254,6 +1277,11 @@ impl AfkSessionDO {
             chat_connection,
             chat_error,
         )
+    }
+
+    async fn prepare_status_state(&self, state: &mut PersistedAfkState) -> Result<()> {
+        let _ = self.refresh_auto_board_size_if_needed(state).await?;
+        Ok(())
     }
 
     fn queue_eventsub_ensure(&self, broadcaster_user_id: &str, force: bool) {
@@ -1478,6 +1506,83 @@ impl AfkSessionDO {
         }
         self.persist(state).await?;
         Ok(Some(access_token))
+    }
+
+    async fn fetch_stream_viewer_count(
+        &self,
+        state: &mut PersistedAfkState,
+    ) -> Result<Option<u32>> {
+        let Some(broadcaster_user_id) = state
+            .broadcaster
+            .as_ref()
+            .map(|broadcaster| broadcaster.user_id.clone())
+        else {
+            return Ok(None);
+        };
+        let Some(access_token) = self.ensure_fresh_access_token(state, false).await? else {
+            return Ok(None);
+        };
+
+        let request = PreparedRequest {
+            url: format!(
+                "https://api.twitch.tv/helix/streams?user_id={}",
+                broadcaster_user_id
+            ),
+            method: HttpMethod::Get,
+            headers: vec![
+                (
+                    "Authorization".to_string(),
+                    format!("Bearer {access_token}"),
+                ),
+                (
+                    "Client-Id".to_string(),
+                    configured_var(&self.env, "TWITCH_CLIENT_ID"),
+                ),
+            ],
+            body: None,
+        };
+        let response = send_prepared_request(request)
+            .await
+            .map_err(error_from_display)?;
+        if !(200..300).contains(&response.status) {
+            return Err(error_from_display(format!(
+                "viewer count request failed with {}",
+                response.status
+            )));
+        }
+
+        let payload: HelixStreamsResponse =
+            serde_json::from_str(&response.body).map_err(error_from_display)?;
+        Ok(payload.data.first().map(|stream| stream.viewer_count))
+    }
+
+    async fn refresh_auto_board_size_if_needed(
+        &self,
+        state: &mut PersistedAfkState,
+    ) -> Result<bool> {
+        if state.session.is_some()
+            || !matches!(state.board_size, ProtocolAfkBoardSizePreference::Auto)
+            || state.broadcaster.is_none()
+        {
+            return Ok(false);
+        }
+
+        let resolved_auto_board_size = match self.fetch_stream_viewer_count(state).await {
+            Ok(Some(viewer_count)) => next_auto_board_size(state.auto_board_size, viewer_count),
+            Ok(None) => default_protocol_auto_board_size(),
+            Err(error) => {
+                log::warn!("failed to refresh AFK auto board size: {error}");
+                default_protocol_auto_board_size()
+            }
+        };
+
+        if state.auto_board_size == resolved_auto_board_size {
+            return Ok(false);
+        }
+
+        state.auto_board_size = resolved_auto_board_size;
+        self.persist(state).await?;
+        Ok(true)
     }
 
     async fn reconcile_eventsub_subscription(
@@ -2413,6 +2518,7 @@ impl AfkSessionDO {
         }) {
             if self.cleanup_live_session(&mut state).await? {
                 self.persist(&state).await?;
+                self.prepare_status_state(&mut state).await?;
                 self.schedule_alarm(&state).await?;
                 self.broadcast_status(&state);
             }
@@ -2511,6 +2617,7 @@ impl DurableObject for AfkSessionDO {
                 if self.mark_eventsub_runtime_missing(&mut state).await? {
                     self.broadcast_status(&state);
                 }
+                self.prepare_status_state(&mut state).await?;
                 Response::from_json(&self.status_response(&state))
             }
             (Method::Post, "/api/afk/start") => {
@@ -2518,8 +2625,12 @@ impl DurableObject for AfkSessionDO {
                     read_json_or_default(&mut req).await?;
                 let mut state = self.load().await?;
                 self.release_round_timeouts(&mut state).await?;
+                self.prepare_status_state(&mut state).await?;
                 let mut session = PersistedAfkSession::new(
-                    protocol_board_size_to_core(state.board_size),
+                    protocol_board_size_to_core(resolve_protocol_board_size(
+                        state.board_size,
+                        state.auto_board_size,
+                    )),
                     state.timer_preferences,
                     state.timeout_enabled && state.timeout_supported(),
                     payload.hazard_variant,
@@ -2545,6 +2656,7 @@ impl DurableObject for AfkSessionDO {
                     .apply_streamer_action(&mut state, request_action_to_core(payload)?)
                     .await?;
                 self.schedule_alarm(&state).await?;
+                self.prepare_status_state(&mut state).await?;
                 Response::from_json(&self.status_response(&state))
             }
             (Method::Post, "/api/afk/board-size") => {
@@ -2552,6 +2664,7 @@ impl DurableObject for AfkSessionDO {
                 let mut state = self.load().await?;
                 state.board_size = normalize_protocol_board_size(payload.board_size);
                 self.persist(&state).await?;
+                self.prepare_status_state(&mut state).await?;
                 self.broadcast_status(&state);
                 Response::from_json(&self.status_response(&state))
             }
@@ -2570,6 +2683,7 @@ impl DurableObject for AfkSessionDO {
                         normalize_afk_timer_punishment_secs(mine_penalty_secs);
                 }
                 self.persist(&state).await?;
+                self.prepare_status_state(&mut state).await?;
                 self.broadcast_status(&state);
                 Response::from_json(&self.status_response(&state))
             }
@@ -2588,10 +2702,12 @@ impl DurableObject for AfkSessionDO {
                 if changed {
                     self.broadcast_snapshot(&state);
                 }
+                self.prepare_status_state(&mut state).await?;
                 Response::from_json(&self.status_response(&state))
             }
             (Method::Post, "/api/afk/chat-reconnect") => {
-                let state = self.request_eventsub_reconnect(true).await?;
+                let mut state = self.request_eventsub_reconnect(true).await?;
+                self.prepare_status_state(&mut state).await?;
                 Response::from_json(&self.status_response(&state))
             }
             (Method::Post, "/api/afk/pause") => {
@@ -2606,6 +2722,7 @@ impl DurableObject for AfkSessionDO {
                 if changed {
                     self.broadcast_snapshot(&state);
                 }
+                self.prepare_status_state(&mut state).await?;
                 Response::from_json(&self.status_response(&state))
             }
             (Method::Post, "/api/afk/resume") => {
@@ -2624,12 +2741,14 @@ impl DurableObject for AfkSessionDO {
                 if changed {
                     self.broadcast_snapshot(&state);
                 }
+                self.prepare_status_state(&mut state).await?;
                 Response::from_json(&self.status_response(&state))
             }
             (Method::Post, "/api/afk/stop") => {
                 let mut state = self.load().await?;
                 let _ = self.cleanup_live_session(&mut state).await?;
                 self.persist(&state).await?;
+                self.prepare_status_state(&mut state).await?;
                 self.schedule_alarm(&state).await?;
                 self.broadcast_status(&state);
                 Response::from_json(&self.status_response(&state))
@@ -2646,6 +2765,7 @@ impl DurableObject for AfkSessionDO {
                 self.persist(&state).await?;
                 self.schedule_alarm(&state).await?;
                 self.broadcast_snapshot(&state);
+                self.prepare_status_state(&mut state).await?;
                 Response::from_json(&self.status_response(&state))
             }
             (Method::Post, "/api/afk/timeout") => {
@@ -2662,6 +2782,7 @@ impl DurableObject for AfkSessionDO {
                     session.timeout_enabled = state.timeout_enabled && timeout_supported;
                 }
                 self.persist(&state).await?;
+                self.prepare_status_state(&mut state).await?;
                 self.broadcast_status(&state);
                 Response::from_json(&self.status_response(&state))
             }
@@ -2669,6 +2790,7 @@ impl DurableObject for AfkSessionDO {
                 let mut state = self.load().await?;
                 let _ = self.cleanup_live_session(&mut state).await?;
                 self.persist(&state).await?;
+                self.prepare_status_state(&mut state).await?;
                 self.schedule_alarm(&state).await?;
                 self.broadcast_status(&state);
                 Response::from_json(&self.status_response(&state))
@@ -2684,11 +2806,13 @@ impl DurableObject for AfkSessionDO {
                     session.timeout_enabled = state.timeout_enabled && timeout_supported;
                 }
                 self.persist(&state).await?;
+                self.prepare_status_state(&mut state).await?;
                 self.broadcast_status(&state);
                 Response::from_json(&self.status_response(&state))
             }
             (Method::Post, "/internal/unlink") => {
-                let state = self.disconnect_streamer().await?;
+                let mut state = self.disconnect_streamer().await?;
+                self.prepare_status_state(&mut state).await?;
                 Response::from_json(&self.status_response(&state))
             }
             (Method::Post, "/internal/eventsub/ensure") => {
@@ -2971,8 +3095,12 @@ const fn default_protocol_hazard_variant() -> AfkHazardVariant {
     AfkHazardVariant::Mines
 }
 
-const fn default_protocol_board_size() -> ProtocolAfkBoardSize {
-    ProtocolAfkBoardSize::Medium
+const fn default_protocol_board_size() -> ProtocolAfkBoardSizePreference {
+    ProtocolAfkBoardSizePreference::Auto
+}
+
+const fn default_protocol_auto_board_size() -> ProtocolAfkBoardSize {
+    ProtocolAfkBoardSize::Tiny
 }
 
 fn editable_timer_profile(timer_preferences: AfkTimerPreferences) -> AfkTimerProfile {
@@ -3039,7 +3167,13 @@ fn normalize_timeout_duration_secs(value: u32) -> u32 {
     best
 }
 
-const fn normalize_protocol_board_size(value: ProtocolAfkBoardSize) -> ProtocolAfkBoardSize {
+const fn normalize_protocol_board_size(
+    value: ProtocolAfkBoardSizePreference,
+) -> ProtocolAfkBoardSizePreference {
+    value
+}
+
+const fn normalize_protocol_auto_board_size(value: ProtocolAfkBoardSize) -> ProtocolAfkBoardSize {
     value
 }
 
@@ -3049,6 +3183,59 @@ const fn protocol_board_size_to_core(value: ProtocolAfkBoardSize) -> CoreAfkBoar
         ProtocolAfkBoardSize::Small => CoreAfkBoardSize::Small,
         ProtocolAfkBoardSize::Medium => CoreAfkBoardSize::Medium,
         ProtocolAfkBoardSize::Large => CoreAfkBoardSize::Large,
+    }
+}
+
+const fn resolve_protocol_board_size(
+    preference: ProtocolAfkBoardSizePreference,
+    auto_board_size: ProtocolAfkBoardSize,
+) -> ProtocolAfkBoardSize {
+    match preference {
+        ProtocolAfkBoardSizePreference::Auto => auto_board_size,
+        ProtocolAfkBoardSizePreference::Tiny => ProtocolAfkBoardSize::Tiny,
+        ProtocolAfkBoardSizePreference::Small => ProtocolAfkBoardSize::Small,
+        ProtocolAfkBoardSizePreference::Medium => ProtocolAfkBoardSize::Medium,
+        ProtocolAfkBoardSizePreference::Large => ProtocolAfkBoardSize::Large,
+    }
+}
+
+const fn next_auto_board_size(
+    current: ProtocolAfkBoardSize,
+    viewer_count: u32,
+) -> ProtocolAfkBoardSize {
+    match current {
+        ProtocolAfkBoardSize::Tiny => {
+            if viewer_count >= 20 {
+                ProtocolAfkBoardSize::Small
+            } else {
+                ProtocolAfkBoardSize::Tiny
+            }
+        }
+        ProtocolAfkBoardSize::Small => {
+            if viewer_count < 10 {
+                ProtocolAfkBoardSize::Tiny
+            } else if viewer_count >= 70 {
+                ProtocolAfkBoardSize::Medium
+            } else {
+                ProtocolAfkBoardSize::Small
+            }
+        }
+        ProtocolAfkBoardSize::Medium => {
+            if viewer_count < 60 {
+                ProtocolAfkBoardSize::Small
+            } else if viewer_count >= 200 {
+                ProtocolAfkBoardSize::Large
+            } else {
+                ProtocolAfkBoardSize::Medium
+            }
+        }
+        ProtocolAfkBoardSize::Large => {
+            if viewer_count < 150 {
+                ProtocolAfkBoardSize::Medium
+            } else {
+                ProtocolAfkBoardSize::Large
+            }
+        }
     }
 }
 
@@ -3635,9 +3822,54 @@ mod tests {
     }
 
     #[test]
-    fn board_size_defaults_to_medium() {
+    fn board_size_defaults_to_auto_with_tiny_fallback() {
         let state = PersistedAfkState::default();
-        assert_eq!(state.board_size, ProtocolAfkBoardSize::Medium);
+        assert_eq!(state.board_size, ProtocolAfkBoardSizePreference::Auto);
+        assert_eq!(state.auto_board_size, ProtocolAfkBoardSize::Tiny);
+    }
+
+    #[test]
+    fn auto_board_size_hysteresis_uses_expected_thresholds() {
+        assert_eq!(
+            next_auto_board_size(ProtocolAfkBoardSize::Tiny, 19),
+            ProtocolAfkBoardSize::Tiny
+        );
+        assert_eq!(
+            next_auto_board_size(ProtocolAfkBoardSize::Tiny, 20),
+            ProtocolAfkBoardSize::Small
+        );
+        assert_eq!(
+            next_auto_board_size(ProtocolAfkBoardSize::Small, 9),
+            ProtocolAfkBoardSize::Tiny
+        );
+        assert_eq!(
+            next_auto_board_size(ProtocolAfkBoardSize::Small, 10),
+            ProtocolAfkBoardSize::Small
+        );
+        assert_eq!(
+            next_auto_board_size(ProtocolAfkBoardSize::Small, 70),
+            ProtocolAfkBoardSize::Medium
+        );
+        assert_eq!(
+            next_auto_board_size(ProtocolAfkBoardSize::Medium, 59),
+            ProtocolAfkBoardSize::Small
+        );
+        assert_eq!(
+            next_auto_board_size(ProtocolAfkBoardSize::Medium, 60),
+            ProtocolAfkBoardSize::Medium
+        );
+        assert_eq!(
+            next_auto_board_size(ProtocolAfkBoardSize::Medium, 200),
+            ProtocolAfkBoardSize::Large
+        );
+        assert_eq!(
+            next_auto_board_size(ProtocolAfkBoardSize::Large, 149),
+            ProtocolAfkBoardSize::Medium
+        );
+        assert_eq!(
+            next_auto_board_size(ProtocolAfkBoardSize::Large, 150),
+            ProtocolAfkBoardSize::Large
+        );
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -4129,6 +4361,30 @@ mod tests {
     }
 
     #[test]
+    fn status_response_exposes_cached_auto_board_size_only_when_connected() {
+        let mut state = PersistedAfkState {
+            broadcaster: Some(test_identity(1)),
+            board_size: ProtocolAfkBoardSizePreference::Auto,
+            auto_board_size: ProtocolAfkBoardSize::Medium,
+            ..PersistedAfkState::default()
+        };
+
+        let connected_status = state.status_response("/", AfkChatConnectionState::Idle, None);
+        assert_eq!(
+            connected_status.board_size,
+            ProtocolAfkBoardSizePreference::Auto
+        );
+        assert_eq!(
+            connected_status.auto_board_size,
+            Some(ProtocolAfkBoardSize::Medium)
+        );
+
+        state.broadcaster = None;
+        let disconnected_status = state.status_response("/", AfkChatConnectionState::Idle, None);
+        assert_eq!(disconnected_status.auto_board_size, None);
+    }
+
+    #[test]
     fn disconnect_reset_restores_timer_preferences_defaults() {
         let mut state = PersistedAfkState {
             timer_preferences: AfkTimerPreferences {
@@ -4138,7 +4394,7 @@ mod tests {
             },
             timeout_enabled: false,
             timeout_duration_secs: 90,
-            board_size: ProtocolAfkBoardSize::Large,
+            board_size: ProtocolAfkBoardSizePreference::Large,
             pending_untimeouts: vec![test_identity(1)],
             ..PersistedAfkState::default()
         };
@@ -4149,6 +4405,7 @@ mod tests {
         assert!(state.timeout_enabled);
         assert_eq!(state.timeout_duration_secs, default_timeout_duration_secs());
         assert_eq!(state.board_size, default_protocol_board_size());
+        assert_eq!(state.auto_board_size, default_protocol_auto_board_size());
         assert!(state.pending_untimeouts.is_empty());
     }
 
@@ -4452,6 +4709,7 @@ mod tests {
             timeout_enabled: true,
             timeout_duration_secs: default_timeout_duration_secs(),
             board_size: default_protocol_board_size(),
+            auto_board_size: default_protocol_auto_board_size(),
             session: Some(session),
             pending_untimeouts: (0..MAX_PENDING_UNTIMEOUTS).map(test_identity).collect(),
             recent_eventsub_ids: (0..MAX_EVENTSUB_IDS)

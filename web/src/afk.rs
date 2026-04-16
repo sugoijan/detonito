@@ -7,9 +7,10 @@ use crate::board_input::{
 use crate::hazard_variant::HazardVariant;
 use detonito_protocol::{
     AfkActionKind, AfkActionRequest, AfkActivityKind, AfkActivityRow, AfkBoardSize,
-    AfkCellSnapshot, AfkChatConnectionState, AfkClientMessage, AfkCoordSnapshot, AfkLossReason,
-    AfkRoundPhase, AfkRoundReportSnapshot, AfkServerMessage, AfkSessionSnapshot,
-    AfkStatsGroupSnapshot, AfkStatusResponse, AfkTimerPreferences, AfkUserStatsSnapshot,
+    AfkBoardSizePreference, AfkCellSnapshot, AfkChatConnectionState, AfkClientMessage,
+    AfkCoordSnapshot, AfkLossReason, AfkRoundPhase, AfkRoundReportSnapshot, AfkServerMessage,
+    AfkSessionSnapshot, AfkStatsGroupSnapshot, AfkStatusResponse, AfkTimerPreferences,
+    AfkUserStatsSnapshot,
 };
 use gloo::{render::request_animation_frame, timers::callback::Timeout};
 use js_sys::{Reflect, encode_uri_component};
@@ -278,7 +279,7 @@ fn round_report_layout(session: &AfkSessionSnapshot) -> AfkRoundReportLayout {
     }
 }
 
-fn board_size_label(board_size: AfkBoardSize) -> &'static str {
+fn concrete_board_size_label(board_size: AfkBoardSize) -> &'static str {
     match board_size {
         AfkBoardSize::Tiny => "Tiny",
         AfkBoardSize::Small => "Small",
@@ -287,7 +288,7 @@ fn board_size_label(board_size: AfkBoardSize) -> &'static str {
     }
 }
 
-fn board_size_detail(board_size: AfkBoardSize) -> &'static str {
+fn concrete_board_size_detail(board_size: AfkBoardSize) -> &'static str {
     match board_size {
         AfkBoardSize::Tiny => "9x9 | 9+1/Lv",
         AfkBoardSize::Small => "16x16 | 20+4/Lv",
@@ -296,9 +297,49 @@ fn board_size_detail(board_size: AfkBoardSize) -> &'static str {
     }
 }
 
+fn board_size_preference_label(board_size: AfkBoardSizePreference) -> &'static str {
+    match board_size {
+        AfkBoardSizePreference::Auto => "Auto",
+        AfkBoardSizePreference::Tiny => "Tiny",
+        AfkBoardSizePreference::Small => "Small",
+        AfkBoardSizePreference::Medium => "Medium",
+        AfkBoardSizePreference::Large => "Large",
+    }
+}
+
+fn board_size_root_label(
+    status: &AfkStatusResponse,
+    board_size: AfkBoardSizePreference,
+) -> AttrValue {
+    match board_size {
+        AfkBoardSizePreference::Auto if status.auth.identity.is_none() => "auto".into(),
+        AfkBoardSizePreference::Auto => status
+            .auto_board_size
+            .map(|board_size| format!("{} (auto)", concrete_board_size_label(board_size)).into())
+            .unwrap_or_else(|| "auto".into()),
+        AfkBoardSizePreference::Tiny => concrete_board_size_label(AfkBoardSize::Tiny).into(),
+        AfkBoardSizePreference::Small => concrete_board_size_label(AfkBoardSize::Small).into(),
+        AfkBoardSizePreference::Medium => concrete_board_size_label(AfkBoardSize::Medium).into(),
+        AfkBoardSizePreference::Large => concrete_board_size_label(AfkBoardSize::Large).into(),
+    }
+}
+
+fn board_size_confirmation_label(
+    status: &AfkStatusResponse,
+    board_size: AfkBoardSizePreference,
+) -> AttrValue {
+    match board_size {
+        AfkBoardSizePreference::Auto if status.auth.identity.is_some() => status
+            .auto_board_size
+            .map(|board_size| format!("{} (auto)", concrete_board_size_label(board_size)).into())
+            .unwrap_or_else(|| "Auto".into()),
+        _ => board_size_preference_label(board_size).into(),
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct AfkMenuPreferences {
-    board_size: AfkBoardSize,
+    board_size: AfkBoardSizePreference,
     timeout_enabled: bool,
     timeout_duration_secs: u32,
     #[serde(default)]
@@ -308,7 +349,7 @@ struct AfkMenuPreferences {
 impl Default for AfkMenuPreferences {
     fn default() -> Self {
         Self {
-            board_size: AfkBoardSize::Medium,
+            board_size: AfkBoardSizePreference::Auto,
             timeout_enabled: true,
             timeout_duration_secs: 30,
             timer_preferences: AfkTimerPreferences::default(),
@@ -359,8 +400,8 @@ fn persist_afk_connect_start_draft(preferences: Option<AfkMenuPreferences>) {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AfkBoardSizeChangePlan {
     NoChange,
-    ApplyOnly(AfkBoardSize),
-    ConfirmRestart(AfkBoardSize),
+    ApplyOnly(AfkBoardSizePreference),
+    ConfirmRestart(AfkBoardSizePreference),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -379,7 +420,7 @@ enum AfkRootPrimaryAction {
 
 fn plan_board_size_change(
     status: &AfkStatusResponse,
-    next_board_size: AfkBoardSize,
+    next_board_size: AfkBoardSizePreference,
 ) -> AfkBoardSizeChangePlan {
     if status.board_size == next_board_size {
         AfkBoardSizeChangePlan::NoChange
@@ -599,6 +640,7 @@ fn afk_root_primary_rows(
 
 fn afk_root_option_rows(
     displayed_preferences: AfkMenuPreferences,
+    displayed_board_size: AttrValue,
     timeout_controls_disabled: bool,
     open_board_size_menu: &Callback<MouseEvent>,
     open_advanced_menu: &Callback<MouseEvent>,
@@ -612,7 +654,7 @@ fn afk_root_option_rows(
         <>
             {menu_wide_detail_row(
                 "Board Size",
-                board_size_label(displayed_preferences.board_size),
+                displayed_board_size,
                 menu_nav_enter_button(
                     "Open board size menu",
                     false,
@@ -695,6 +737,7 @@ fn afk_root_option_rows(
 fn afk_root_menu_rows(
     action: AfkRootPrimaryAction,
     displayed_preferences: AfkMenuPreferences,
+    displayed_board_size: AttrValue,
     timeout_controls_disabled: bool,
     resume_board: &Callback<MouseEvent>,
     start_new_board: &Callback<MouseEvent>,
@@ -718,6 +761,7 @@ fn afk_root_menu_rows(
             {menu_section_gap()}
             {afk_root_option_rows(
                 displayed_preferences,
+                displayed_board_size,
                 timeout_controls_disabled,
                 open_board_size_menu,
                 open_advanced_menu,
@@ -1981,7 +2025,7 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
         move || initial_afk_screen(restore_view_state)
     });
     let menu_page = use_state_eq(|| AfkMenuPage::Root);
-    let pending_board_size = use_state_eq(|| None::<AfkBoardSize>);
+    let pending_board_size = use_state_eq(|| None::<AfkBoardSizePreference>);
     let pending_advanced_preferences = use_state_eq(|| None::<AfkTimerPreferences>);
     let pre_auth_preferences = use_state_eq(|| {
         Option::<AfkConnectStartDraft>::local_or_default().map(|draft| draft.preferences)
@@ -3000,7 +3044,7 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
         let menu_page = menu_page.clone();
         let pending_board_size = pending_board_size.clone();
         let pre_auth_preferences = pre_auth_preferences.clone();
-        Rc::new(move |next_board_size: AfkBoardSize| {
+        Rc::new(move |next_board_size: AfkBoardSizePreference| {
             let LoadState::Ready(current_status) = &*status else {
                 return;
             };
@@ -3048,24 +3092,29 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
         })
     };
 
+    let set_board_size_auto = {
+        let change_board_size = change_board_size.clone();
+        Callback::from(move |_| change_board_size(AfkBoardSizePreference::Auto))
+    };
+
     let set_board_size_tiny = {
         let change_board_size = change_board_size.clone();
-        Callback::from(move |_| change_board_size(AfkBoardSize::Tiny))
+        Callback::from(move |_| change_board_size(AfkBoardSizePreference::Tiny))
     };
 
     let set_board_size_small = {
         let change_board_size = change_board_size.clone();
-        Callback::from(move |_| change_board_size(AfkBoardSize::Small))
+        Callback::from(move |_| change_board_size(AfkBoardSizePreference::Small))
     };
 
     let set_board_size_medium = {
         let change_board_size = change_board_size.clone();
-        Callback::from(move |_| change_board_size(AfkBoardSize::Medium))
+        Callback::from(move |_| change_board_size(AfkBoardSizePreference::Medium))
     };
 
     let set_board_size_large = {
         let change_board_size = change_board_size.clone();
-        Callback::from(move |_| change_board_size(AfkBoardSize::Large))
+        Callback::from(move |_| change_board_size(AfkBoardSizePreference::Large))
     };
 
     let cancel_board_size_restart = {
@@ -3820,45 +3869,56 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                                     menu_notice.clone(),
                                 )}
                                 {menu_wide_detail_row(
+                                    "Auto",
+                                    "based on viewers",
+                                    menu_icon_button(
+                                        "ok",
+                                        "Use automatic AFK board size",
+                                        displayed_preferences.board_size == AfkBoardSizePreference::Auto,
+                                        false,
+                                        set_board_size_auto.clone(),
+                                    ),
+                                )}
+                                {menu_wide_detail_row(
                                     "Tiny",
-                                    board_size_detail(AfkBoardSize::Tiny),
+                                    concrete_board_size_detail(AfkBoardSize::Tiny),
                                     menu_icon_button(
                                         "ok",
                                         "Use tiny AFK board size",
-                                        displayed_preferences.board_size == AfkBoardSize::Tiny,
+                                        displayed_preferences.board_size == AfkBoardSizePreference::Tiny,
                                         false,
                                         set_board_size_tiny.clone(),
                                     ),
                                 )}
                                 {menu_wide_detail_row(
                                     "Small",
-                                    board_size_detail(AfkBoardSize::Small),
+                                    concrete_board_size_detail(AfkBoardSize::Small),
                                     menu_icon_button(
                                         "ok",
                                         "Use small AFK board size",
-                                        displayed_preferences.board_size == AfkBoardSize::Small,
+                                        displayed_preferences.board_size == AfkBoardSizePreference::Small,
                                         false,
                                         set_board_size_small.clone(),
                                     ),
                                 )}
                                 {menu_wide_detail_row(
                                     "Medium",
-                                    board_size_detail(AfkBoardSize::Medium),
+                                    concrete_board_size_detail(AfkBoardSize::Medium),
                                     menu_icon_button(
                                         "ok",
                                         "Use medium AFK board size",
-                                        displayed_preferences.board_size == AfkBoardSize::Medium,
+                                        displayed_preferences.board_size == AfkBoardSizePreference::Medium,
                                         false,
                                         set_board_size_medium.clone(),
                                     ),
                                 )}
                                 {menu_wide_detail_row(
                                     "Large",
-                                    board_size_detail(AfkBoardSize::Large),
+                                    concrete_board_size_detail(AfkBoardSize::Large),
                                     menu_icon_button(
                                         "ok",
                                         "Use large AFK board size",
-                                        displayed_preferences.board_size == AfkBoardSize::Large,
+                                        displayed_preferences.board_size == AfkBoardSizePreference::Large,
                                         false,
                                         set_board_size_large.clone(),
                                     ),
@@ -3931,8 +3991,8 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                         && status.auth.identity.is_some()
                     {
                         let pending_label = (*pending_board_size)
-                            .map(board_size_label)
-                            .unwrap_or("New size");
+                            .map(|board_size| board_size_confirmation_label(status, board_size))
+                            .unwrap_or_else(|| AttrValue::from("New size"));
                         html! {
                             <>
                                 {menu_section_gap()}
@@ -4002,6 +4062,8 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                     } else {
                         let displayed_preferences =
                             displayed_afk_menu_preferences(status, *pre_auth_preferences);
+                        let displayed_board_size =
+                            board_size_root_label(status, displayed_preferences.board_size);
                         let primary_action = afk_root_primary_action(status);
                         let timeout_controls_disabled =
                             status.auth.identity.is_some() && !status.timeout_supported;
@@ -4015,6 +4077,7 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
                                 {afk_root_menu_rows(
                                     primary_action,
                                     displayed_preferences,
+                                    displayed_board_size,
                                     timeout_controls_disabled,
                                     &resume_board,
                                     &start_new_board,
@@ -4451,7 +4514,8 @@ mod tests {
             timeout_supported: true,
             timeout_enabled: true,
             timeout_duration_secs: 30,
-            board_size: AfkBoardSize::Medium,
+            board_size: AfkBoardSizePreference::Auto,
+            auto_board_size: None,
             connect_url: None,
             websocket_path: None,
             session: Some(session),
@@ -4522,7 +4586,8 @@ mod tests {
             timeout_supported: true,
             timeout_enabled: true,
             timeout_duration_secs: 30,
-            board_size: AfkBoardSize::Medium,
+            board_size: AfkBoardSizePreference::Auto,
+            auto_board_size: None,
             connect_url: None,
             websocket_path: None,
             session,
@@ -4549,8 +4614,8 @@ mod tests {
         let status = base_status(Some(active_test_session(1_000)));
 
         assert_eq!(
-            plan_board_size_change(&status, AfkBoardSize::Large),
-            AfkBoardSizeChangePlan::ConfirmRestart(AfkBoardSize::Large)
+            plan_board_size_change(&status, AfkBoardSizePreference::Large),
+            AfkBoardSizeChangePlan::ConfirmRestart(AfkBoardSizePreference::Large)
         );
     }
 
@@ -4559,8 +4624,37 @@ mod tests {
         let status = base_status(None);
 
         assert_eq!(
-            plan_board_size_change(&status, AfkBoardSize::Large),
-            AfkBoardSizeChangePlan::ApplyOnly(AfkBoardSize::Large)
+            plan_board_size_change(&status, AfkBoardSizePreference::Large),
+            AfkBoardSizeChangePlan::ApplyOnly(AfkBoardSizePreference::Large)
+        );
+    }
+
+    #[test]
+    fn disconnected_auto_board_size_root_label_is_lowercase_auto() {
+        assert_eq!(
+            board_size_root_label(&base_status(None), AfkBoardSizePreference::Auto),
+            AttrValue::from("auto")
+        );
+    }
+
+    #[test]
+    fn connected_auto_board_size_labels_use_the_resolved_size() {
+        let status = AfkStatusResponse {
+            auth: StreamerAuthStatus {
+                identity: Some(AfkIdentity::new("1", "streamer", "Streamer")),
+                ..StreamerAuthStatus::default()
+            },
+            auto_board_size: Some(AfkBoardSize::Medium),
+            ..base_status(None)
+        };
+
+        assert_eq!(
+            board_size_root_label(&status, AfkBoardSizePreference::Auto),
+            AttrValue::from("Medium (auto)")
+        );
+        assert_eq!(
+            board_size_confirmation_label(&status, AfkBoardSizePreference::Auto),
+            AttrValue::from("Medium (auto)")
         );
     }
 
@@ -4685,7 +4779,7 @@ mod tests {
             displayed_afk_menu_preferences(
                 &status,
                 Some(AfkMenuPreferences {
-                    board_size: AfkBoardSize::Large,
+                    board_size: AfkBoardSizePreference::Large,
                     timeout_enabled: false,
                     timeout_duration_secs: 90,
                     timer_preferences: AfkTimerPreferences {
@@ -4696,7 +4790,7 @@ mod tests {
                 }),
             ),
             AfkMenuPreferences {
-                board_size: AfkBoardSize::Large,
+                board_size: AfkBoardSizePreference::Large,
                 timeout_enabled: false,
                 timeout_duration_secs: 90,
                 timer_preferences: AfkTimerPreferences {
@@ -4719,7 +4813,7 @@ mod tests {
         }))
         .expect("draft should deserialize");
 
-        assert_eq!(draft.preferences.board_size, AfkBoardSize::Large);
+        assert_eq!(draft.preferences.board_size, AfkBoardSizePreference::Large);
         assert!(!draft.preferences.timeout_enabled);
         assert_eq!(draft.preferences.timeout_duration_secs, 90);
         assert_eq!(
@@ -5392,7 +5486,8 @@ mod tests {
             timeout_supported: true,
             timeout_enabled: true,
             timeout_duration_secs: 30,
-            board_size: AfkBoardSize::Medium,
+            board_size: AfkBoardSizePreference::Auto,
+            auto_board_size: None,
             connect_url: None,
             websocket_path: None,
             session: Some(AfkSessionSnapshot {
@@ -6030,7 +6125,8 @@ mod tests {
                 timeout_supported: true,
                 timeout_enabled: true,
                 timeout_duration_secs: 30,
-                board_size: AfkBoardSize::Medium,
+                board_size: AfkBoardSizePreference::Auto,
+                auto_board_size: None,
                 connect_url: None,
                 websocket_path: None,
                 session: Some(AfkSessionSnapshot {
@@ -6092,7 +6188,8 @@ mod tests {
                 timeout_supported: true,
                 timeout_enabled: true,
                 timeout_duration_secs: 30,
-                board_size: AfkBoardSize::Tiny,
+                board_size: AfkBoardSizePreference::Auto,
+                auto_board_size: None,
                 connect_url: None,
                 websocket_path: None,
                 session: Some(AfkSessionSnapshot {
@@ -6154,7 +6251,8 @@ mod tests {
                 timeout_supported: true,
                 timeout_enabled: true,
                 timeout_duration_secs: 30,
-                board_size: AfkBoardSize::Medium,
+                board_size: AfkBoardSizePreference::Auto,
+                auto_board_size: None,
                 connect_url: None,
                 websocket_path: None,
                 session: Some(AfkSessionSnapshot {
@@ -6225,7 +6323,8 @@ mod tests {
                 timeout_supported: true,
                 timeout_enabled: true,
                 timeout_duration_secs: 30,
-                board_size: AfkBoardSize::Medium,
+                board_size: AfkBoardSizePreference::Auto,
+                auto_board_size: None,
                 connect_url: None,
                 websocket_path: None,
                 session: Some(AfkSessionSnapshot {

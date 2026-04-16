@@ -201,6 +201,17 @@ pub enum AfkBoardSize {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum AfkBoardSizePreference {
+    #[default]
+    Auto,
+    Tiny,
+    Small,
+    Medium,
+    Large,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AfkHazardVariant {
     #[default]
     Mines,
@@ -264,7 +275,9 @@ pub struct AfkStatusResponse {
     pub timeout_supported: bool,
     pub timeout_enabled: bool,
     pub timeout_duration_secs: u32,
-    pub board_size: AfkBoardSize,
+    pub board_size: AfkBoardSizePreference,
+    #[serde(default)]
+    pub auto_board_size: Option<AfkBoardSize>,
     pub connect_url: Option<String>,
     pub websocket_path: Option<String>,
     pub session: Option<AfkSessionSnapshot>,
@@ -397,7 +410,7 @@ mod tests {
             "timeout_supported": true,
             "timeout_enabled": true,
             "timeout_duration_secs": 30,
-            "board_size": "medium",
+            "board_size": "auto",
             "connect_url": null,
             "websocket_path": null,
             "session": null
@@ -405,6 +418,36 @@ mod tests {
         .expect("status response should deserialize");
 
         assert_eq!(status.timer_preferences, AfkTimerPreferences::default());
+        assert_eq!(status.board_size, AfkBoardSizePreference::Auto);
+        assert_eq!(status.auto_board_size, None);
+    }
+
+    #[test]
+    fn status_response_deserialization_keeps_manual_board_size_values() {
+        let status: AfkStatusResponse = serde_json::from_value(json!({
+            "runtime": { "afk_enabled": true },
+            "auth": { "identity": null, "expires_at_ms": null },
+            "chat_connection": "idle",
+            "chat_error": null,
+            "timeout_supported": true,
+            "timeout_enabled": true,
+            "timeout_duration_secs": 30,
+            "board_size": "large",
+            "connect_url": null,
+            "websocket_path": null,
+            "session": null
+        }))
+        .expect("status response should deserialize");
+
+        assert_eq!(status.board_size, AfkBoardSizePreference::Large);
+    }
+
+    #[test]
+    fn board_size_preference_serializes_auto() {
+        let value =
+            serde_json::to_value(AfkBoardSizePreference::Auto).expect("preference should serialize");
+
+        assert_eq!(value, json!("auto"));
     }
 
     #[test]
