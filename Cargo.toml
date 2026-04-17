@@ -76,7 +76,7 @@ web-sys = { version = "0.3", features = [
     "WorkerType",
 ] }
 worker = "0.7.5"
-yew = { version = "0.22", features = ["csr"] }
+yew = { version = "0.23", features = ["csr"] }
 criterion = { version = "0.8", features = ["html_reports"] }
 smallvec = { version = "1", features = ["union", "serde"] }
 hashbrown = "0.16"
