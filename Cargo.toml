@@ -79,7 +79,7 @@ worker = "0.7.5"
 yew = { version = "0.22", features = ["csr"] }
 criterion = { version = "0.8", features = ["html_reports"] }
 smallvec = { version = "1", features = ["union", "serde"] }
-hashbrown = "0.16"
+hashbrown = "0.17"
 roxmltree = "0.20"
 toml = "0.8"
 toml_edit = "0.22"
