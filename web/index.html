@@ -2,23 +2,17 @@
 <html lang="en">
 <head>
 <meta charset="utf-8"/>
-<title>detonito - Minesweeper</title>
+<link data-trunk rel="inline" href="generated/seo-head.html" type="html"/>
 <link data-trunk rel="scss" href="scss/main.scss"/>
+<link data-trunk rel="copy-file" href="seo/favicon.svg"/>
+<link data-trunk rel="copy-file" href="seo/social-card.png"/>
+<link data-trunk rel="copy-file" href="generated/sitemap.xml"/>
 <link data-trunk rel="rust" href="./" data-wasm-opt="z" data-wasm-opt-params="--enable-bulk-memory"/>
 </head>
 <body>
-  <header>
-    <nav>
-      <ul>
-        <!-- TODO: title?
-        <li><strong>Detonito</strong></li>
-        -->
-      </ul>
-    </nav>
-  </header>
   <main>
-    <section id="game">
-    </section>
+    <link data-trunk rel="inline" href="generated/seo-body.html" type="html"/>
+    <section id="game" aria-label="Detonito game app"></section>
   </main>
 </body>
 </html>

@@ -29,6 +29,7 @@ ports:
 
 [working-directory: 'web']
 pages-build DIST='../dist/pages' PUBLIC_URL='/detonito':
+	cargo run -p xtask -- regen-seo
 	env -u NO_COLOR trunk build --release --minify --dist "{{DIST}}" --public-url "{{PUBLIC_URL}}" --no-default-features --features web-static
 
 worker-build-assets:
@@ -66,6 +67,9 @@ regen-fonts:
 
 regen-sprite:
 	cargo run -p xtask -- regen-sprite
+
+regen-seo:
+	cargo run -p xtask -- regen-seo
 
 regen-assets OPENMOJI_DIR='../openmoji':
 	cargo run -p xtask -- sync-openmoji --openmoji-dir "{{OPENMOJI_DIR}}"

@@ -1,0 +1,28 @@
+default_locale = "en"
+site_name = "Detonito"
+theme_color = "#b0b6ba"
+canonical_url = "https://sugoijan.dev/detonito/"
+favicon_href = "/detonito/favicon.svg"
+social_image_url = "https://sugoijan.dev/detonito/social-card.png"
+social_image_alt = "Detonito social card showing a retro Minesweeper-inspired board, title, and feature badges."
+social_image_type = "image/png"
+social_image_width = 1200
+social_image_height = 630
+robots = "index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1"
+application_category = "Game"
+operating_system = "Web Browser"
+genres = ["Puzzle", "Minesweeper"]
+twitter_card = "summary_large_image"
+is_accessible_for_free = true
+offers_price = "0"
+offers_price_currency = "USD"
+
+[locales.en]
+lang = "en"
+og_locale = "en_US"
+title = "Detonito | Browser Minesweeper, No-Guess Boards, and Twitch AFK Mode"
+description = "Play Detonito in your browser: classic Minesweeper, no-guess boards, custom sizes, and a Twitch-powered AFK mode for chat-driven rounds."
+structured_data_description = "A browser-first Minesweeper with classic boards, no-guess generation, custom sizes, and a Twitch-powered AFK mode."
+accessible_name = "Detonito"
+accessible_summary = "Browser Minesweeper with classic play, no-guess boards, custom setups, and optional Twitch-powered AFK mode."
+noscript = "Detonito requires JavaScript and WebAssembly to start a round."

@@ -1598,16 +1598,14 @@ impl AfkSessionDO {
         };
 
         let client_id = configured_var(&self.env, "TWITCH_CLIENT_ID");
-        let existing = list_eventsub_subscriptions(&client_id, &access_token)
-            .await
-            .map_err(error_from_display)?;
+        let existing =
+            list_eventsub_subscriptions(&client_id, &access_token, Some(CHANNEL_CHAT_MESSAGE))
+                .await
+                .map_err(error_from_display)?;
         for subscription in existing.data {
-            if subscription.subscription_type == CHANNEL_CHAT_MESSAGE {
-                if let Some(subscription_id) = subscription.id {
-                    let _ =
-                        delete_eventsub_subscription(&client_id, &access_token, &subscription_id)
-                            .await;
-                }
+            if subscription.r#type == CHANNEL_CHAT_MESSAGE && !subscription.id.is_empty() {
+                let _ = delete_eventsub_subscription(&client_id, &access_token, &subscription.id)
+                    .await;
             }
         }
 
@@ -1618,7 +1616,11 @@ impl AfkSessionDO {
         )
         .await
         .map_err(error_from_display)?;
-        state.eventsub.subscription_id = created.data.first().and_then(|sub| sub.id.clone());
+        state.eventsub.subscription_id = created
+            .data
+            .first()
+            .filter(|sub| !sub.id.is_empty())
+            .map(|sub| sub.id.clone());
         self.persist(state).await?;
         Ok(())
     }

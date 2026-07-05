@@ -8,3 +8,6 @@ worker/.dev.vars
 worker/build/
 worker/wrangler.generated.toml
 worker/node_modules/
+web/generated/seo-head.html
+web/generated/seo-body.html
+web/generated/sitemap.xml

@@ -12,6 +12,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use roxmltree::{Document, Node};
+use serde::Deserialize;
 use toml_edit::{DocumentMut, value};
 use ttf_parser::{Face, OutlineBuilder};
 use xmlwriter::{Indent, Options, XmlWriter};
@@ -129,6 +130,9 @@ enum Commands {
     /// Rebuild the local Iosevka-derived glyph sprite fragment and the combined sprite.
     #[command(name = "regen-fonts")]
     RegenFonts,
+    /// Regenerate the SEO metadata fragments and sitemap from the metadata manifest.
+    #[command(name = "regen-seo")]
+    RegenSeo,
 }
 
 #[derive(Args)]
@@ -155,6 +159,10 @@ enum BuildProfile {
 struct AssetPaths {
     repo_root: PathBuf,
     generated_dir: PathBuf,
+    seo_metadata: PathBuf,
+    seo_head: PathBuf,
+    seo_body: PathBuf,
+    seo_sitemap: PathBuf,
     openmoji_manifest: PathBuf,
     openmoji_upstream_dir: PathBuf,
     openmoji_custom_dir: PathBuf,
@@ -184,6 +192,42 @@ struct ManifestTransform {
     scale: f64,
     translate_x: f64,
     translate_y: f64,
+}
+
+#[derive(Debug, Deserialize)]
+struct SeoManifest {
+    default_locale: String,
+    site_name: String,
+    theme_color: String,
+    canonical_url: String,
+    favicon_href: String,
+    social_image_url: String,
+    social_image_alt: String,
+    social_image_type: String,
+    social_image_width: u32,
+    social_image_height: u32,
+    robots: String,
+    application_category: String,
+    operating_system: String,
+    genres: Vec<String>,
+    twitter_card: Option<String>,
+    twitter_site: Option<String>,
+    is_accessible_for_free: Option<bool>,
+    offers_price: Option<String>,
+    offers_price_currency: Option<String>,
+    locales: BTreeMap<String, SeoLocale>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SeoLocale {
+    lang: String,
+    title: String,
+    description: String,
+    structured_data_description: String,
+    accessible_name: String,
+    accessible_summary: String,
+    noscript: String,
+    og_locale: Option<String>,
 }
 
 impl ManifestTransform {
@@ -296,10 +340,13 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Dev => dev(&root),
         Commands::Ports => print_ports(&root),
-        Commands::Web => spawn_web(&root, false)?
-            .wait()
-            .map(|_| ())
-            .context("failed to wait for trunk"),
+        Commands::Web => {
+            regen_seo(&paths)?;
+            spawn_web(&root, false)?
+                .wait()
+                .map(|_| ())
+                .context("failed to wait for trunk")
+        }
         Commands::WorkerDev => {
             ensure_dev_vars(&root)?;
             prepare_worker_runtime(&root, BuildProfile::Dev)?;
@@ -337,6 +384,7 @@ fn main() -> Result<()> {
         ),
         Commands::RegenSprite => regen_sprite(&paths),
         Commands::RegenFonts => regen_fonts(&paths),
+        Commands::RegenSeo => regen_seo(&paths),
     }
 }
 
@@ -347,10 +395,15 @@ fn workspace_paths() -> Result<AssetPaths> {
         .to_path_buf();
     let web_dir = repo_root.join("web");
     let generated_dir = web_dir.join("generated");
+    let seo_dir = web_dir.join("seo");
 
     Ok(AssetPaths {
         repo_root: repo_root.clone(),
         generated_dir: generated_dir.clone(),
+        seo_metadata: seo_dir.join("metadata.toml"),
+        seo_head: generated_dir.join("seo-head.html"),
+        seo_body: generated_dir.join("seo-body.html"),
+        seo_sitemap: generated_dir.join("sitemap.xml"),
         openmoji_manifest: web_dir.join("assets/openmoji/manifest.toml"),
         openmoji_upstream_dir: web_dir.join("assets/openmoji/upstream"),
         openmoji_custom_dir: web_dir.join("assets/openmoji/custom"),
@@ -360,6 +413,252 @@ fn workspace_paths() -> Result<AssetPaths> {
         sprite: generated_dir.join("sprite.svg"),
         local_iosevka_repo: repo_root.parent().unwrap().join("Iosevka"),
     })
+}
+
+impl SeoManifest {
+    fn default_locale_entry(&self) -> Result<(&str, &SeoLocale)> {
+        let locale_key = self.default_locale.as_str();
+        let locale = self
+            .locales
+            .get(locale_key)
+            .with_context(|| format!("missing [locales.{locale_key}] entry in SEO manifest"))?;
+        Ok((locale_key, locale))
+    }
+}
+
+fn regen_seo(paths: &AssetPaths) -> Result<()> {
+    fs::create_dir_all(&paths.generated_dir)
+        .with_context(|| format!("failed to create {}", paths.generated_dir.display()))?;
+
+    let manifest_text = fs::read_to_string(&paths.seo_metadata)
+        .with_context(|| format!("failed to read {}", paths.seo_metadata.display()))?;
+    let manifest: SeoManifest = toml::from_str(&manifest_text)
+        .with_context(|| format!("failed to parse {}", paths.seo_metadata.display()))?;
+    let (_locale_key, locale) = manifest.default_locale_entry()?;
+
+    fs::write(&paths.seo_head, render_seo_head(&manifest, locale)?)
+        .with_context(|| format!("failed to write {}", paths.seo_head.display()))?;
+    fs::write(&paths.seo_body, render_seo_body(locale))
+        .with_context(|| format!("failed to write {}", paths.seo_body.display()))?;
+    fs::write(&paths.seo_sitemap, render_seo_sitemap(&manifest))
+        .with_context(|| format!("failed to write {}", paths.seo_sitemap.display()))?;
+    Ok(())
+}
+
+fn render_seo_head(manifest: &SeoManifest, locale: &SeoLocale) -> Result<String> {
+    let mut main_entity = serde_json::json!({
+        "@type": "VideoGame",
+        "name": &manifest.site_name,
+        "url": &manifest.canonical_url,
+        "description": &locale.structured_data_description,
+        "image": &manifest.social_image_url,
+        "genre": &manifest.genres,
+        "applicationCategory": &manifest.application_category,
+        "operatingSystem": &manifest.operating_system,
+    });
+    if let Some(free) = manifest.is_accessible_for_free {
+        main_entity["isAccessibleForFree"] = serde_json::json!(free);
+    }
+    if let Some(price) = &manifest.offers_price {
+        let mut offer = serde_json::json!({
+            "@type": "Offer",
+            "price": price,
+        });
+        if let Some(currency) = &manifest.offers_price_currency {
+            offer["priceCurrency"] = serde_json::json!(currency);
+        }
+        main_entity["offers"] = offer;
+    }
+    let structured_data = serde_json::to_string_pretty(&serde_json::json!({
+        "@context": "https://schema.org",
+        "@type": "WebPage",
+        "name": &manifest.site_name,
+        "url": &manifest.canonical_url,
+        "description": &locale.description,
+        "inLanguage": &locale.lang,
+        "image": &manifest.social_image_url,
+        "mainEntity": main_entity,
+    }))?;
+
+    let mut html = String::new();
+    writeln!(
+        html,
+        "<!-- Generated by `cargo run -p xtask -- regen-seo`. Edit `web/seo/metadata.toml` instead. -->"
+    )?;
+    writeln!(html, "<title>{}</title>", escape_html_text(&locale.title))?;
+    writeln!(
+        html,
+        r#"<meta name="description" content="{}"/>"#,
+        escape_html_attr(&locale.description)
+    )?;
+    writeln!(
+        html,
+        r#"<meta name="robots" content="{}"/>"#,
+        escape_html_attr(&manifest.robots)
+    )?;
+    writeln!(
+        html,
+        r#"<meta name="theme-color" content="{}"/>"#,
+        escape_html_attr(&manifest.theme_color)
+    )?;
+    writeln!(
+        html,
+        r#"<link rel="canonical" href="{}"/>"#,
+        escape_html_attr(&manifest.canonical_url)
+    )?;
+    writeln!(
+        html,
+        r#"<link data-dtn-favicon rel="icon" type="image/svg+xml" sizes="any" href="{}"/>"#,
+        escape_html_attr(&manifest.favicon_href)
+    )?;
+    writeln!(html, r#"<meta property="og:type" content="website"/>"#)?;
+    if let Some(og_locale) = &locale.og_locale {
+        writeln!(
+            html,
+            r#"<meta property="og:locale" content="{}"/>"#,
+            escape_html_attr(og_locale)
+        )?;
+    }
+    writeln!(
+        html,
+        r#"<meta property="og:site_name" content="{}"/>"#,
+        escape_html_attr(&manifest.site_name)
+    )?;
+    writeln!(
+        html,
+        r#"<meta property="og:title" content="{}"/>"#,
+        escape_html_attr(&locale.title)
+    )?;
+    writeln!(
+        html,
+        r#"<meta property="og:description" content="{}"/>"#,
+        escape_html_attr(&locale.description)
+    )?;
+    writeln!(
+        html,
+        r#"<meta property="og:url" content="{}"/>"#,
+        escape_html_attr(&manifest.canonical_url)
+    )?;
+    writeln!(
+        html,
+        r#"<meta property="og:image" content="{}"/>"#,
+        escape_html_attr(&manifest.social_image_url)
+    )?;
+    writeln!(
+        html,
+        r#"<meta property="og:image:alt" content="{}"/>"#,
+        escape_html_attr(&manifest.social_image_alt)
+    )?;
+    writeln!(
+        html,
+        r#"<meta property="og:image:type" content="{}"/>"#,
+        escape_html_attr(&manifest.social_image_type)
+    )?;
+    writeln!(
+        html,
+        r#"<meta property="og:image:width" content="{}"/>"#,
+        manifest.social_image_width
+    )?;
+    writeln!(
+        html,
+        r#"<meta property="og:image:height" content="{}"/>"#,
+        manifest.social_image_height
+    )?;
+    if let Some(twitter_card) = &manifest.twitter_card {
+        writeln!(
+            html,
+            r#"<meta name="twitter:card" content="{}"/>"#,
+            escape_html_attr(twitter_card)
+        )?;
+        if let Some(twitter_site) = &manifest.twitter_site {
+            writeln!(
+                html,
+                r#"<meta name="twitter:site" content="{}"/>"#,
+                escape_html_attr(twitter_site)
+            )?;
+        }
+        writeln!(
+            html,
+            r#"<meta name="twitter:title" content="{}"/>"#,
+            escape_html_attr(&locale.title)
+        )?;
+        writeln!(
+            html,
+            r#"<meta name="twitter:description" content="{}"/>"#,
+            escape_html_attr(&locale.description)
+        )?;
+        writeln!(
+            html,
+            r#"<meta name="twitter:image" content="{}"/>"#,
+            escape_html_attr(&manifest.social_image_url)
+        )?;
+        writeln!(
+            html,
+            r#"<meta name="twitter:image:alt" content="{}"/>"#,
+            escape_html_attr(&manifest.social_image_alt)
+        )?;
+    }
+    writeln!(html, r#"<script type="application/ld+json">"#)?;
+    writeln!(html, "{structured_data}")?;
+    writeln!(html, "</script>")?;
+    Ok(html)
+}
+
+fn render_seo_body(locale: &SeoLocale) -> String {
+    format!(
+        concat!(
+            "<!-- Generated by `cargo run -p xtask -- regen-seo`. Edit `web/seo/metadata.toml` instead. -->\n",
+            "<h1 class=\"sr-only\">{name}</h1>\n",
+            "<p class=\"sr-only\">{summary}</p>\n",
+            "<noscript>\n",
+            "  <p class=\"app-noscript\">{noscript}</p>\n",
+            "</noscript>\n"
+        ),
+        name = escape_html_text(&locale.accessible_name),
+        summary = escape_html_text(&locale.accessible_summary),
+        noscript = escape_html_text(&locale.noscript),
+    )
+}
+
+fn render_seo_sitemap(manifest: &SeoManifest) -> String {
+    format!(
+        concat!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+            "<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n",
+            "  <url>\n",
+            "    <loc>{}</loc>\n",
+            "  </url>\n",
+            "</urlset>\n"
+        ),
+        escape_html_text(&manifest.canonical_url)
+    )
+}
+
+fn escape_html_text(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
+fn escape_html_attr(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '&' => escaped.push_str("&amp;"),
+            '"' => escaped.push_str("&quot;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
 }
 
 fn dev(root: &Path) -> Result<()> {
@@ -432,6 +731,7 @@ fn prepare_worker_runtime(root: &Path, profile: BuildProfile) -> Result<()> {
 }
 
 fn stage_worker_assets(root: &Path, profile: BuildProfile) -> Result<()> {
+    regen_seo(&workspace_paths()?)?;
     let base_path = configured_base_path(root)?;
     let assets_root = worker_assets_root(root);
     let dist_dir = worker_dist_dir(root, &base_path);
@@ -844,13 +1144,16 @@ fn write_worker_headers(root: &Path, base_path: &str) -> Result<()> {
     } else {
         format!("{base_path}/index.html")
     };
+    let sitemap_route = join_base_path(base_path, "/sitemap.xml");
+    let favicon_route = join_base_path(base_path, "/favicon.svg");
+    let social_card_route = join_base_path(base_path, "/social-card.png");
     let css_route = scoped_route(base_path, "*.css");
     let js_route = scoped_route(base_path, "*.js");
     let wasm_route = scoped_route(base_path, "*.wasm");
     let svg_route = scoped_route(base_path, "*.svg");
 
     let content = format!(
-        "{root_route}\n  Cache-Control: public, max-age=0, must-revalidate\n\n{index_route}\n  Cache-Control: public, max-age=0, must-revalidate\n\n{css_route}\n  Cache-Control: public, max-age=31536000, immutable\n\n{js_route}\n  Cache-Control: public, max-age=31536000, immutable\n\n{wasm_route}\n  Cache-Control: public, max-age=31536000, immutable\n\n{svg_route}\n  Cache-Control: public, max-age=31536000, immutable\n"
+        "{root_route}\n  Cache-Control: public, max-age=0, must-revalidate\n\n{index_route}\n  Cache-Control: public, max-age=0, must-revalidate\n\n{sitemap_route}\n  Cache-Control: public, max-age=0, must-revalidate\n\n{favicon_route}\n  Cache-Control: public, max-age=0, must-revalidate\n\n{social_card_route}\n  Cache-Control: public, max-age=0, must-revalidate\n\n{css_route}\n  Cache-Control: public, max-age=31536000, immutable\n\n{js_route}\n  Cache-Control: public, max-age=31536000, immutable\n\n{wasm_route}\n  Cache-Control: public, max-age=31536000, immutable\n\n{svg_route}\n  Cache-Control: public, max-age=31536000, immutable\n"
     );
     fs::write(assets_root.join("_headers"), content)
         .with_context(|| format!("failed to write {}", assets_root.join("_headers").display()))

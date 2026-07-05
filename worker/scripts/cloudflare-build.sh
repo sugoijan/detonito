@@ -39,7 +39,7 @@ rustup default stable
 rustup target add wasm32-unknown-unknown
 
 ensure_cargo_tool trunk 0.21.14
-ensure_cargo_tool worker-build 0.7.5
+ensure_cargo_tool worker-build 0.8.5
 
 cd "$REPO_ROOT"
 cargo run -p xtask -- worker-prepare-deploy
