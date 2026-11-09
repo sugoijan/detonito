@@ -77,13 +77,14 @@ impl NoGuessLayoutGenerator {
 
             stats.max_depth_reached = stats.max_depth_reached.max(stack.len());
 
-            let (fixed_mines, fixed_safe) = {
-                let frame = stack.last().unwrap();
-                (frame.fixed_mines.clone(), frame.fixed_safe.clone())
-            };
-
-            let layout =
-                generate_constrained(config, &fixed_mines, &fixed_safe, self.first_move, &mut rng);
+            let frame = stack.last().unwrap();
+            let layout = generate_constrained(
+                config,
+                &frame.fixed_mines,
+                &frame.fixed_safe,
+                self.first_move,
+                &mut rng,
+            );
             stats.attempts += 1;
 
             match simulate_to_guess(&layout, self.first_move) {
@@ -92,32 +93,22 @@ impl NoGuessLayoutGenerator {
                     stats.succeeded = true;
                     return (layout, stats);
                 }
-                SimResult::HitMine => {
+                SimResult::GuessRequired {
+                    accumulated_mines,
+                    revealed_cells,
+                } if accumulated_mines.len() > frame.fixed_mines.len() => {
+                    stack.push(StackFrame {
+                        fixed_mines: accumulated_mines,
+                        fixed_safe: revealed_cells,
+                        retries_used: 0,
+                    });
+                }
+                SimResult::HitMine | SimResult::GuessRequired { .. } => {
                     let frame = stack.last_mut().unwrap();
                     frame.retries_used += 1;
                     if frame.retries_used >= self.max_retries_per_level {
                         stack.pop();
                         stats.backtracks += 1;
-                    }
-                }
-                SimResult::GuessRequired {
-                    accumulated_mines,
-                    revealed_cells,
-                } => {
-                    let current_fixed_count = stack.last().unwrap().fixed_mines.len();
-                    if accumulated_mines.len() > current_fixed_count {
-                        stack.push(StackFrame {
-                            fixed_mines: accumulated_mines,
-                            fixed_safe: revealed_cells,
-                            retries_used: 0,
-                        });
-                    } else {
-                        let frame = stack.last_mut().unwrap();
-                        frame.retries_used += 1;
-                        if frame.retries_used >= self.max_retries_per_level {
-                            stack.pop();
-                            stats.backtracks += 1;
-                        }
                     }
                 }
             }

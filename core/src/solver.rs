@@ -116,11 +116,6 @@ pub enum SolveDepth {
 
 // StatefulSolver reuses per-component SAT solvers across steps
 
-/// Cached solver for a single connected component.
-struct CachedComponent {
-    handle: sat_check::ComponentSolverHandle,
-}
-
 /// A solver that caches per-component `BasicSolver` instances across consecutive
 /// `solve()` calls on the same game. CDCL learned clauses are preserved, and
 /// previously-resolved variables are passed as additional assumptions rather than
@@ -138,7 +133,7 @@ struct CachedComponent {
 pub struct StatefulSolver {
     cfg: SolverConfig,
     /// Key: sorted `SmallVec<[EquationId; 8]>` (component identity).
-    component_cache: HashMap<SmallVec<[EquationId; 8]>, CachedComponent>,
+    component_cache: HashMap<SmallVec<[EquationId; 8]>, sat_check::ComponentSolverHandle>,
     /// All variable assignments (safe/mine) accumulated across `solve()` calls.
     /// Used as cumulative assumptions when reusing a cached solver so that
     /// previously-resolved variables are correctly handled by the old CNF.
@@ -325,25 +320,19 @@ impl StatefulSolver {
                     // Sort in-place so we can use binary_search for membership tests.
                     unresolved_vars.sort_unstable();
 
-                    let component_equations: Vec<&ConstraintEquation> = component
-                        .equation_ids
-                        .iter()
-                        .filter_map(|&eq_id| eq_by_id.get(&eq_id).copied())
-                        .collect();
-
                     let result = if let Some(cached) = self
                         .component_cache
                         .get_mut(component.equation_ids.as_slice())
                     {
                         total_components_cache_hits += 1;
 
-                        let mut all_priors = phase1_priors.clone();
                         let mut phase1_ids: Vec<CellVarId> =
                             phase1_priors.iter().map(|(id, _)| *id).collect();
                         phase1_ids.sort_unstable();
+                        let mut all_priors = phase1_priors;
 
                         for (&var_id, &is_mine) in &self.cumulative_assignments {
-                            if cached.handle.all_var_ids.binary_search(&var_id).is_ok()
+                            if cached.all_var_ids.binary_search(&var_id).is_ok()
                                 && unresolved_vars.binary_search(&var_id).is_err()
                                 && phase1_ids.binary_search(&var_id).is_err()
                             {
@@ -351,15 +340,20 @@ impl StatefulSolver {
                             }
                         }
 
-                        cached.handle.query_forced(&unresolved_vars, &all_priors)?
+                        cached.query_forced(&unresolved_vars, &all_priors)?
                     } else {
+                        let component_equations: Vec<&ConstraintEquation> = component
+                            .equation_ids
+                            .iter()
+                            .filter_map(|&eq_id| eq_by_id.get(&eq_id).copied())
+                            .collect();
                         let mut handle = sat_check::ComponentSolverHandle::new(
                             &component_equations,
                             &component.variable_ids,
                         )?;
                         let result = handle.query_forced(&unresolved_vars, &phase1_priors)?;
                         self.component_cache
-                            .insert(component.equation_ids.clone(), CachedComponent { handle });
+                            .insert(component.equation_ids.clone(), handle);
                         result
                     };
 
@@ -397,9 +391,9 @@ impl StatefulSolver {
                     // Reduce for Phase 3 using only the new cascade results - the
                     // original Phase 1+2 cells are already absent from current_problem.
                     if !cascade.forced_safe.is_empty() || !cascade.forced_mines.is_empty() {
-                        let mut cascade_mines = cascade.forced_mines.clone();
+                        let mut cascade_mines = cascade.forced_mines;
                         cascade_mines.sort_unstable();
-                        let mut cascade_safe = cascade.forced_safe.clone();
+                        let mut cascade_safe = cascade.forced_safe;
                         cascade_safe.sort_unstable();
                         current_problem =
                             current_problem.apply_prior_assignments(&cascade_mines, &cascade_safe);

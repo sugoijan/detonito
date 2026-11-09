@@ -40,27 +40,7 @@ pub(crate) fn cell_pointer_callbacks<Pos>(
 where
     Pos: Copy + 'static,
 {
-    let onmousedown = {
-        let callback = callback.clone();
-        Callback::from(move |event: MouseEvent| {
-            callback.emit(CellMsg::Update(CellPointerState {
-                pos,
-                buttons: MouseButtons::from_bits_truncate(event.buttons()),
-            }));
-        })
-    };
-
-    let onmouseup = {
-        let callback = callback.clone();
-        Callback::from(move |event: MouseEvent| {
-            callback.emit(CellMsg::Update(CellPointerState {
-                pos,
-                buttons: MouseButtons::from_bits_truncate(event.buttons()),
-            }));
-        })
-    };
-
-    let onmouseenter = {
+    let on_update = {
         let callback = callback.clone();
         Callback::from(move |event: MouseEvent| {
             callback.emit(CellMsg::Update(CellPointerState {
@@ -73,9 +53,9 @@ where
     let onmouseleave = Callback::from(move |_event: MouseEvent| callback.emit(CellMsg::Leave));
 
     CellPointerCallbacks {
-        onmousedown,
-        onmouseup,
-        onmouseenter,
+        onmousedown: on_update.clone(),
+        onmouseup: on_update.clone(),
+        onmouseenter: on_update,
         onmouseleave,
     }
 }

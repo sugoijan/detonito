@@ -1,4 +1,4 @@
-use alloc::collections::{BTreeSet, VecDeque};
+use alloc::collections::VecDeque;
 use core::num::Saturating;
 use ndarray::Array2;
 use serde::{Deserialize, Serialize};
@@ -212,17 +212,12 @@ impl PlayEngine {
                 self.revealed_count += 1;
 
                 if adjacent_mines == 0 {
-                    let mut visited = BTreeSet::from([coords]);
                     let mut to_visit: VecDeque<_> = self
                         .mine_layout_iter_neighbors(coords)
                         .filter(|&pos| matches!(self.board[pos.to_nd_index()], EngineCell::Hidden))
                         .collect();
 
                     while let Some(visit_coords) = to_visit.pop_front() {
-                        if !visited.insert(visit_coords) {
-                            continue;
-                        }
-
                         if matches!(
                             self.board[visit_coords.to_nd_index()],
                             EngineCell::Revealed(_) | EngineCell::Flagged
@@ -237,13 +232,9 @@ impl PlayEngine {
                         self.revealed_count += 1;
 
                         if visit_adjacent_mines == 0 {
-                            to_visit.extend(
-                                self.mine_layout_iter_neighbors(visit_coords)
-                                    .filter(|&pos| {
-                                        matches!(self.board[pos.to_nd_index()], EngineCell::Hidden)
-                                    })
-                                    .filter(|pos| !visited.contains(pos)),
-                            );
+                            to_visit.extend(self.mine_layout_iter_neighbors(visit_coords).filter(
+                                |&pos| matches!(self.board[pos.to_nd_index()], EngineCell::Hidden),
+                            ));
                         }
                     }
                 }
@@ -347,6 +338,23 @@ mod tests {
         assert_eq!(engine.cell_at((0, 0)), EngineCell::Revealed(0));
         assert_eq!(engine.cell_at((1, 1)), EngineCell::Revealed(1));
         assert_eq!(engine.cell_at((2, 2)), EngineCell::Hidden);
+    }
+
+    #[test]
+    fn flood_fill_preserves_flags_and_counts_each_cell_once() {
+        let mut engine = PlayEngine::new(layout((4, 4), &[(3, 3)]));
+
+        engine.reveal((2, 2)).unwrap();
+        engine.toggle_flag((0, 0)).unwrap();
+
+        assert_eq!(engine.reveal((0, 1)).unwrap(), RevealOutcome::Revealed);
+        assert_eq!(engine.state(), EngineState::Active);
+        assert_eq!(engine.cell_at((0, 0)), EngineCell::Flagged);
+        assert_eq!(engine.reveal((0, 1)).unwrap(), RevealOutcome::NoChange);
+
+        engine.toggle_flag((0, 0)).unwrap();
+        assert_eq!(engine.reveal((0, 0)).unwrap(), RevealOutcome::Won);
+        assert_eq!(engine.state(), EngineState::Won);
     }
 
     #[test]

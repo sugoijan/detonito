@@ -1473,11 +1473,11 @@ impl AfkSessionDO {
         state: &mut PersistedAfkState,
         force_refresh: bool,
     ) -> Result<Option<String>> {
-        let Some(tokens) = state.tokens.clone() else {
+        let Some(tokens) = state.tokens.as_ref() else {
             return Ok(None);
         };
-        if !force_refresh && !should_refresh_twitch_token(&tokens, now_ms()) {
-            return Ok(Some(tokens.access_token));
+        if !force_refresh && !should_refresh_twitch_token(tokens, now_ms()) {
+            return Ok(Some(tokens.access_token.clone()));
         }
 
         let refreshed = refresh_access_token(
@@ -1487,7 +1487,7 @@ impl AfkSessionDO {
         )
         .await
         .map_err(error_from_display)?;
-        let next_tokens = refreshed_twitch_token_state(&tokens, refreshed, now_ms())
+        let next_tokens = refreshed_twitch_token_state(tokens, refreshed, now_ms())
             .map_err(error_from_display)?;
         let access_token = next_tokens.access_token.clone();
         state.tokens = Some(next_tokens);
@@ -2737,7 +2737,7 @@ impl DurableObject for AfkSessionDO {
                 self.prepare_status_state(&mut state).await?;
                 Response::from_json(&self.status_response(&state))
             }
-            (Method::Post, "/api/afk/stop") => {
+            (Method::Post, "/api/afk/stop" | "/api/afk/panic-reset") => {
                 let mut state = self.load().await?;
                 let _ = self.cleanup_live_session(&mut state).await?;
                 self.persist(&state).await?;
@@ -2776,15 +2776,6 @@ impl DurableObject for AfkSessionDO {
                 }
                 self.persist(&state).await?;
                 self.prepare_status_state(&mut state).await?;
-                self.broadcast_status(&state);
-                Response::from_json(&self.status_response(&state))
-            }
-            (Method::Post, "/api/afk/panic-reset") => {
-                let mut state = self.load().await?;
-                let _ = self.cleanup_live_session(&mut state).await?;
-                self.persist(&state).await?;
-                self.prepare_status_state(&mut state).await?;
-                self.schedule_alarm(&state).await?;
                 self.broadcast_status(&state);
                 Response::from_json(&self.status_response(&state))
             }

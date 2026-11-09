@@ -272,9 +272,8 @@ impl ConstraintDelta {
         let before_vars: BTreeSet<_> = before.variables.iter().map(|var| var.id).collect();
         let after_vars: BTreeSet<_> = after.variables.iter().map(|var| var.id).collect();
 
-        let mut added_variable_ids: Vec<_> = after_vars.difference(&before_vars).copied().collect();
-        let mut removed_variable_ids: Vec<_> =
-            before_vars.difference(&after_vars).copied().collect();
+        let added_variable_ids: Vec<_> = after_vars.difference(&before_vars).copied().collect();
+        let removed_variable_ids: Vec<_> = before_vars.difference(&after_vars).copied().collect();
 
         let before_eqs: BTreeMap<_, _> = before.equations.iter().map(|eq| (eq.id, eq)).collect();
         let after_eqs: BTreeMap<_, _> = after.equations.iter().map(|eq| (eq.id, eq)).collect();
@@ -282,9 +281,8 @@ impl ConstraintDelta {
         let before_eq_ids: BTreeSet<_> = before_eqs.keys().copied().collect();
         let after_eq_ids: BTreeSet<_> = after_eqs.keys().copied().collect();
 
-        let mut added_equation_ids: Vec<_> =
-            after_eq_ids.difference(&before_eq_ids).copied().collect();
-        let mut removed_equation_ids: Vec<_> =
+        let added_equation_ids: Vec<_> = after_eq_ids.difference(&before_eq_ids).copied().collect();
+        let removed_equation_ids: Vec<_> =
             before_eq_ids.difference(&after_eq_ids).copied().collect();
 
         let mut updated_equation_ids = Vec::new();
@@ -297,12 +295,6 @@ impl ConstraintDelta {
                 updated_equation_ids.push(*eq_id);
             }
         }
-
-        added_variable_ids.sort_unstable();
-        removed_variable_ids.sort_unstable();
-        added_equation_ids.sort_unstable();
-        removed_equation_ids.sort_unstable();
-        updated_equation_ids.sort_unstable();
 
         let mut affected_variables = BTreeSet::new();
         affected_variables.extend(added_variable_ids.iter().copied());

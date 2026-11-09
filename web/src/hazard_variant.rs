@@ -1,13 +1,9 @@
 #[cfg(feature = "afk-runtime")]
-use crate::runtime::app_path;
+use crate::http::post_request;
 use crate::utils::*;
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "afk-runtime")]
-use wasm_bindgen::{JsCast, JsValue};
-#[cfg(feature = "afk-runtime")]
 use wasm_bindgen_futures::spawn_local;
-#[cfg(feature = "afk-runtime")]
-use web_sys::{Request, RequestCredentials, RequestInit};
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum HazardVariant {
@@ -90,36 +86,13 @@ impl StorageKey for HazardVariant {
 
 #[cfg(feature = "afk-runtime")]
 async fn post_afk_variant(hazard_variant: HazardVariant) -> Result<(), String> {
-    let init = RequestInit::new();
-    init.set_method("POST");
-    init.set_credentials(RequestCredentials::Include);
-    init.set_body(&JsValue::from_str(
-        &serde_json::json!({
-            "hazard_variant": hazard_variant.to_afk_protocol(),
-        })
-        .to_string(),
-    ));
-    let request =
-        Request::new_with_str_and_init(&app_path("/api/afk/variant"), &init).map_err(js_error)?;
-    request
-        .headers()
-        .set("Content-Type", "application/json")
-        .map_err(js_error)?;
-    let response =
-        wasm_bindgen_futures::JsFuture::from(gloo::utils::window().fetch_with_request(&request))
-            .await
-            .map_err(js_error)?;
-    let response: web_sys::Response = response.dyn_into().map_err(js_error)?;
-    if response.ok() {
-        Ok(())
-    } else {
-        Err(format!("request failed with {}", response.status()))
-    }
-}
-
-#[cfg(feature = "afk-runtime")]
-fn js_error(error: impl core::fmt::Debug) -> String {
-    format!("{error:?}")
+    let body = serde_json::json!({
+        "hazard_variant": hazard_variant.to_afk_protocol(),
+    })
+    .to_string();
+    post_request("/api/afk/variant", Some(body))
+        .await
+        .map(|_| ())
 }
 
 #[cfg(test)]

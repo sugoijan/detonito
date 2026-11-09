@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
 use worker::Url;
 
+use crate::{join_base_path, normalize_base_path};
+
 const OAUTH_STATE_TTL_MS: i64 = 10 * 60 * 1_000;
 const AUTH_TOKEN_TTL_MS: i64 = 24 * 60 * 60 * 1_000;
 const AUTH_TOKEN_TTL_SECS: i64 = AUTH_TOKEN_TTL_MS / 1_000;
@@ -240,36 +242,6 @@ fn verify_signed_payload<T: DeserializeOwned>(
     token: &str,
 ) -> Result<T, AuthError> {
     signing::verify_signed_payload(signing_secret, token).map_err(AuthError::from)
-}
-
-fn normalize_base_path(path: &str) -> String {
-    let trimmed = path.trim();
-    if trimmed.is_empty() || trimmed == "/" {
-        return "/".to_string();
-    }
-    let normalized = trimmed.trim_end_matches('/');
-    if normalized.starts_with('/') {
-        normalized.to_string()
-    } else {
-        format!("/{normalized}")
-    }
-}
-
-fn join_base_path(base_path: &str, path: &str) -> String {
-    let base_path = normalize_base_path(base_path);
-    let path = if path.starts_with('/') {
-        path.to_string()
-    } else {
-        format!("/{path}")
-    };
-
-    if base_path == "/" {
-        path
-    } else if path == "/" {
-        format!("{base_path}/")
-    } else {
-        format!("{base_path}{path}")
-    }
 }
 
 fn join_public_url(public_url: &str, path: &str) -> Result<Url, worker::Error> {

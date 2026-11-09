@@ -10,6 +10,8 @@ mod app;
 mod board_input;
 mod game;
 mod hazard_variant;
+#[cfg(feature = "afk-runtime")]
+mod http;
 mod menu;
 mod no_guess_worker;
 mod normal;

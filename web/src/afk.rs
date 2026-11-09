@@ -5,6 +5,7 @@ use crate::board_input::{
     MouseButtons, cell_pointer_callbacks, update_cell_pointer_state,
 };
 use crate::hazard_variant::HazardVariant;
+use crate::http::{fetch_request, js_error, post_request};
 use detonito_protocol::{
     AfkActionKind, AfkActionRequest, AfkActivityKind, AfkActivityRow, AfkBoardSize,
     AfkBoardSizePreference, AfkCellSnapshot, AfkChatConnectionState, AfkClientMessage,
@@ -17,9 +18,7 @@ use js_sys::{Reflect, encode_uri_component};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 use wasm_bindgen_futures::{JsFuture, spawn_local};
-use web_sys::{
-    Element, Event, MessageEvent, Request, RequestCredentials, RequestInit, Response, WebSocket,
-};
+use web_sys::{Element, Event, MessageEvent, Response, WebSocket};
 use yew::prelude::*;
 
 use crate::menu::{
@@ -4284,12 +4283,7 @@ pub(crate) fn AfkView(props: &AfkViewProps) -> Html {
 }
 
 async fn fetch_status() -> Result<AfkStatusResponse, String> {
-    let init = RequestInit::new();
-    init.set_method("GET");
-    init.set_credentials(RequestCredentials::Include);
-    let request =
-        Request::new_with_str_and_init(&app_path("/api/afk/status"), &init).map_err(js_error)?;
-    let response = fetch_request(request).await?;
+    let response = fetch_request("GET", "/api/afk/status", None).await?;
     if !response.ok() {
         return Err(format!("status request failed with {}", response.status()));
     }
@@ -4297,27 +4291,11 @@ async fn fetch_status() -> Result<AfkStatusResponse, String> {
 }
 
 async fn post_action(path: &str) -> Result<(), String> {
-    let init = RequestInit::new();
-    init.set_method("POST");
-    init.set_credentials(RequestCredentials::Include);
-    let request = Request::new_with_str_and_init(&app_path(path), &init).map_err(js_error)?;
-    let response = fetch_request(request).await?;
-    if response.ok() {
-        Ok(())
-    } else {
-        Err(format!("request failed with {}", response.status()))
-    }
+    post_request(path, None).await.map(|_| ())
 }
 
 async fn post_empty_status(path: &str) -> Result<AfkStatusResponse, String> {
-    let init = RequestInit::new();
-    init.set_method("POST");
-    init.set_credentials(RequestCredentials::Include);
-    let request = Request::new_with_str_and_init(&app_path(path), &init).map_err(js_error)?;
-    let response = fetch_request(request).await?;
-    if !response.ok() {
-        return Err(format!("request failed with {}", response.status()));
-    }
+    let response = post_request(path, None).await?;
     read_json(response).await
 }
 
@@ -4386,30 +4364,9 @@ async fn post_json_status<T>(path: &str, request_body: &T) -> Result<AfkStatusRe
 where
     T: serde::Serialize,
 {
-    let init = RequestInit::new();
-    init.set_method("POST");
-    init.set_credentials(RequestCredentials::Include);
-    init.set_body(&JsValue::from_str(
-        &serde_json::to_string(&request_body).map_err(|error| error.to_string())?,
-    ));
-    let request = Request::new_with_str_and_init(&app_path(path), &init).map_err(js_error)?;
-    request
-        .headers()
-        .set("Content-Type", "application/json")
-        .map_err(js_error)?;
-    let response = fetch_request(request).await?;
-    if !response.ok() {
-        return Err(format!("request failed with {}", response.status()));
-    }
+    let body = serde_json::to_string(request_body).map_err(|error| error.to_string())?;
+    let response = post_request(path, Some(body)).await?;
     read_json(response).await
-}
-
-async fn fetch_request(request: Request) -> Result<Response, String> {
-    let window = gloo::utils::window();
-    let response = JsFuture::from(window.fetch_with_request(&request))
-        .await
-        .map_err(js_error)?;
-    response.dyn_into().map_err(js_error)
 }
 
 async fn read_json<T>(response: Response) -> Result<T, String>
@@ -4424,10 +4381,6 @@ where
         .as_string()
         .ok_or_else(|| "response JSON could not be stringified".to_string())?;
     serde_json::from_str(&serialized).map_err(|error| error.to_string())
-}
-
-fn js_error(error: impl core::fmt::Debug) -> String {
-    format!("{error:?}")
 }
 
 #[cfg(test)]

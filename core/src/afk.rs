@@ -328,16 +328,8 @@ impl AfkEngine {
     }
 
     pub fn display_timer_remaining_secs(&self, now_ms: i64) -> i32 {
-        let now_ms = self.effective_now_ms(now_ms);
-        match self.phase {
-            AfkRoundPhase::Countdown => {
-                (((self.countdown_ends_at_ms - now_ms).max(0) + 999) / 1_000) as i32
-            }
-            AfkRoundPhase::Active => self.timer_remaining_secs,
-            AfkRoundPhase::Won | AfkRoundPhase::TimedOut => {
-                (((self.auto_restart_at_ms - now_ms).max(0) + 999) / 1_000) as i32
-            }
-        }
+        self.phase_countdown_secs(now_ms)
+            .unwrap_or(self.timer_remaining_secs)
     }
 
     pub fn next_alarm_at_ms(&self, now_ms: i64) -> Option<i64> {

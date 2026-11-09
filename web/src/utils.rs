@@ -72,17 +72,17 @@ impl<T: StorageKey> LocalDelete for T {
 }
 
 /// Easily save values to local storage
-pub(crate) trait LocalSave: Clone + StorageKey {
+pub(crate) trait LocalSave: StorageKey {
     fn local_save(&self);
 }
 
 impl<T> LocalSave for T
 where
-    T: serde::Serialize + Clone + StorageKey,
+    T: serde::Serialize + StorageKey,
 {
     fn local_save(&self) {
         use gloo::storage::{LocalStorage, Storage};
-        if let Err(err) = LocalStorage::set(Self::KEY, self.clone()) {
+        if let Err(err) = LocalStorage::set(Self::KEY, self) {
             log::error!(
                 "Could not save to local storage key {}: {:?}",
                 Self::KEY,

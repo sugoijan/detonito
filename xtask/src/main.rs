@@ -1700,24 +1700,16 @@ fn write_normalized_openmoji_node(
         }
     }
 
-    let mut attrs = BTreeMap::new();
-    for (key, value) in raw_attrs.iter() {
-        if key == "fill" || key == "stroke" {
-            continue;
-        }
-        attrs.insert(key.clone(), value.clone());
-    }
-    for (key, value) in style_attrs {
-        attrs.insert(key, value);
-    }
+    let fill = raw_attrs.remove("fill");
+    let stroke = raw_attrs.remove("stroke");
+    let mut attrs = raw_attrs;
+    attrs.extend(style_attrs);
 
     if let Some(layer_name) = layer_name.as_deref() {
         append_class(&mut attrs, "dtn-openmoji-layer");
         append_class(&mut attrs, &format!("dtn-openmoji-layer-{layer_name}"));
     }
 
-    let fill = raw_attrs.get("fill").cloned();
-    let stroke = raw_attrs.get("stroke").cloned();
     if let Some(fill) = fill {
         rewrite_paint(&mut attrs, icon_name, "fill", &fill)?;
     } else if layer_name.as_deref() == Some("line")
