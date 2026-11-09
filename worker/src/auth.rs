@@ -1,4 +1,5 @@
-use barbed::oauth::OAuthStatePayload;
+use barbed::helix::{HelixError, TwitchTokenExchange};
+use barbed::oauth::{OAuthStatePayload, TwitchTokenState};
 use barbed::signing::{self, SigningError};
 use detonito_protocol::AfkIdentity;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -127,6 +128,19 @@ pub fn refreshed_auth_claims(claims: &SignedAuthClaims, now_ms: i64) -> SignedAu
         issued_at_ms: now_ms,
         expires_at_ms: now_ms + AUTH_TOKEN_TTL_MS,
     }
+}
+
+pub fn refreshed_twitch_token_state(
+    previous: &TwitchTokenState,
+    mut exchange: TwitchTokenExchange,
+    now_ms: i64,
+) -> Result<TwitchTokenState, HelixError> {
+    // Refresh responses may omit metadata; retain the existing session values.
+    exchange.scope.get_or_insert_with(|| previous.scope.clone());
+    exchange
+        .token_type
+        .get_or_insert_with(|| previous.token_type.clone());
+    exchange.into_token_state(Some(&previous.refresh_token), now_ms)
 }
 
 pub fn complete_twitch_callback(
@@ -299,6 +313,68 @@ mod tests {
         let refreshed = refreshed_auth_claims(&claims, 15);
         assert_eq!(refreshed.identity.login, "tester");
         assert!(refreshed.expires_at_ms > claims.expires_at_ms);
+    }
+
+    #[test]
+    fn twitch_refresh_preserves_omitted_session_metadata() {
+        let previous = TwitchTokenState {
+            access_token: "old-access".into(),
+            refresh_token: "old-refresh".into(),
+            expires_in_seconds: Some(3_600),
+            scope: vec!["moderator:manage:banned_users".into()],
+            token_type: "Bearer".into(),
+            linked_at_ms: 10,
+        };
+        let exchange = TwitchTokenExchange {
+            access_token: "new-access".into(),
+            refresh_token: None,
+            expires_in: Some(7_200),
+            scope: None,
+            token_type: None,
+        };
+
+        let refreshed = refreshed_twitch_token_state(&previous, exchange, 20).unwrap();
+        assert_eq!(
+            refreshed,
+            TwitchTokenState {
+                access_token: "new-access".into(),
+                expires_in_seconds: Some(7_200),
+                linked_at_ms: 20,
+                ..previous
+            }
+        );
+    }
+
+    #[test]
+    fn twitch_refresh_applies_rotated_tokens_and_explicit_empty_scopes() {
+        let previous = TwitchTokenState {
+            access_token: "old-access".into(),
+            refresh_token: "old-refresh".into(),
+            expires_in_seconds: Some(3_600),
+            scope: vec!["moderator:manage:banned_users".into()],
+            token_type: "Bearer".into(),
+            linked_at_ms: 10,
+        };
+        let exchange = TwitchTokenExchange {
+            access_token: "new-access".into(),
+            refresh_token: Some("new-refresh".into()),
+            expires_in: None,
+            scope: Some(vec![]),
+            token_type: Some("bearer".into()),
+        };
+
+        let refreshed = refreshed_twitch_token_state(&previous, exchange, 20).unwrap();
+        assert_eq!(
+            refreshed,
+            TwitchTokenState {
+                access_token: "new-access".into(),
+                refresh_token: "new-refresh".into(),
+                expires_in_seconds: None,
+                scope: vec![],
+                token_type: "bearer".into(),
+                linked_at_ms: 20,
+            }
+        );
     }
 
     #[test]

@@ -7,8 +7,8 @@ use std::time::Duration;
 use auth::{
     AuthError, SignedAuthClaims, auth_cookie_header, auth_token_from_authorization_header,
     auth_token_from_cookie_header, build_twitch_authorize_url, cleared_auth_cookie_header,
-    complete_twitch_callback, refreshed_auth_claims, should_refresh_auth_token, sign_auth_token,
-    verify_auth_token, verify_oauth_state,
+    complete_twitch_callback, refreshed_auth_claims, refreshed_twitch_token_state,
+    should_refresh_auth_token, sign_auth_token, verify_auth_token, verify_oauth_state,
 };
 use barbed::cloudflare_worker::{
     create_eventsub_subscription, delete_eventsub_subscription, exchange_twitch_code,
@@ -19,9 +19,7 @@ use barbed::eventsub::{
     EventSubWebSocketSession, chat_message_subscription_request, decode_eventsub_websocket_message,
 };
 use barbed::helix::{HttpMethod, PreparedRequest};
-use barbed::oauth::{
-    TwitchAuthOutcome, TwitchTokenState, refreshed_twitch_token_state, should_refresh_twitch_token,
-};
+use barbed::oauth::{TwitchAuthOutcome, TwitchTokenState, should_refresh_twitch_token};
 use detonito_core::{
     AfkAction, AfkBoardSize as CoreAfkBoardSize, AfkCellState as CoreAfkCellState, AfkEngine,
     AfkLossReason as CoreAfkLossReason, AfkPreset, AfkRoundPhase as CoreAfkRoundPhase,
@@ -1489,15 +1487,8 @@ impl AfkSessionDO {
         )
         .await
         .map_err(error_from_display)?;
-        let next_tokens = refreshed_twitch_token_state(
-            &tokens,
-            refreshed.access_token,
-            refreshed.refresh_token,
-            refreshed.expires_in,
-            refreshed.scope,
-            refreshed.token_type,
-            now_ms(),
-        );
+        let next_tokens = refreshed_twitch_token_state(&tokens, refreshed, now_ms())
+            .map_err(error_from_display)?;
         let access_token = next_tokens.access_token.clone();
         state.tokens = Some(next_tokens);
         let timeout_supported = state.timeout_supported();

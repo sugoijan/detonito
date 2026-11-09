@@ -11,7 +11,7 @@
 
 ## Build it yourself
 
-For normal development builds you'll need Rust, trunk, Sass, Wrangler, Caddy, and just.
+For normal development builds you'll need Rust 1.97 or newer, trunk, Sass, Wrangler, Caddy, and just.
 
 Use `just dev` for local Worker-backed development. It starts:
 
